@@ -9,6 +9,7 @@
 
 #include "app.h"
 #include "settings.h"
+#include "conn_log.h"
 #include "display.h"
 #include "connectivity.h"
 #include "obd_service.h"
@@ -144,6 +145,10 @@ extern "C" void app_main(void)
 
     /* Load settings from NVS (falls back to defaults if empty) */
     settings_load(&g_settings);
+
+    /* Connection diagnostics log — dump previous boot's reason to serial */
+    conn_log_init();
+    conn_log_dump();
 
     /* Display init uses a lot of stack (LVGL + dashboard UI) */
     display_ready_sem = xSemaphoreCreateBinary();

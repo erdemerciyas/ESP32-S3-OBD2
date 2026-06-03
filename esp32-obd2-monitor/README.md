@@ -16,10 +16,11 @@ Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-L
 | **WiFi HUD** | Sağ üst `LV_SYMBOL_WIFI`: kapalı → AP → TCP → OBD (renk/parlama) — gösterge, menü, bağlantı ekranı |
 | **Açılış** | `splash.c` ~5 sn EXTREME/MONITOR; ardından ana gösterge |
 | **Menü** | Çift dokunma; Bağlantı / Ayarlar / Hakkında; Türkçe metin + Font Awesome ikonları |
-| **Bağlantı** | WiFi ELM327 (tarama, OPEN öncelik, `WIFI_OBDII` profilleri, TCP keşfi), USB-UART (GPIO43/44) |
+| **Bağlantı** | WiFi ELM327: **manuel tarama** (varsayılan), kayıtlı profil, gateway TCP keşfi, USB-UART (GPIO43/44) |
+| **Bağlantı günlüğü** | `conn_log` — son 20 olay NVS’te; açılışta seri porta dökülür (WiFi/TCP/OBD hata nedeni) |
 | **FSM** | `DISCONNECTED` → `LINK_UP` → `ELM_INIT` → `OBD_READY` (`elm327_session`) |
 | **Telemetri** | `telemetry_snapshot_t` — UI ↔ `obd` gevşek bağlı |
-| **NVS** | `schema=2` — ayarlar, varsayılan açılış göstergesi, kayıtlı WiFi |
+| **NVS** | `schema=3` — ayarlar, manuel WiFi profili (SSID/şifre/IP:port), varsayılan gösterge |
 | **Tema / haptic** | Workshop at Dusk; buzzer (TCA9554 EXIO8) |
 
 **Bluetooth:** ESP32-S3 klasik SPP desteklemez — OBD için WiFi veya USB ELM327.
@@ -95,14 +96,50 @@ Sabitler: `board_config.h` (`UI_SWIPE_THRESHOLD_PX`, `UI_LONG_PRESS_MS`, `UI_ROU
 
 Referans: [Car Scanner — ELM327 Wi‑Fi](https://www.carscanner.info/wifi/)
 
+### Kullanım akışı
+
 | Adım | ESP32 monitor |
 |------|----------------|
-| Adaptör AP’sine bağlan (`WIFI_OBDII`, `OBDII`, …) | Menü → Bağlantı → Tara |
-| Çoğu adaptör **şifresiz** | OPEN önce, sonra yaygın şifreler |
-| IP **192.168.0.10**, port **35000** | Varsayılan + gateway + `elm327_tcp_profiles[]` |
-| Telefon aynı AP’deyken ESP bağlanamaz | Bağlantı öncesi telefonu AP’den ayırın |
+| Adaptör OBD soketine takılı, kontak açık | — |
+| **Telefonu adaptör AP’sinden ayırın** (çoğu adaptör tek TCP istemcisi) | Otomatik bağlan = kapalı |
+| Menü → **Bağlantı** → **Tara** | ELM327 adayları listelenir |
+| Listeden **WIFI_OBDII** (veya adaptör SSID) seçin | WiFi → TCP → NVS’e kayıt |
+| Başarılı | `Kayıtlı: WIFI_OBDII  192.168.0.10:35000` |
+| Sonraki açılışlar | Yalnız kayıtlı profil denenir (rastgele tarama yok) |
+| İsteğe bağlı | **Otomatik** düğmesi = tam ELM327 taraması |
 
-- Başarı: DHCP IP + TCP; şifre/uç nokta NVS.
+**Varsayılan:** `wifi_manual_mode=true` — kayıtlı ağ yokken açılışta WiFi’ye bağlanmaz.
+
+### TCP keşfi sırası
+
+1. NVS’te kayıtlı IP:port  
+2. DHCP **gateway** → `35000` (tam timeout + tekrar)  
+3. Aynı alt ağ taraması (`.1`, `.10`, …)  
+4. `elm327_tcp_profiles[]` yedek listesi  
+
+Çoğu klon adaptör: **192.168.0.10:35000**, çoğu **OPEN** WiFi (şifre yok).
+
+### Bağlantı günlüğü (`conn_log`)
+
+Hata veya kısmi başarı NVS’e yazılır; **reboot sonrası** da okunur.
+
+```powershell
+.\build_flash.ps1 -Action monitor -Port COM3
+```
+
+Açılışta örnek:
+
+```
+W conn_log: ==== Connection log (2 entries) ====
+W conn_log: #0 [t+15s] WiFi katildi: WIFI_OBDII
+W conn_log: #1 [t+28s] TCP yok: ... (gw=192.168.0.10) telefonu ayirin
+W conn_log: ==== end of connection log ====
+```
+
+Kod: `components/system/conn_log.c`, `wifi_manager.c` (`conn_log_add`).
+
+### Notlar
+
 - Kontak kapalı: “TCP hazır, kontağı açın” (RPM zorunlu değil).
 - Timeout: `WIFI_CONNECT_TIMEOUT_MS` = **15 s** (`app.h`).
 
@@ -127,7 +164,7 @@ esp32-obd2-monitor/
 │   │   ├── pid_support.c   # 0100/0120/0140 bitmap
 │   │   └── obd_parser.c
 │   ├── telemetry/
-│   └── system/               # NVS settings
+│   └── system/               # NVS settings, conn_log (bağlantı tanılama)
 ├── test/                     # Unity: test_obd_parser, test_pid_support
 ├── docs/
 ├── build_flash.ps1 / .sh
@@ -163,7 +200,8 @@ Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 |---------|----------------|
 | Siyah ekran | TCA9554, PSRAM, ST7701 — UPLOAD.md |
 | Boş / eksik metin | Font charset (`fonts/gen_fonts.ps1`, `0x20-0x7E,0xA0-0x17F`) |
-| WiFi listede var, bağlanmıyor | Telefonu AP’den çıkar; OPEN; 15 s timeout |
+| WiFi listede var, bağlanmıyor | Telefonu AP’den çıkar; `conn_log` dump (monitor); OPEN; 15 s timeout |
+| WiFi var, TCP yok | Telefon adaptörde mi? Kontak açık mı? `conn_log` → gateway satırı |
 | Tüm göstergeler `--` | Kontak; PID keşfi log; ELM327 protokol |
 | Kaydırma 10 boş sayfa | Güncel firmware (evrensel PID filtresi) |
 
@@ -173,7 +211,7 @@ Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 |-------|----------|
 | Yeni PID + gösterge | `pid_table.c`, `apply_pid` (`obd_service.c`), `gauge_configs[]` |
 | Destek bitmap | `pid_support.c` |
-| ELM327 / WiFi | `elm327_session.c`, `wifi_manager.c`, `elm327_wifi_profiles.h` |
+| ELM327 / WiFi | `elm327_session.c`, `wifi_manager.c`, `elm327_wifi_profiles.h`, `conn_log.c` |
 | UI / ikon | `ui_icons.c`, `dashboard.c`, `board_config.h` |
 | Font üretimi | `components/display/fonts/README.md`, `gen_fonts.ps1` |
 | Testler | `test/test_obd_parser.c`, `test/test_pid_support.c` |

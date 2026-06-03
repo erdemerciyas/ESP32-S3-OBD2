@@ -8,6 +8,8 @@
 #include "ui_fonts.h"
 #include "ui_icons.h"
 #include "app.h"
+#include "haptic.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdio.h>
@@ -21,6 +23,10 @@
 #define WIFI_UI_BTN_ROW_Y  (WIFI_UI_HEADER_H + WIFI_UI_STATUS_H + 8)
 #define WIFI_UI_LIST_TOP   (WIFI_UI_BTN_ROW_Y + 44)
 #define WIFI_UI_LIST_H     (UI_SCREEN_H - WIFI_UI_LIST_TOP - WIFI_UI_FOOTER_H - 8)
+#define WIFI_UI_NETWORK_ROW_H 48
+#define WIFI_UI_JOB_STACK  16384
+
+static const char *TAG = "wifi_ui";
 
 static lv_obj_t *status_saved_lbl;
 static lv_obj_t *status_obd_lbl;
@@ -33,6 +39,7 @@ static lv_obj_t *auto_btn;
 static wifi_ap_info_t scan_results[WIFI_SCAN_MAX_RESULTS];
 static int scan_result_count;
 static volatile bool worker_busy;
+static lv_timer_t *progress_timer;
 
 typedef struct {
     char ssid[32];
@@ -122,20 +129,62 @@ static void wifi_ui_set_message(const char *text)
     lv_label_set_text(status_msg_lbl, text);
 }
 
+static void wifi_ui_progress_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+
+    if (!worker_busy) {
+        return;
+    }
+
+    switch (connectivity_get_state()) {
+        case CONN_STATE_OBD_READY:
+            wifi_ui_set_message("OBD hazır — bağlanıldı");
+            break;
+        case CONN_STATE_LINK_UP:
+        case CONN_STATE_ELM_INIT:
+            wifi_ui_set_message("WiFi OK — ELM327/TCP aranıyor...");
+            break;
+        default:
+            if (wifi_is_ap_connected()) {
+                wifi_ui_set_message("WiFi bağlandı — TCP aranıyor...");
+            } else {
+                wifi_ui_set_message("WiFi ağına katılınıyor...");
+            }
+            break;
+    }
+    wifi_ui_update_status_labels();
+}
+
+static void wifi_ui_progress_start(void)
+{
+    if (progress_timer == NULL) {
+        progress_timer = lv_timer_create(wifi_ui_progress_timer_cb, 1000, NULL);
+    }
+    lv_timer_resume(progress_timer);
+}
+
+static void wifi_ui_progress_stop(void)
+{
+    if (progress_timer != NULL) {
+        lv_timer_pause(progress_timer);
+    }
+}
+
 static const char *wifi_ui_fail_hint(void)
 {
     if (wifi_is_ap_connected() && wifi_tcp_ready()) {
         return "TCP var; OBD yok — kontağı açın";
     }
     if (wifi_is_ap_connected()) {
-        return "WiFi var, ELM327 TCP yok (192.168.0.10?)";
+        return "WiFi var, TCP yok: TELEFONU adaptörden ayırın (tek bağlantı)";
     }
     switch (wifi_get_last_fail_stage()) {
         case WIFI_FAIL_TCP:
-            return "WiFi OK ama TCP yok — kontak açık olsun";
+            return "WiFi var, TCP yok: telefonu ayırın + kontak açık";
         case WIFI_FAIL_ASSOC:
         default:
-            return "WiFi: telefondan WIFI_OBDII kopun, tekrar deneyin";
+            return "WiFi'ye katılamadı: telefonu adaptörden ayırıp tekrar deneyin";
     }
 }
 
@@ -172,9 +221,12 @@ static void wifi_ui_populate_network_list(const wifi_ap_info_t *networks, int co
     for (int i = 0; i < count; i++) {
         lv_obj_t *btn = lv_btn_create(network_list);
         lv_obj_set_width(btn, lv_pct(100));
-        lv_obj_set_height(btn, 40);
+        lv_obj_set_height(btn, WIFI_UI_NETWORK_ROW_H);
         lv_obj_add_style(btn, style_get_btn_secondary(), 0);
-        lv_obj_add_event_cb(btn, wifi_ui_network_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_remove_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(btn, wifi_ui_network_click_cb, LV_EVENT_SHORT_CLICKED,
+                            (void *)(intptr_t)i);
 
         if (g_settings.wifi_ssid[0] != '\0' &&
             strcmp(g_settings.wifi_ssid, networks[i].ssid) == 0) {
@@ -198,6 +250,7 @@ static void wifi_ui_populate_network_list(const wifi_ap_info_t *networks, int co
         lv_label_set_text(lbl, line);
         lv_obj_set_style_text_font(lbl, UI_FONT_SM, 0);
         lv_obj_set_style_text_color(lbl, color_text, 0);
+        lv_obj_remove_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
     }
 }
 
@@ -233,6 +286,7 @@ static void wifi_ui_job_finished_cb(void *user_data)
         }
     }
 
+    wifi_ui_progress_stop();
     wifi_ui_update_status_labels();
     wifi_ui_set_buttons_enabled(true);
     worker_busy = false;
@@ -259,28 +313,47 @@ static void wifi_ui_worker_task(void *arg)
 static void wifi_ui_start_job(wifi_ui_job_t *job)
 {
     if (worker_busy) {
+        wifi_ui_set_message("İşlem devam ediyor, bekleyin...");
         free(job);
         return;
     }
 
     worker_busy = true;
     wifi_ui_set_buttons_enabled(false);
-    xTaskCreate(wifi_ui_worker_task, "wifi_ui_job", 12288, job, 5, NULL);
+
+    const bool is_connect_job = !job->scan_only;
+
+    BaseType_t created = xTaskCreate(wifi_ui_worker_task, "wifi_ui_job", WIFI_UI_JOB_STACK, job, 5, NULL);
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start WiFi UI worker task");
+        worker_busy = false;
+        wifi_ui_set_buttons_enabled(true);
+        wifi_ui_set_message("Bağlantı görevi başlatılamadı");
+        free(job);
+        return;
+    }
+
+    if (is_connect_job) {
+        wifi_ui_progress_start();
+    }
 }
 
 static void wifi_ui_network_click_cb(lv_event_t *e)
 {
     if (worker_busy) {
+        wifi_ui_set_message("İşlem devam ediyor...");
         return;
     }
 
     const int index = (int)(intptr_t)lv_event_get_user_data(e);
     if (index < 0 || index >= scan_result_count) {
+        ESP_LOGW(TAG, "Network click ignored: index=%d count=%d", index, scan_result_count);
         return;
     }
 
     wifi_ui_job_t *job = calloc(1, sizeof(wifi_ui_job_t));
     if (job == NULL) {
+        wifi_ui_set_message("Bellek yetersiz");
         return;
     }
 
@@ -289,11 +362,13 @@ static void wifi_ui_network_click_cb(lv_event_t *e)
 
     char msg[80];
     if (wifi_is_elm327_ssid(job->ssid)) {
-        snprintf(msg, sizeof(msg), "OBD bağlanıyor: %s...", job->ssid);
+        snprintf(msg, sizeof(msg), "OBD: %s — WiFi deneniyor...", job->ssid);
     } else {
         snprintf(msg, sizeof(msg), "Bağlanıyor: %s...", job->ssid);
     }
     wifi_ui_set_message(msg);
+    haptic_click();
+    ESP_LOGI(TAG, "User selected network: %s", job->ssid);
 
     wifi_ui_start_job(job);
 }
@@ -388,6 +463,8 @@ void wifi_settings_ui_create(lv_obj_t *screen)
     lv_obj_set_style_pad_row(network_list, 6, 0);
     lv_obj_set_style_pad_all(network_list, 8, 0);
     lv_obj_add_flag(network_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(network_list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_add_flag(network_list, LV_OBJ_FLAG_SCROLL_MOMENTUM);
 
     wifi_settings_ui_refresh();
 }

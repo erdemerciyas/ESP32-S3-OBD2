@@ -5,6 +5,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "app.h"
+#include "conn_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <string.h>
@@ -16,6 +17,20 @@ static connectivity_state_t conn_state = CONN_STATE_DISCONNECTED;
 static char status_text[64] = "Bağlantı yok";
 static uint8_t reconnect_attempts;
 static SemaphoreHandle_t connectivity_mutex;
+static volatile bool connectivity_user_wifi_busy;
+
+static bool connectivity_try_lock(void)
+{
+    if (connectivity_mutex == NULL) {
+        connectivity_mutex = xSemaphoreCreateMutex();
+    }
+    return xSemaphoreTake(connectivity_mutex, 0) == pdTRUE;
+}
+
+static void connectivity_set_user_wifi_busy(bool busy)
+{
+    connectivity_user_wifi_busy = busy;
+}
 
 extern app_settings_t g_settings;
 
@@ -124,8 +139,9 @@ esp_err_t connectivity_start(connection_type_t type)
     }
 
     connectivity_stop();
-    esp_err_t result = connectivity_bring_up(type);
     connectivity_unlock();
+
+    esp_err_t result = connectivity_bring_up(type);
     return result;
 }
 
@@ -217,7 +233,14 @@ const char *connectivity_get_status_text(void)
 
 esp_err_t connectivity_auto_reconnect(void)
 {
-    connectivity_lock();
+    if (connectivity_user_wifi_busy) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!connectivity_try_lock()) {
+        ESP_LOGD(TAG, "Reconnect skipped: connectivity busy");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     if (conn_state == CONN_STATE_OBD_READY) {
         connectivity_unlock();
@@ -240,23 +263,37 @@ esp_err_t connectivity_auto_reconnect(void)
 
     reconnect_attempts++;
     uint32_t delay_ms = 1000U << (reconnect_attempts > 4 ? 4 : reconnect_attempts);
-    ESP_LOGI(TAG, "Auto-reconnect attempt %u (backoff %lu ms)", reconnect_attempts, (unsigned long)delay_ms);
-
     connection_type_t preferred = g_settings.preferred_connection;
     if (preferred == CONN_TYPE_NONE) {
         preferred = CONN_TYPE_WIFI;
     }
+    connectivity_unlock();
+
+    ESP_LOGI(TAG, "Auto-reconnect attempt %u (backoff %lu ms)", reconnect_attempts, (unsigned long)delay_ms);
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+
+    if (connectivity_user_wifi_busy) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!connectivity_try_lock()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (conn_state == CONN_STATE_OBD_READY) {
+        connectivity_unlock();
+        return ESP_OK;
+    }
 
     connectivity_stop();
-    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    connectivity_unlock();
 
     esp_err_t err = connectivity_bring_up(preferred);
 
-    if (err != ESP_OK && preferred != CONN_TYPE_WIFI) {
+    if (err != ESP_OK && preferred != CONN_TYPE_WIFI && !connectivity_user_wifi_busy) {
+        connectivity_stop();
         err = connectivity_bring_up(CONN_TYPE_WIFI);
     }
-
-    connectivity_unlock();
 
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "All reconnection attempts failed");
@@ -272,9 +309,9 @@ esp_err_t connectivity_wifi_scan(wifi_ap_info_t *list, int max_count, int *found
         return ESP_ERR_INVALID_ARG;
     }
 
-    connectivity_lock();
+    connectivity_set_user_wifi_busy(true);
     *found_count = wifi_scan_all_networks(list, max_count);
-    connectivity_unlock();
+    connectivity_set_user_wifi_busy(false);
 
     return (*found_count > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
@@ -292,6 +329,7 @@ static esp_err_t connectivity_finish_wifi_session(void)
 
     if (wifi_obd_session_ready()) {
         connectivity_set_state(CONN_STATE_OBD_READY, "OBD hazır");
+        conn_log_add("OBD HAZIR (RPM yaniti alindi)");
         obd_service_discover_supported_pids();
         reconnect_attempts = 0;
         return ESP_OK;
@@ -299,6 +337,7 @@ static esp_err_t connectivity_finish_wifi_session(void)
 
     /* TCP OK but no RPM (ignition off) — still useful for user */
     connectivity_set_state(CONN_STATE_LINK_UP, "TCP hazir, kontak acin");
+    conn_log_add("TCP OK ama OBD yaniti yok — kontak kapali olabilir");
     reconnect_attempts = 0;
     return ESP_OK;
 }
@@ -309,34 +348,49 @@ esp_err_t connectivity_wifi_connect_manual(const char *ssid, wifi_auth_mode_t au
         return ESP_ERR_INVALID_ARG;
     }
 
+    ESP_LOGI(TAG, "Manual WiFi connect: %s", ssid);
+    connectivity_set_user_wifi_busy(true);
+
     connectivity_lock();
     connectivity_stop();
-    esp_err_t err = ESP_FAIL;
+    connectivity_unlock();
 
+    esp_err_t err = ESP_FAIL;
     if (wifi_connect_manual_network(ssid, authmode)) {
+        connectivity_lock();
         err = connectivity_finish_wifi_session();
+        connectivity_unlock();
     } else if (wifi_is_ap_connected() && !wifi_tcp_ready()) {
+        connectivity_lock();
         connectivity_set_state(CONN_STATE_LINK_UP, "WiFi var, TCP yok");
+        connectivity_unlock();
         err = ESP_FAIL;
     }
 
-    connectivity_unlock();
+    connectivity_set_user_wifi_busy(false);
     return err;
 }
 
 esp_err_t connectivity_wifi_enable_auto_mode(void)
 {
+    connectivity_set_user_wifi_busy(true);
+
     connectivity_lock();
     wifi_clear_manual_network();
     connectivity_stop();
+    connectivity_unlock();
 
     esp_err_t err = ESP_FAIL;
     if (wifi_connect_to_obd_adapter()) {
+        connectivity_lock();
         err = connectivity_finish_wifi_session();
+        connectivity_unlock();
     } else if (wifi_is_ap_connected() && !wifi_tcp_ready()) {
+        connectivity_lock();
         connectivity_set_state(CONN_STATE_LINK_UP, "WiFi var, TCP yok");
+        connectivity_unlock();
     }
 
-    connectivity_unlock();
+    connectivity_set_user_wifi_busy(false);
     return err;
 }

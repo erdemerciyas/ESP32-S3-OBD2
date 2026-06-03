@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include "app.h"
 #include "settings.h"
+#include "conn_log.h"
 
 static const char *TAG = "wifi";
 
@@ -877,6 +878,28 @@ static bool wifi_try_tcp_endpoint(const char *ip, uint16_t port)
     return true;
 }
 
+/*
+ * The ELM327 adapter is almost always the DHCP gateway (e.g. 192.168.0.10)
+ * on port 35000. Probe it first with the FULL timeout and a short retry,
+ * because cheap clones are slow to accept the first TCP client right after
+ * association. Everything else (subnet sweep, profile table) is a fast fallback.
+ */
+static bool wifi_probe_primary_endpoint(const char *gateway_ip)
+{
+    if (gateway_ip == NULL || gateway_ip[0] == '\0') {
+        return false;
+    }
+
+    for (int attempt = 0; attempt < 2; attempt++) {
+        ESP_LOGI(TAG, "Primary probe %s:35000 (attempt %d)", gateway_ip, attempt + 1);
+        if (wifi_try_tcp_endpoint(gateway_ip, ELM327_DEFAULT_PORT)) {
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(700));
+    }
+    return false;
+}
+
 static bool wifi_discover_tcp_endpoint(void)
 {
     char tried_ips[48][32];
@@ -897,6 +920,20 @@ static bool wifi_discover_tcp_endpoint(void)
     char gateway_ip[16] = {0};
     if (wifi_get_gateway_ip(gateway_ip, sizeof(gateway_ip))) {
         ESP_LOGI(TAG, "DHCP gateway: %s", gateway_ip);
+
+        /* Most likely endpoint first, robust timeout + retry */
+        if (!endpoint_already_tried(gateway_ip, ELM327_DEFAULT_PORT, tried_ips, tried_ports, tried_count)) {
+            if (wifi_probe_primary_endpoint(gateway_ip)) {
+                return true;
+            }
+            if (tried_count < tried_max) {
+                strncpy(tried_ips[tried_count], gateway_ip, sizeof(tried_ips[tried_count]) - 1);
+                tried_ports[tried_count] = ELM327_DEFAULT_PORT;
+                tried_count++;
+            }
+        }
+
+        /* Remaining gateway ports, fast */
         if (wifi_probe_ip_ports(gateway_ip, tried_ips, tried_ports, &tried_count, tried_max, true)) {
             return true;
         }
@@ -1012,31 +1049,58 @@ bool wifi_connect_manual_network(const char *ssid, wifi_auth_mode_t authmode)
         vTaskDelay(pdMS_TO_TICKS(400));
     }
 
+    conn_log_add("Manuel secim: %s (auth=%d)", ssid, (int)authmode);
+
     authmode = wifi_normalize_authmode(authmode);
     if (!wifi_associate_obd_ap(ssid, authmode)) {
         ESP_LOGE(TAG, "Manual WiFi association failed: %s (telefon ayni AP'de mi?)", ssid);
+        conn_log_add("WiFi katilim BASARISIZ: %s (sifre/telefon AP'de?)", ssid);
         return false;
     }
 
+    conn_log_add("WiFi katildi: %s", ssid);
     wifi_save_manual_selection(ssid, authmode);
 
     vTaskDelay(pdMS_TO_TICKS(WIFI_DHCP_SETTLE_MS));
 
+    /* Adapter TCP server may need a few seconds to come up after association.
+     * Stage retries with growing delays for a deterministic connect. */
+    static const uint32_t retry_delays_ms[] = {0, 1500, 2500, 3500};
     wifi_last_fail = WIFI_FAIL_TCP;
-    if (!wifi_discover_tcp_endpoint()) {
-        vTaskDelay(pdMS_TO_TICKS(1500));
-        if (!wifi_discover_tcp_endpoint()) {
-            ESP_LOGE(TAG, "Manual TCP/ELM327 connect failed: %s", ssid);
-            /* Keep WiFi up so UI can show "WiFi var, TCP yok" and user can retry */
+
+    for (size_t r = 0; r < sizeof(retry_delays_ms) / sizeof(retry_delays_ms[0]); r++) {
+        if (retry_delays_ms[r] > 0) {
+            ESP_LOGI(TAG, "TCP discover retry %u after %lu ms",
+                     (unsigned)r, (unsigned long)retry_delays_ms[r]);
+            vTaskDelay(pdMS_TO_TICKS(retry_delays_ms[r]));
+        }
+
+        if (!wifi_ap_connected) {
+            ESP_LOGW(TAG, "WiFi dropped during TCP discovery: %s", ssid);
+            wifi_last_fail = WIFI_FAIL_ASSOC;
             return false;
+        }
+
+        if (wifi_discover_tcp_endpoint()) {
+            wifi_last_fail = WIFI_FAIL_NONE;
+            settings_save(&g_settings);
+            ESP_LOGI(TAG, "Manual connect complete: %s -> %s:%u",
+                     ssid, g_settings.obd_adapter_ip, g_settings.obd_adapter_port);
+            conn_log_add("TCP/ELM327 OK: %s -> %s:%u", ssid,
+                         g_settings.obd_adapter_ip, g_settings.obd_adapter_port);
+            return true;
         }
     }
 
-    wifi_last_fail = WIFI_FAIL_NONE;
-    settings_save(&g_settings);
-    ESP_LOGI(TAG, "Manual connect complete: %s -> %s:%u",
-             ssid, g_settings.obd_adapter_ip, g_settings.obd_adapter_port);
-    return true;
+    ESP_LOGE(TAG, "Manual TCP/ELM327 connect failed: %s", ssid);
+    {
+        char gw[16] = {0};
+        bool have_gw = wifi_get_gateway_ip(gw, sizeof(gw));
+        conn_log_add("TCP yok: WiFi var ama ELM327 ulasilamadi (gw=%s) telefonu ayirin",
+                     have_gw ? gw : "?");
+    }
+    /* Keep WiFi up so UI can show "WiFi var, TCP yok" and user can retry */
+    return false;
 }
 
 void wifi_clear_manual_network(void)
