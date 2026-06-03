@@ -1,0 +1,33 @@
+menu "OBD2 Monitor Settings"
+
+    config OBD2_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+        help
+            WiFi SSID for OBD2 WiFi adapter connection
+
+    config OBD2_WIFI_PASSWORD
+        string "WiFi Password"
+        default ""
+        help
+            WiFi password
+
+    config OBD2_ADAPTER_IP
+        string "OBD2 Adapter IP"
+        default "192.168.0.10"
+        help
+            IP address of WiFi OBD2 adapter
+
+    config OBD2_ADAPTER_PORT
+        int "OBD2 Adapter Port"
+        default 35000
+        help
+            TCP port of WiFi OBD2 adapter
+
+    config OBD2_UART_BAUD
+        int "OBD2 UART Baudrate"
+        default 38400
+        help
+            UART baudrate for USB connection
+
+endmenu
