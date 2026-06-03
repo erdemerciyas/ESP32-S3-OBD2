@@ -17,6 +17,7 @@
 #define UI_SWIPE_THRESHOLD_PX    50
 #define UI_SWIPE_COOLDOWN_MS     400
 #define UI_DOUBLE_TAP_MS         320
+#define UI_LONG_PRESS_MS         4000
 
 #define BOARD_LCD_PIN_PCLK       41
 #define BOARD_LCD_PIN_DE         40

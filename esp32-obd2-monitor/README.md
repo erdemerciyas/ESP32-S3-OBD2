@@ -9,13 +9,14 @@ Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-L
 ### Özellikler
 
 - **Gerçek zamanlı PID’ler:** RPM, hız, antifriz, gaz, yakıt, yük, emme sıcaklığı, akü, yakıt tüketimi, DTC
-- **Tam ekran gösterge:** 10 parametre; kaydırma veya alt çizgilere dokunarak geçiş
+- **Tam ekran gösterge:** 10 parametre; sola/sağa kaydırarak geçiş
+- **Varsayılan açılış göstergesi:** Ana ekranda 4 sn uzun basış → NVS’e kaydedilir; sonraki açılışta bu gösterge ile başlar
 - **Dokunmatik menü:** Çift dokunma → menü; 4 alt ekran (Bağlantı, Ayarlar, Hakkında)
-- **Bağlantı:** WiFi (ELM327 tarama, `elm327_wifi_profiles.h`, ekrandan SSID seçimi), USB-UART (GPIO43/44)
+- **Bağlantı:** WiFi (ELM327 tarama, yaygın şifre/auth denemeleri, IP alındıktan sonra TCP), USB-UART (GPIO43/44)
 - **Bluetooth SPP:** ESP32-S3 klasik BT desteklemez — OBD için WiFi veya USB ELM327 kullanın
 - **Açılış animasyonu:** `splash.c` boot splash, ardından ana gösterge
 - **Tema:** Workshop at Dusk (amber/krem, `ui-demo.html` ile uyumlu)
-- **NVS ayarları**, WiFi tercihleri ve otomatik yeniden bağlanma
+- **NVS ayarları:** WiFi SSID/şifre, adaptör IP/port, parlaklık, varsayılan gösterge (`def_gauge`), otomatik yeniden bağlanma
 
 ### Desteklenen araçlar
 
@@ -82,9 +83,11 @@ chmod +x build_flash.sh
 |---------|--------|
 | Sola kaydır | Sonraki gösterge |
 | Sağa kaydır | Önceki gösterge |
-| Alt çizgi | İlgili göstergeye atla |
+| Uzun basış (4 sn) | Varsayılan açılış göstergesini kaydet (toast onayı) |
 | Çift dokunma | Menü |
 | Menü kartı / GERİ | Alt sayfa / ana ekran |
+
+Kaydırma eşiği ve uzun basış süresi: `board_config.h` (`UI_SWIPE_THRESHOLD_PX`, `UI_LONG_PRESS_MS`).
 
 ## Proje yapısı
 
@@ -125,17 +128,28 @@ esp32-obd2-monitor/
 
 | Görev | Öncelik | Stack | Görev |
 |-------|---------|-------|--------|
-| `display_init_task` | 5 | 16 KB | LVGL + dashboard (bir kez) |
-| `obd_diagnostic_task` | 6 | 8 KB | DTC / protokol |
-| `obd_polling_task` | 5 | 4 KB | PID okuma (200 ms) |
-| `gauge_update_task` | 4 | 8 KB | UI güncelleme (10 Hz) |
-| `lvgl_handler_task` | 5 | 8 KB | `lv_timer_handler` (core 1) |
+| `display_init` | 5 | 16 KB | LVGL + dashboard + splash (bir kez) |
+| `conn_reconnect` | 5 | 12 KB | Otomatik yeniden bağlanma (~15 s) |
+| `obd_diagnostic` | 6 | 8 KB | İlk DTC / protokol |
+| `obd_fast` | 6 | 4 KB | Hızlı PID (40 ms — RPM, hız, gaz) |
+| `obd_slow` | 4 | 4 KB | Yavaş PID (2 s) |
+| `obd_dtc` | 3 | 4 KB | Periyodik DTC (30 s) |
+| `gauge_update` | 4 | 8 KB | Gösterge UI (25 Hz) |
+| `lvgl_handler` | 5 | 8 KB | `lv_timer_handler` (core 1) |
+
+Sabitler: `app.h` — `OBD2_FAST_POLL_MS`, `GAUGE_UPDATE_RATE_HZ`, `WIFI_CONNECT_TIMEOUT_MS` (7 s).
 
 ## Yapılandırma
 
 `idf.py menuconfig` → **OBD2 Monitor Settings** (WiFi SSID, adaptör IP/port, UART baud).
 
 Varsayılan bağlantı tipi NVS’te; `connectivity_start(preferred_connection)` ile açılışta başlar.
+
+### WiFi / ELM327 notları
+
+- Bağlantı başarısı **DHCP ile IP alındıktan** sonra sayılır (`IP_EVENT_STA_GOT_IP`), yalnızca AP’ye ilişme yeterli değildir.
+- ELM327 SSID’leri için `elm327_wifi_profiles.h` şifre listesi + WPA2/WPA/WPA2 karışık auth sırası denenir; başarılı şifre NVS’e yazılır.
+- TCP uç noktası bulununca adaptör IP/port NVS’e kaydedilir.
 
 ## Sorun giderme
 
@@ -147,7 +161,8 @@ Varsayılan bağlantı tipi NVS’te; `connectivity_start(preferred_connection)`
 | `idf.py` yok | `export.ps1`, `IDF_TOOLS_PATH` |
 | Partition küçük | `partitions.csv` + custom partition |
 | Dokunmatik yok | CST820 chip id, I2C `0x15` |
-| Kaydırma yok | Güncel `dashboard.c` event handler’ları |
+| Kaydırma yok | Güncel `dashboard.c` touch overlay |
+| WiFi “bağlı” ama OBD yok | IP alındı mı? TCP log; `wifi_manager.c` |
 | Buzzer ötüyor | EXIO8 boot’ta LOW (`0x7F`) |
 | BT bağlanmıyor | ESP32-S3 SPP desteklemez — WiFi/USB |
 

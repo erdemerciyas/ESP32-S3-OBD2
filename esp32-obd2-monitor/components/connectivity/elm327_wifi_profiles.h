@@ -68,6 +68,8 @@ static const char *const elm327_passwords[] = {
     "1234567890",
     "123456789",
     "87654321",
+    "00000000",
+    "password",
     "",
 };
 

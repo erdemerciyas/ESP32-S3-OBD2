@@ -25,7 +25,7 @@ static bool wifi_ap_connected = false;
 static bool wifi_stack_ready = false;
 
 static EventGroupHandle_t wifi_event_group;
-static const int WIFI_CONNECTED_BIT = BIT0;
+static const int WIFI_GOT_IP_BIT = BIT0;
 static const int WIFI_DISCONNECTED_BIT = BIT1;
 
 extern app_settings_t g_settings;
@@ -34,9 +34,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 {
     if (event_base == WIFI_EVENT) {
         if (event_id == WIFI_EVENT_STA_CONNECTED) {
-            ESP_LOGI(TAG, "WiFi connected to AP");
+            ESP_LOGI(TAG, "WiFi associated with AP");
             wifi_ap_connected = true;
-            xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
         } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
             ESP_LOGI(TAG, "WiFi disconnected from AP");
             wifi_ap_connected = false;
@@ -46,7 +45,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
-        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        wifi_ap_connected = true;
+        xEventGroupSetBits(wifi_event_group, WIFI_GOT_IP_BIT);
     }
 }
 
@@ -110,7 +110,7 @@ static esp_err_t wifi_ensure_init(void)
 static void wifi_prepare_connect_attempt(void)
 {
     if (wifi_event_group != NULL) {
-        xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_DISCONNECTED_BIT);
+        xEventGroupClearBits(wifi_event_group, WIFI_GOT_IP_BIT | WIFI_DISCONNECTED_BIT);
     }
 }
 
@@ -120,6 +120,26 @@ static wifi_auth_mode_t wifi_normalize_authmode(wifi_auth_mode_t authmode)
         return WIFI_AUTH_WPA2_PSK;
     }
     return authmode;
+}
+
+static bool wifi_auth_mode_in_list(wifi_auth_mode_t mode, const wifi_auth_mode_t *list, int count)
+{
+    for (int i = 0; i < count; i++) {
+        if (list[i] == mode) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void wifi_append_auth_mode(wifi_auth_mode_t mode, wifi_auth_mode_t *list, int *count, int max)
+{
+    mode = wifi_normalize_authmode(mode);
+    if (*count >= max || wifi_auth_mode_in_list(mode, list, *count)) {
+        return;
+    }
+    list[*count] = mode;
+    (*count)++;
 }
 
 bool wifi_is_elm327_ssid(const char *ssid)
@@ -339,13 +359,13 @@ bool wifi_connect_with_auth(const char *ssid, const char *password, wifi_auth_mo
 
     EventBits_t bits = xEventGroupWaitBits(
         wifi_event_group,
-        WIFI_CONNECTED_BIT | WIFI_DISCONNECTED_BIT,
+        WIFI_GOT_IP_BIT | WIFI_DISCONNECTED_BIT,
         pdTRUE,
         pdFALSE,
         pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
 
-    if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "WiFi associated: %s", ssid);
+    if (bits & WIFI_GOT_IP_BIT) {
+        ESP_LOGI(TAG, "WiFi associated with IP: %s", ssid);
         wifi_ap_connected = true;
         return true;
     }
@@ -364,33 +384,73 @@ bool wifi_connect(const char *ssid, const char *password)
     return wifi_connect_with_auth(ssid, password, WIFI_AUTH_WPA2_PSK);
 }
 
-static bool wifi_try_password_list(const char *ssid, wifi_auth_mode_t authmode)
+static bool wifi_remember_password(const char *password)
 {
-    if (g_settings.wifi_password[0] != '\0') {
-        if (wifi_connect_with_auth(ssid, g_settings.wifi_password, authmode)) {
-            return true;
-        }
+    if (password == NULL) {
+        return false;
     }
 
-    if (authmode == WIFI_AUTH_OPEN) {
-        return wifi_connect_with_auth(ssid, "", WIFI_AUTH_OPEN);
+    if (strcmp(g_settings.wifi_password, password) != 0) {
+        strncpy(g_settings.wifi_password, password, sizeof(g_settings.wifi_password) - 1);
+        g_settings.wifi_password[sizeof(g_settings.wifi_password) - 1] = '\0';
     }
+    return true;
+}
 
-    for (size_t i = 0; i < ELM327_PASSWORD_COUNT; i++) {
-        const char *password = elm327_passwords[i];
-        if (password[0] == '\0') {
+static bool wifi_associate_obd_ap(const char *ssid, wifi_auth_mode_t scan_authmode)
+{
+    wifi_auth_mode_t auth_modes[6];
+    int auth_count = 0;
+
+    wifi_append_auth_mode(scan_authmode, auth_modes, &auth_count, 6);
+    wifi_append_auth_mode(WIFI_AUTH_WPA2_PSK, auth_modes, &auth_count, 6);
+    wifi_append_auth_mode(WIFI_AUTH_WPA_WPA2_PSK, auth_modes, &auth_count, 6);
+    wifi_append_auth_mode(WIFI_AUTH_WPA_PSK, auth_modes, &auth_count, 6);
+    wifi_append_auth_mode(WIFI_AUTH_OPEN, auth_modes, &auth_count, 6);
+
+    const bool same_saved_ssid =
+        (g_settings.wifi_ssid[0] != '\0' && strcmp(ssid, g_settings.wifi_ssid) == 0);
+
+    ESP_LOGI(TAG, "Trying universal OBD WiFi credentials for: %s", ssid);
+
+    for (int a = 0; a < auth_count; a++) {
+        const wifi_auth_mode_t auth = auth_modes[a];
+
+        if (auth == WIFI_AUTH_OPEN) {
+            if (wifi_connect_with_auth(ssid, "", WIFI_AUTH_OPEN)) {
+                g_settings.wifi_password[0] = '\0';
+                return true;
+            }
             continue;
         }
-        if (wifi_connect_with_auth(ssid, password, authmode)) {
-            if (g_settings.wifi_password[0] == '\0' ||
-                strcmp(g_settings.wifi_password, password) != 0) {
-                strncpy(g_settings.wifi_password, password, sizeof(g_settings.wifi_password) - 1);
+
+        if (same_saved_ssid && g_settings.wifi_password[0] != '\0') {
+            ESP_LOGI(TAG, "Trying saved password for %s", ssid);
+            if (wifi_connect_with_auth(ssid, g_settings.wifi_password, auth)) {
+                return true;
             }
-            return true;
+        }
+
+        for (size_t i = 0; i < ELM327_PASSWORD_COUNT; i++) {
+            const char *password = elm327_passwords[i];
+            if (password[0] == '\0') {
+                continue;
+            }
+
+            ESP_LOGI(TAG, "Trying OBD password \"%s\" (auth=%d)", password, auth);
+            if (wifi_connect_with_auth(ssid, password, auth)) {
+                wifi_remember_password(password);
+                return true;
+            }
         }
     }
 
     return false;
+}
+
+static bool wifi_try_password_list(const char *ssid, wifi_auth_mode_t authmode)
+{
+    return wifi_associate_obd_ap(ssid, authmode);
 }
 
 bool wifi_connect_to_elm327(void)
@@ -640,6 +700,9 @@ static bool wifi_try_tcp_endpoint(const char *ip, uint16_t port)
 
     sock = fd;
     connected = true;
+    strncpy(g_settings.obd_adapter_ip, ip, sizeof(g_settings.obd_adapter_ip) - 1);
+    g_settings.obd_adapter_ip[sizeof(g_settings.obd_adapter_ip) - 1] = '\0';
+    g_settings.obd_adapter_port = port;
     ESP_LOGI(TAG, "Connected to ELM327 at %s:%u", ip, (unsigned)port);
     return true;
 }
@@ -761,12 +824,12 @@ bool wifi_connect_manual_network(const char *ssid, wifi_auth_mode_t authmode)
     }
 
     authmode = wifi_normalize_authmode(authmode);
-    if (!wifi_try_password_list(ssid, authmode)) {
+    if (!wifi_associate_obd_ap(ssid, authmode)) {
         ESP_LOGE(TAG, "Manual WiFi association failed: %s", ssid);
         return false;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(1200));
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     if (!wifi_discover_tcp_endpoint()) {
         vTaskDelay(pdMS_TO_TICKS(800));
@@ -821,7 +884,7 @@ void wifi_disconnect(void)
     }
 
     if (wifi_event_group != NULL) {
-        xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_DISCONNECTED_BIT);
+        xEventGroupClearBits(wifi_event_group, WIFI_GOT_IP_BIT | WIFI_DISCONNECTED_BIT);
     }
 
     ESP_LOGI(TAG, "WiFi disconnected");

@@ -198,8 +198,12 @@ static void wifi_ui_network_click_cb(lv_event_t *e)
     strncpy(job->ssid, scan_results[index].ssid, sizeof(job->ssid) - 1);
     job->authmode = scan_results[index].authmode;
 
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Baglaniyor: %s...", job->ssid);
+    char msg[80];
+    if (wifi_is_elm327_ssid(job->ssid)) {
+        snprintf(msg, sizeof(msg), "OBD baglaniyor: %s...", job->ssid);
+    } else {
+        snprintf(msg, sizeof(msg), "Baglaniyor: %s...", job->ssid);
+    }
     wifi_ui_set_message(msg);
 
     wifi_ui_start_job(job);

@@ -25,7 +25,7 @@ extern "C" {
 #define GAUGE_UPDATE_RATE_HZ 25
 #define GAUGE_SMOOTH_DIVISOR 4
 
-#define WIFI_CONNECT_TIMEOUT_MS 10000
+#define WIFI_CONNECT_TIMEOUT_MS 7000
 #define BT_CONNECT_TIMEOUT_MS 15000
 
 #define OBD2_DEFAULT_WIFI_PASSWORD "12345678"
@@ -57,6 +57,7 @@ typedef struct {
     uint8_t brightness;
     bool wifi_manual_mode;
     uint8_t wifi_authmode;
+    uint8_t default_gauge;
 } app_settings_t;
 
 extern app_settings_t g_settings;

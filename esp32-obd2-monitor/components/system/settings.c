@@ -31,6 +31,11 @@ static void settings_apply_defaults(app_settings_t *settings)
     if (settings->brightness == 0) {
         settings->brightness = 70;
     }
+
+    /* Must stay in sync with gauge_type_t / GAUGE_MAX */
+    if (settings->default_gauge >= 10) {
+        settings->default_gauge = 0;
+    }
 }
 
 esp_err_t settings_load(app_settings_t *settings)
@@ -111,16 +116,22 @@ esp_err_t settings_load(app_settings_t *settings)
         ESP_LOGW(TAG, "Failed to read wifi_auth: %s", esp_err_to_name(read_err));
     }
 
+    read_err = nvs_get_u8(nvs, "def_gauge", &settings->default_gauge);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read def_gauge: %s", esp_err_to_name(read_err));
+    }
+
     nvs_close(nvs);
 
     settings_apply_defaults(settings);
 
-    ESP_LOGI(TAG, "Settings loaded (conn=%d, ip=%s:%u, ssid=%s, manual=%d)",
+    ESP_LOGI(TAG, "Settings loaded (conn=%d, ip=%s:%u, ssid=%s, manual=%d, gauge=%u)",
              settings->preferred_connection,
              settings->obd_adapter_ip,
              settings->obd_adapter_port,
              settings->wifi_ssid[0] ? settings->wifi_ssid : "(auto-scan)",
-             settings->wifi_manual_mode);
+             settings->wifi_manual_mode,
+             settings->default_gauge);
     return ESP_OK;
 }
 
@@ -150,6 +161,7 @@ esp_err_t settings_save(const app_settings_t *settings)
     nvs_set_u8(nvs, "bright", settings->brightness);
     nvs_set_u8(nvs, "wifi_manual", settings->wifi_manual_mode ? 1 : 0);
     nvs_set_u8(nvs, "wifi_auth", settings->wifi_authmode);
+    nvs_set_u8(nvs, "def_gauge", settings->default_gauge);
 
     err = nvs_commit(nvs);
     if (err != ESP_OK) {

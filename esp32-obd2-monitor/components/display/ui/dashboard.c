@@ -31,6 +31,10 @@ static lv_point_t touch_press_pt;
 static uint32_t last_tap_tick;
 static uint32_t last_swipe_tick;
 static bool touch_tracking;
+static bool long_press_fired;
+static lv_timer_t *long_press_timer;
+static lv_obj_t *default_gauge_toast;
+static lv_timer_t *toast_hide_timer;
 static bool dashboard_first_show = true;
 
 extern app_settings_t g_settings;
@@ -38,6 +42,69 @@ extern app_settings_t g_settings;
 static void settings_persist_from_ui(void)
 {
     app_settings_save();
+}
+
+static void cancel_long_press_timer(void)
+{
+    if (long_press_timer != NULL) {
+        lv_timer_delete(long_press_timer);
+        long_press_timer = NULL;
+    }
+}
+
+static void hide_default_gauge_toast_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    toast_hide_timer = NULL;
+    if (default_gauge_toast != NULL) {
+        lv_obj_add_flag(default_gauge_toast, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void show_default_gauge_saved_toast(void)
+{
+    if (default_gauge_toast == NULL) {
+        return;
+    }
+
+    lv_label_set_text(default_gauge_toast, "Varsayilan acilis ekrani");
+    lv_obj_remove_flag(default_gauge_toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(default_gauge_toast);
+    if (touch_overlay != NULL) {
+        lv_obj_move_foreground(touch_overlay);
+    }
+
+    if (toast_hide_timer != NULL) {
+        lv_timer_delete(toast_hide_timer);
+    }
+    toast_hide_timer = lv_timer_create(hide_default_gauge_toast_cb, 1800, NULL);
+    lv_timer_set_repeat_count(toast_hide_timer, 1);
+}
+
+static void save_default_startup_gauge(void)
+{
+    const gauge_type_t active = gauge_get_active();
+    if (active >= GAUGE_MAX) {
+        return;
+    }
+
+    g_settings.default_gauge = (uint8_t)active;
+    settings_persist_from_ui();
+    ESP_LOGI(TAG, "Default startup gauge saved: %d", active);
+    show_default_gauge_saved_toast();
+}
+
+static void long_press_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    long_press_timer = NULL;
+
+    if (!touch_tracking || lv_scr_act() != screen_dashboard) {
+        return;
+    }
+
+    long_press_fired = true;
+    save_default_startup_gauge();
 }
 
 static void brightness_changed_cb(lv_event_t *e)
@@ -96,6 +163,10 @@ static void dashboard_touch_cb(lv_event_t *e)
     if (code == LV_EVENT_PRESSED) {
         lv_indev_get_point(indev, &touch_press_pt);
         touch_tracking = true;
+        long_press_fired = false;
+        cancel_long_press_timer();
+        long_press_timer = lv_timer_create(long_press_timer_cb, UI_LONG_PRESS_MS, NULL);
+        lv_timer_set_repeat_count(long_press_timer, 1);
         return;
     }
 
@@ -103,6 +174,13 @@ static void dashboard_touch_cb(lv_event_t *e)
         return;
     }
     touch_tracking = false;
+    cancel_long_press_timer();
+
+    if (long_press_fired) {
+        long_press_fired = false;
+        last_tap_tick = 0;
+        return;
+    }
 
     lv_point_t release_pt;
     lv_indev_get_point(indev, &release_pt);
@@ -302,13 +380,37 @@ static void create_touch_overlay(lv_obj_t *parent)
     lv_obj_move_foreground(touch_overlay);
 }
 
+static void create_default_gauge_toast(lv_obj_t *parent)
+{
+    default_gauge_toast = lv_label_create(parent);
+    lv_label_set_text(default_gauge_toast, "");
+    lv_obj_set_width(default_gauge_toast, UI_SCREEN_W - (UI_PAD * 2));
+    lv_obj_set_style_text_align(default_gauge_toast, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(default_gauge_toast, LV_ALIGN_BOTTOM_MID, 0, -36);
+    lv_obj_set_style_text_font(default_gauge_toast, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(default_gauge_toast, color_accent, 0);
+    lv_obj_set_style_bg_color(default_gauge_toast, color_card_bg, 0);
+    lv_obj_set_style_bg_opa(default_gauge_toast, LV_OPA_80, 0);
+    lv_obj_set_style_pad_hor(default_gauge_toast, 16, 0);
+    lv_obj_set_style_pad_ver(default_gauge_toast, 8, 0);
+    lv_obj_set_style_radius(default_gauge_toast, 8, 0);
+    lv_obj_add_flag(default_gauge_toast, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(default_gauge_toast, LV_OBJ_FLAG_CLICKABLE);
+}
+
 static void create_dashboard_screen(void)
 {
+    gauge_type_t startup_gauge = GAUGE_RPM;
+    if (g_settings.default_gauge < GAUGE_MAX) {
+        startup_gauge = (gauge_type_t)g_settings.default_gauge;
+    }
+
     screen_dashboard = lv_obj_create(NULL);
     ui_screen_prepare(screen_dashboard);
     lv_obj_remove_flag(screen_dashboard, LV_OBJ_FLAG_CLICKABLE);
 
-    gauge_create_fullscreen(screen_dashboard, GAUGE_RPM);
+    gauge_create_fullscreen(screen_dashboard, startup_gauge);
+    create_default_gauge_toast(screen_dashboard);
     create_touch_overlay(screen_dashboard);
 }
 
