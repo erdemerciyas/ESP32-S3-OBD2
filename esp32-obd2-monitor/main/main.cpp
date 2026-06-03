@@ -37,26 +37,97 @@ static void init_hardware(void)
     ESP_LOGI(TAG, "Hardware init complete");
 }
 
+static void obd_polling_task(void *arg)
+{
+    (void)arg;
+    while (1) {
+        if (connectivity_is_connected()) {
+            obd_service_poll_fast();
+        }
+        vTaskDelay(pdMS_TO_TICKS(OBD2_FAST_POLL_MS));
+    }
+}
+
+static void obd_slow_poll_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    while (1) {
+        if (connectivity_is_connected()) {
+            obd_service_poll_slow();
+        }
+        vTaskDelay(pdMS_TO_TICKS(OBD2_SLOW_POLL_MS));
+    }
+}
+
+static void obd_dtc_poll_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    while (1) {
+        if (connectivity_is_connected()) {
+            uint8_t dtc_codes[10];
+            size_t dtc_count = 0;
+            obd_service_get_dtc_codes(dtc_codes, sizeof(dtc_codes) / 2, &dtc_count);
+        }
+        vTaskDelay(pdMS_TO_TICKS(OBD2_DTC_POLL_MS));
+    }
+}
+
+static void connectivity_reconnect_task(void *arg)
+{
+    (void)arg;
+
+    /* Let display and initial connect attempt finish first */
+    vTaskDelay(pdMS_TO_TICKS(5000));
+
+    while (1) {
+        if (!connectivity_is_connected()) {
+            ESP_LOGI(TAG, "OBD adapter not connected, retrying...");
+            connectivity_auto_reconnect();
+        }
+        /* Full ELM327 auto-discovery can take 30+ seconds */
+        vTaskDelay(pdMS_TO_TICKS(15000));
+    }
+}
+
+static void obd_diagnostic_task(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < 30 && !connectivity_is_connected(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    if (connectivity_is_connected()) {
+        ESP_LOGI(TAG, "OBD diagnostic: reading DTC codes");
+        uint8_t dtc_codes[10];
+        size_t dtc_count = 0;
+        obd_service_get_dtc_codes(dtc_codes, sizeof(dtc_codes) / 2, &dtc_count);
+    } else {
+        ESP_LOGW(TAG, "OBD diagnostic skipped: not connected");
+    }
+    vTaskDelete(NULL);
+}
+
 static void gauge_update_task(void *arg)
 {
-    obd_data_t data;
+    (void)arg;
     TickType_t last_wake = xTaskGetTickCount();
     const TickType_t period = pdMS_TO_TICKS(1000 / GAUGE_UPDATE_RATE_HZ);
 
     while (1) {
-        obd_service_get_data(&data);
-
-        if (data.rpm_valid)        dashboard_set_rpm(data.rpm);
-        if (data.speed_valid)       dashboard_set_speed(data.speed);
-        if (data.coolant_valid)     dashboard_set_coolant(data.coolant_temp);
-        if (data.throttle_valid)    dashboard_set_throttle(data.throttle_pos);
-        if (data.fuel_valid)        dashboard_set_fuel(data.fuel_level);
-        if (data.load_valid)        dashboard_set_load(data.engine_load);
-        if (data.intake_valid)      dashboard_set_intake(data.intake_temp);
-        if (data.maf_valid)         dashboard_set_maf(data.maf_rate);
-
+        display_update_gauges();
         vTaskDelayUntil(&last_wake, period);
     }
+}
+
+static SemaphoreHandle_t display_ready_sem;
+
+static void display_init_task(void *arg)
+{
+    (void)arg;
+    display_init();
+    xSemaphoreGive(display_ready_sem);
+    vTaskDelete(NULL);
 }
 
 extern "C" void app_main(void)
@@ -68,25 +139,34 @@ extern "C" void app_main(void)
     /* Load settings from NVS (falls back to defaults if empty) */
     settings_load(&g_settings);
 
-    /* Initialize display first so user sees something even if OBD fails */
-    display_init();
+    /* Display init uses a lot of stack (LVGL + dashboard UI) */
+    display_ready_sem = xSemaphoreCreateBinary();
+    xTaskCreate(display_init_task, "display_init", 16384, NULL, 5, NULL);
+    xSemaphoreTake(display_ready_sem, portMAX_DELAY);
+    vSemaphoreDelete(display_ready_sem);
+    display_ready_sem = NULL;
 
     obd_service_init();
 
     /* Start connectivity (WiFi/BT/USB) */
     esp_err_t conn_err = connectivity_start(g_settings.preferred_connection);
     if (conn_err != ESP_OK) {
-        ESP_LOGW(TAG, "Initial connectivity failed, will retry in background");
+        ESP_LOGW(TAG, "Initial connectivity failed, background reconnect active");
     }
+
+    /* Auto-reconnect when adapter drops or is not yet available */
+    xTaskCreate(connectivity_reconnect_task, "conn_reconnect", 12288, NULL, 5, NULL);
 
     /* Run diagnostic task first (waits for connection) */
     xTaskCreate(obd_diagnostic_task, "obd_diagnostic", 8192, NULL, 6, NULL);
 
-    /* Continuous OBD2 polling */
-    xTaskCreate(obd_polling_task, "obd_poll", 4096, NULL, 5, NULL);
+    /* Fast OBD polling: RPM / speed / throttle */
+    xTaskCreate(obd_polling_task, "obd_fast", 4096, NULL, 6, NULL);
+    xTaskCreate(obd_slow_poll_task, "obd_slow", 4096, NULL, 4, NULL);
+    xTaskCreate(obd_dtc_poll_task, "obd_dtc", 4096, NULL, 3, NULL);
 
     /* UI gauge updates */
-    xTaskCreate(gauge_update_task, "gauge_update", 4096, NULL, 4, NULL);
+    xTaskCreate(gauge_update_task, "gauge_update", 8192, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "Application started successfully");
 }

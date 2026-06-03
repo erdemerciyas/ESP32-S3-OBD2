@@ -1,20 +1,21 @@
 #include "styles.h"
 #include "app.h"
+#include "esp_log.h"
 
 static const char *TAG = "styles";
 
-/* Racing theme colors - matching ui-demo.html */
-lv_color_t color_primary = LV_COLOR_MAKE(0xFF, 0x2D, 0x2D);     /* #ff2d2d - Kırmızı */
-lv_color_t color_secondary = LV_COLOR_MAKE(0xFF, 0x6B, 0x35);  /* #ff6b35 - Turuncu */
-lv_color_t color_accent = LV_COLOR_MAKE(0xFF, 0xCC, 0x00);     /* #ffcc00 - Sarı */
-lv_color_t color_success = LV_COLOR_MAKE(0x00, 0xFF, 0x88);    /* #00ff88 - Yeşil */
-lv_color_t color_warning = LV_COLOR_MAKE(0xFF, 0xAA, 0x00);    /* #ffaa00 - Turuncu-sarı */
-lv_color_t color_danger = LV_COLOR_MAKE(0xFF, 0x2D, 0x2D);     /* #ff2d2d - Kırmızı */
-lv_color_t color_text = LV_COLOR_MAKE(0xFF, 0xFF, 0xFF);       /* #ffffff - Beyaz */
-lv_color_t color_text_dim = LV_COLOR_MAKE(0x66, 0x66, 0x66);  /* #666666 - Gri */
-lv_color_t color_bg_dark = LV_COLOR_MAKE(0x0A, 0x0A, 0x0A);    /* #0a0a0a - Koyu siyah */
-lv_color_t color_card_bg = LV_COLOR_MAKE(0x1A, 0x1A, 0x1A);    /* #1a1a1a - Kart arka plan */
-lv_color_t color_card_border = LV_COLOR_MAKE(0x2A, 0x2A, 0x2A); /* #2a2a2a - Kart kenarlık */
+/* Racing theme colors - matching ui-demo.html (initialized in styles_init) */
+lv_color_t color_primary;
+lv_color_t color_secondary;
+lv_color_t color_accent;
+lv_color_t color_success;
+lv_color_t color_warning;
+lv_color_t color_danger;
+lv_color_t color_text;
+lv_color_t color_text_dim;
+lv_color_t color_bg_dark;
+lv_color_t color_card_bg;
+lv_color_t color_card_border;
 
 /* Style objects */
 static lv_style_t style_bg_dark;
@@ -35,7 +36,19 @@ static lv_style_t style_carbon_bg;
 
 void styles_init(void)
 {
-    ESP_LOGI(TAG, "Initializing racing styles...");
+    ESP_LOGI(TAG, "Initializing workshop-dusk theme...");
+
+    color_primary = APP_COLOR_RGB(0xF0, 0x8A, 0x1C);   /* amber-500 */
+    color_secondary = APP_COLOR_RGB(0xB1, 0x4A, 0x2A); /* rust-500 */
+    color_accent = APP_COLOR_RGB(0xFF, 0xB4, 0x4A);    /* amber-300 */
+    color_success = APP_COLOR_RGB(0x4A, 0xD6, 0xC2);  /* cyan */
+    color_warning = APP_COLOR_RGB(0xFF, 0xB4, 0x4A);
+    color_danger = APP_COLOR_RGB(0xB1, 0x4A, 0x2A);
+    color_text = APP_COLOR_RGB(0xF4, 0xEB, 0xD9);      /* ink-100 */
+    color_text_dim = APP_COLOR_RGB(0x6B, 0x62, 0x53);  /* ink-400 */
+    color_bg_dark = APP_COLOR_RGB(0x05, 0x06, 0x05);   /* lcd-bg */
+    color_card_bg = APP_COLOR_RGB(0x18, 0x16, 0x0F);   /* ink-700 */
+    color_card_border = APP_COLOR_RGB(0x3B, 0x36, 0x2D); /* ink-500 */
 
     /* Background styles */
     lv_style_init(&style_bg_dark);
@@ -45,7 +58,7 @@ void styles_init(void)
     /* Carbon fiber background pattern */
     lv_style_init(&style_carbon_bg);
     lv_style_set_bg_color(&style_carbon_bg, color_bg_dark);
-    lv_style_set_bg_grad_color(&style_carbon_bg, LV_COLOR_MAKE(0x0F, 0x0F, 0x0F));
+    lv_style_set_bg_grad_color(&style_carbon_bg, APP_COLOR_RGB(0x0F, 0x0F, 0x0F));
     lv_style_set_bg_grad_dir(&style_carbon_bg, LV_GRAD_DIR_NONE);
 
     /* Card style */
@@ -56,11 +69,11 @@ void styles_init(void)
     lv_style_set_radius(&style_card, 15);
     lv_style_set_pad_all(&style_card, 15);
     lv_style_set_shadow_width(&style_card, 8);
-    lv_style_set_shadow_color(&style_card, LV_COLOR_MAKE(0x00, 0x00, 0x00));
+    lv_style_set_shadow_color(&style_card, APP_COLOR_RGB(0x00, 0x00, 0x00));
 
     /* Card pressed style */
     lv_style_init(&style_card_pressed);
-    lv_style_set_bg_color(&style_card_pressed, LV_COLOR_MAKE(0x22, 0x22, 0x22));
+    lv_style_set_bg_color(&style_card_pressed, APP_COLOR_RGB(0x22, 0x22, 0x22));
     lv_style_set_border_color(&style_card_pressed, color_primary);
     lv_style_set_border_width(&style_card_pressed, 1);
     lv_style_set_radius(&style_card_pressed, 15);
@@ -75,7 +88,7 @@ void styles_init(void)
 
     /* Secondary button style (outlined) */
     lv_style_init(&style_btn_secondary);
-    lv_style_set_bg_color(&style_btn_secondary, LV_COLOR_MAKE(0x00, 0x00, 0x00));
+    lv_style_set_bg_color(&style_btn_secondary, APP_COLOR_RGB(0x00, 0x00, 0x00));
     lv_style_set_border_color(&style_btn_secondary, color_primary);
     lv_style_set_border_width(&style_btn_secondary, 1);
     lv_style_set_text_color(&style_btn_secondary, color_primary);
@@ -120,7 +133,7 @@ void styles_init(void)
     lv_style_set_bg_color(&style_slider, color_card_border);
     lv_style_set_radius(&style_slider, 2);
 
-    ESP_LOGI(TAG, "Racing styles initialized");
+    ESP_LOGI(TAG, "Theme styles initialized");
 }
 
 lv_style_t *style_get_bg_dark(void) { return &style_bg_dark; }

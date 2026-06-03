@@ -1,5 +1,12 @@
 #pragma once
 
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define APP_NAME "ESP32-S3 OBD2 Monitor"
 #define APP_VERSION "1.0.0"
 
@@ -11,12 +18,19 @@
 #define UART_OBD2_RX_PIN 44
 #define UART_OBD2_BAUD 38400
 
-#define OBD2_POLL_INTERVAL_MS 200
+#define OBD2_FAST_POLL_MS 40
+#define OBD2_SLOW_POLL_MS 2000
+#define OBD2_DTC_POLL_MS 30000
 
-#define GAUGE_UPDATE_RATE_HZ 10
+#define GAUGE_UPDATE_RATE_HZ 25
+#define GAUGE_SMOOTH_DIVISOR 4
 
 #define WIFI_CONNECT_TIMEOUT_MS 10000
 #define BT_CONNECT_TIMEOUT_MS 15000
+
+#define OBD2_DEFAULT_WIFI_PASSWORD "12345678"
+#define OBD2_DEFAULT_ADAPTER_IP "192.168.0.10"
+#define OBD2_DEFAULT_ADAPTER_PORT 35000
 
 typedef enum {
     CONN_TYPE_NONE = 0,
@@ -41,9 +55,15 @@ typedef struct {
     bool haptic_enabled;
     bool sound_enabled;
     uint8_t brightness;
+    bool wifi_manual_mode;
+    uint8_t wifi_authmode;
 } app_settings_t;
 
 extern app_settings_t g_settings;
 
 void app_settings_init(void);
 void app_settings_save(void);
+
+#ifdef __cplusplus
+}
+#endif

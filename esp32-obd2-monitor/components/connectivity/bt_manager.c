@@ -1,5 +1,10 @@
 #include "bt_manager.h"
 #include "esp_log.h"
+
+static const char *TAG = "bt";
+
+#if CONFIG_BT_CLASSIC_ENABLED && CONFIG_BT_SPP_ENABLED
+
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "esp_bt_device.h"
@@ -7,30 +12,23 @@
 #include "esp_spp_api.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include <string.h>
-#include <stdlib.h>
+#include <inttypes.h>
 
 #include "app.h"
 
 #define BT_DEVICE_NAME "ESP32-S3_OBD2"
 #define SPP_RX_BUF_SIZE 256
-#define SPP_TX_BUF_SIZE 256
-#define BT_CONNECT_WAIT_MS (BT_CONNECT_TIMEOUT_MS)
-
-static const char *TAG = "bt";
 
 static bool spp_connected = false;
 static uint32_t spp_handle = 0;
 static bool bt_initialized = false;
 
-/* SPP receive buffer - holds the most recent response until bt_send_cmd copies it out */
 static uint8_t spp_rx_buf[SPP_RX_BUF_SIZE];
 static size_t spp_rx_len = 0;
 static SemaphoreHandle_t spp_rx_mutex = NULL;
 static SemaphoreHandle_t spp_tx_done_sem = NULL;
-static volatile bool spp_write_done = false;
 
 static void spp_event_handler(uint8_t event, void *param);
 static void gap_event_handler(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param);
@@ -44,7 +42,7 @@ static void spp_event_handler(uint8_t event, void *param)
     case ESP_SPP_INIT_EVT:
         if (p->init.status == ESP_SPP_SUCCESS) {
             ESP_LOGI(TAG, "SPP initialized");
-            esp_spp_start_srv(ESP_SPP_SEC_NONE, ESP_SPP_ROLE_SLAVE, 0, "SPP_SERVICE", false, NULL);
+            esp_spp_start_srv(ESP_SPP_SEC_NONE, ESP_SPP_ROLE_SLAVE, 0, "SPP_SERVICE");
         } else {
             ESP_LOGE(TAG, "SPP init failed: %d", p->init.status);
         }
@@ -74,28 +72,18 @@ static void spp_event_handler(uint8_t event, void *param)
         ESP_LOGI(TAG, "SPP connection closed");
         break;
 
-    case ESP_SPP_DATA_IND_EVT: {
-        if (p->data_ind.len == 0) {
-            break;
-        }
-        if (xSemaphoreTake(spp_rx_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    case ESP_SPP_DATA_IND_EVT:
+        if (p->data_ind.len > 0 && xSemaphoreTake(spp_rx_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
             size_t to_copy = (p->data_ind.len < SPP_RX_BUF_SIZE) ? p->data_ind.len : SPP_RX_BUF_SIZE;
             memcpy(spp_rx_buf, p->data_ind.data, to_copy);
             spp_rx_len = to_copy;
             xSemaphoreGive(spp_rx_mutex);
-            ESP_LOGD(TAG, "SPP RX %u bytes", (unsigned)to_copy);
         }
         break;
-    }
 
     case ESP_SPP_WRITE_EVT:
-        if (p->write.status == ESP_SPP_SUCCESS) {
-            spp_write_done = true;
-            if (spp_tx_done_sem) {
-                xSemaphoreGive(spp_tx_done_sem);
-            }
-        } else {
-            ESP_LOGE(TAG, "SPP write failed: %d", p->write.status);
+        if (p->write.status == ESP_SPP_SUCCESS && spp_tx_done_sem) {
+            xSemaphoreGive(spp_tx_done_sem);
         }
         break;
 
@@ -106,68 +94,40 @@ static void spp_event_handler(uint8_t event, void *param)
 
 static void gap_event_handler(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 {
-    switch (event) {
-    case ESP_BT_GAP_AUTH_CMPL_EVT:
+    if (event == ESP_BT_GAP_AUTH_CMPL_EVT) {
         if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
-            ESP_LOGI(TAG, "GAP auth success, dev [%s]", param->auth_cmpl.device_name);
+            ESP_LOGI(TAG, "GAP auth success");
         } else {
             ESP_LOGE(TAG, "GAP auth failed: %d", param->auth_cmpl.stat);
         }
-        break;
-
-    default:
-        break;
     }
 }
 
 bool bt_connect(void)
 {
-    ESP_LOGI(TAG, "Initializing Bluetooth SPP...");
-
     if (!bt_initialized) {
         spp_rx_mutex = xSemaphoreCreateMutex();
         spp_tx_done_sem = xSemaphoreCreateBinary();
         if (!spp_rx_mutex || !spp_tx_done_sem) {
-            ESP_LOGE(TAG, "Failed to create BT semaphores");
             return false;
         }
 
         esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-        esp_err_t err = esp_bt_controller_init(&bt_cfg);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "bt_controller_init failed: %s", esp_err_to_name(err));
-            return false;
-        }
-
-        err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "bt_controller_enable failed: %s", esp_err_to_name(err));
-            return false;
-        }
-
-        err = esp_bluedroid_init();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "bluedroid_init failed: %s", esp_err_to_name(err));
-            return false;
-        }
-
-        err = esp_bluedroid_enable();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "bluedroid_enable failed: %s", esp_err_to_name(err));
+        if (esp_bt_controller_init(&bt_cfg) != ESP_OK ||
+            esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT) != ESP_OK ||
+            esp_bluedroid_init() != ESP_OK ||
+            esp_bluedroid_enable() != ESP_OK) {
+            ESP_LOGE(TAG, "Bluetooth init failed");
             return false;
         }
 
         esp_bt_gap_register_callback(gap_event_handler);
         esp_spp_register_callback(spp_event_handler);
         esp_spp_init(ESP_SPP_MODE_CB);
-
         bt_initialized = true;
     }
 
-    /* In SLAVE/auto-accept mode the connection happens when the ELM327 adapter
-     * pairs with us. The SPP server is already listening from spp_event_handler
-     * (ESP_SPP_START_EVT). For now, return true and let the event set the state. */
-    ESP_LOGI(TAG, "Bluetooth SPP ready, waiting for client to connect...");
+    ESP_LOGI(TAG, "Bluetooth SPP ready");
     return true;
 }
 
@@ -188,47 +148,29 @@ bool bt_is_connected(void)
 
 esp_err_t bt_send_cmd(const uint8_t *cmd, size_t len, uint8_t *resp, size_t *resp_len)
 {
-    if (!bt_initialized) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (cmd == NULL || resp == NULL || resp_len == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (!spp_connected) {
+    if (!bt_initialized || !spp_connected || !cmd || !resp || !resp_len) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Reset receive buffer and write completion flag before sending */
-    if (xSemaphoreTake(spp_rx_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        spp_rx_len = 0;
-        xSemaphoreGive(spp_rx_mutex);
-    } else {
+    if (xSemaphoreTake(spp_rx_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
     }
+    spp_rx_len = 0;
+    xSemaphoreGive(spp_rx_mutex);
 
-    /* Drain any leftover completion from a previous write */
     if (spp_tx_done_sem) {
         xSemaphoreTake(spp_tx_done_sem, 0);
     }
-    spp_write_done = false;
 
-    /* Send the command */
-    int32_t wrote = esp_spp_write(spp_handle, (int)len, cmd);
-    if (wrote != (int32_t)len) {
-        ESP_LOGE(TAG, "SPP write failed: %d", wrote);
+    if (esp_spp_write(spp_handle, (int)len, cmd) != (int32_t)len) {
         return ESP_FAIL;
     }
 
-    /* Wait until the SPP stack confirms the write completed */
     if (spp_tx_done_sem) {
-        if (xSemaphoreTake(spp_tx_done_sem, pdMS_TO_TICKS(500)) != pdTRUE) {
-            ESP_LOGW(TAG, "SPP write done timeout");
-        }
+        xSemaphoreTake(spp_tx_done_sem, pdMS_TO_TICKS(500));
     }
 
-    /* Wait briefly for the ELM327 adapter to respond over SPP */
-    const int response_timeout_ms = 500;
-    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(response_timeout_ms);
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(500);
     size_t copied_len = 0;
 
     while (xTaskGetTickCount() < deadline) {
@@ -238,12 +180,8 @@ esp_err_t bt_send_cmd(const uint8_t *cmd, size_t len, uint8_t *resp, size_t *res
                 if (to_copy > *resp_len) {
                     to_copy = *resp_len;
                 }
-                /* Bug #1 fix: copy from the SPP receive buffer into the
-                 * caller-provided `resp` buffer (not back into spp_rx_buf). */
                 memcpy(resp, spp_rx_buf, to_copy);
                 copied_len = to_copy;
-
-                /* Consume what we just handed out */
                 spp_rx_len = 0;
             }
             xSemaphoreGive(spp_rx_mutex);
@@ -255,8 +193,31 @@ esp_err_t bt_send_cmd(const uint8_t *cmd, size_t len, uint8_t *resp, size_t *res
     }
 
     *resp_len = copied_len;
-    if (copied_len == 0) {
-        return ESP_ERR_TIMEOUT;
-    }
-    return ESP_OK;
+    return copied_len > 0 ? ESP_OK : ESP_ERR_TIMEOUT;
 }
+
+#else /* ESP32-S3: no Classic BT / SPP */
+
+bool bt_connect(void)
+{
+    ESP_LOGW(TAG, "Classic Bluetooth SPP is not supported on this chip (use WiFi or USB)");
+    return false;
+}
+
+void bt_disconnect(void) {}
+
+bool bt_is_connected(void)
+{
+    return false;
+}
+
+esp_err_t bt_send_cmd(const uint8_t *cmd, size_t len, uint8_t *resp, size_t *resp_len)
+{
+    (void)cmd;
+    (void)len;
+    (void)resp;
+    (void)resp_len;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+#endif

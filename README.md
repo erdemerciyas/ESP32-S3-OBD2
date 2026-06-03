@@ -2,7 +2,7 @@
 
 # ESP32-S3 OBD2 Monitor
 
-**Real-time vehicle telemetry on a 480×480 round RGB LCD — WiFi, Bluetooth SPP and USB-UART OBD-II connectivity in a single firmware.**
+**Real-time vehicle telemetry on a 480×480 round RGB LCD — ELM327 over WiFi or USB-UART, with touch UI and Waveshare board bring-up.**
 
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.2%20%7C%20v5.3-E7352C?logo=espressif&logoColor=white)](https://github.com/espressif/esp-idf)
 [![MCU](https://img.shields.io/badge/ESP32--S3-000000?logo=espressif&logoColor=white)](https://www.espressif.com/en/products/socs/esp32-s3)
@@ -25,11 +25,11 @@ gauge suite designed to be readable in a night-driving cockpit.
   level, engine load, MAF rate, intake MAP and fuel pressure polled at 5 Hz.
 - **DTC diagnostics** — ELM327 handshake, automatic protocol detection and reading of stored
   diagnostic trouble codes with on-screen warnings.
-- **Three OBD-II transports** — WiFi (ELM327 AP, auto-discovery), Bluetooth Classic SPP and
-  USB-UART with a unified `connectivity` abstraction. Auto-reconnect falls back
-  USB → WiFi → Bluetooth.
-- **Round 480×480 RGB LCD** — ST7701 panel driven from a custom LVGL v9 port with PSRAM-backed
-  double-buffered framebuffer, 10 Hz UI refresh.
+- **Two OBD-II transports (ESP32-S3)** — WiFi (ELM327 AP scan, built-in SSID/IP profiles,
+  on-screen WiFi settings) and USB-UART (GPIO43/44) behind a unified `connectivity` layer.
+  Classic Bluetooth SPP is not available on ESP32-S3; use a WiFi or wired ELM327 adapter.
+- **Round 480×480 RGB LCD** — ST7701 + TCA9554 IO expander, CST820 touch, boot splash,
+  custom LVGL v9 port with OCT PSRAM framebuffer, 10 Hz gauge refresh.
 - **Persistent NVS settings** — Wi-Fi credentials, preferred transport, theme and brightness
   survive power cycles.
 - **Five screens** — Main dashboard, menu, settings, connection and about — all driven from
@@ -51,18 +51,22 @@ ESP32-S3-OBD2/
     │   ├── app/                  # shared types (app_settings_t, transports)
     │   ├── display/              # LVGL port, styles, gauge & dashboard UI
     │   ├── obd/                  # PID table, OBD-II service, ELM327 parser
-    │   ├── connectivity/         # WiFi / Bluetooth SPP / USB-UART managers
+    │   ├── connectivity/         # WiFi (ELM327 profiles) / USB-UART managers
     │   └── system/               # NVS-backed settings store
     ├── assets/fonts/             # Montserrat LVGL fonts
-    ├── sdkconfig.defaults        # ESP-IDF defaults (PSRAM, BLE, SPP, ST7701…)
+    ├── partitions.csv            # 2 MB factory app partition
+    ├── main/idf_component.yml    # LVGL 9, ST7701, esp_lcd_touch (Component Manager)
+    ├── sdkconfig.defaults        # OCT PSRAM, fonts, ST7701, stack sizes
     ├── build_flash.sh            # Linux / macOS build helper
     ├── build_flash.ps1           # Windows PowerShell build helper
     ├── ui-demo.html              # static UI mockup (open in a browser)
-    └── README.md                 # detailed project documentation (Turkish)
+    ├── UPLOAD.md                 # flash / bring-up / troubleshooting (Turkish)
+    └── README.md                 # project documentation (Turkish)
 ```
 
 The full Turkish reference — pin map, Kconfig options, FreeRTOS task layout, PID table and
 troubleshooting matrix — lives in [`esp32-obd2-monitor/README.md`](esp32-obd2-monitor/README.md).
+Flash/build session notes and Waveshare bring-up history: [`esp32-obd2-monitor/UPLOAD.md`](esp32-obd2-monitor/UPLOAD.md).
 
 ---
 
@@ -72,8 +76,9 @@ troubleshooting matrix — lives in [`esp32-obd2-monitor/README.md`](esp32-obd2-
 |------------------|-------------------------------------------------------------|
 | **Dev kit**      | Waveshare ESP32-S3-Touch-LCD-2.1                            |
 | **Display**      | 480×480 round RGB LCD, ST7701 controller                    |
-| **Touch**        | CST820 (I²C: SDA=15, SCL=7, INT=16, RST=EXIO2)              |
-| **OBD-II link**  | ELM327 — WiFi AP, Bluetooth Classic SPP, or USB-UART        |
+| **Touch**        | CST820 (I²C `0x15`: SDA=15, SCL=7, INT=16, RST=EXIO2)       |
+| **IO expander**  | TCA9554 (`0x20`) — LCD RST/CS, touch RST, buzzer (EXIO)     |
+| **OBD-II link**  | ELM327 — WiFi AP (auto profiles) or USB-UART                |
 | **Power**        | USB-C 5 V or battery pack                                   |
 
 ### Pin map (Waveshare ESP32-S3-Touch-LCD-2.1)
@@ -153,8 +158,8 @@ it's a static, fully styled mock-up of the gauge cluster.
                            │   │   │
                   ┌────────┘   │   └────────┐
                   ▼            ▼            ▼
-            wifi_manager  bt_manager   usb_manager
-            (ELM327 AP)   (SPP)        (UART CDC)
+            wifi_manager              usb_manager
+            (ELM327 AP + profiles)    (UART 43/44)
 ```
 
 A unified `connectivity` layer hides the active transport behind

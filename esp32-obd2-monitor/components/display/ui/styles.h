@@ -2,6 +2,9 @@
 
 #include "lvgl.h"
 
+/* LVGL v9: LV_COLOR_MAKE is a brace initializer; use lv_color_hex for variables */
+#define APP_COLOR_RGB(r, g, b) lv_color_hex((uint32_t)(((r) << 16) | ((g) << 8) | (b)))
+
 /* Theme color types */
 typedef enum {
     THEME_PRIMARY = 0,
@@ -14,18 +17,18 @@ typedef enum {
     THEME_DIM
 } theme_color_type_t;
 
-/* Racing theme colors - matching ui-demo.html */
-extern lv_color_t color_primary;      /* #ff2d2d - Kırmızı */
-extern lv_color_t color_secondary;    /* #ff6b35 - Turuncu */
-extern lv_color_t color_accent;       /* #ffcc00 - Sarı */
-extern lv_color_t color_success;      /* #00ff88 - Yeşil */
-extern lv_color_t color_warning;      /* #ffaa00 - Turuncu-sarı */
-extern lv_color_t color_danger;       /* #ff2d2d - Kırmızı */
-extern lv_color_t color_text;         /* #ffffff - Beyaz */
-extern lv_color_t color_text_dim;     /* #666666 - Gri */
-extern lv_color_t color_bg_dark;      /* #0a0a0a - Koyu siyah */
-extern lv_color_t color_card_bg;      /* #1a1a1a - Kart arka plan */
-extern lv_color_t color_card_border;  /* #2a2a2a - Kart kenarlık */
+/* Workshop-at-dusk theme — aligned with ui-demo.html */
+extern lv_color_t color_primary;
+extern lv_color_t color_secondary;
+extern lv_color_t color_accent;
+extern lv_color_t color_success;
+extern lv_color_t color_warning;
+extern lv_color_t color_danger;
+extern lv_color_t color_text;
+extern lv_color_t color_text_dim;
+extern lv_color_t color_bg_dark;
+extern lv_color_t color_card_bg;
+extern lv_color_t color_card_border;
 
 void styles_init(void);
 

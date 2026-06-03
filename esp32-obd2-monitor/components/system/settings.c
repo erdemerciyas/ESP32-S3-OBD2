@@ -8,6 +8,31 @@
 static const char *TAG = "settings";
 static const char *NVS_NAMESPACE = "obd2_settings";
 
+static void settings_apply_defaults(app_settings_t *settings)
+{
+    if (settings->preferred_connection == CONN_TYPE_NONE) {
+        settings->preferred_connection = CONN_TYPE_WIFI;
+    }
+
+    if (settings->obd_adapter_port == 0) {
+        settings->obd_adapter_port = OBD2_DEFAULT_ADAPTER_PORT;
+    }
+
+    if (settings->obd_adapter_ip[0] == '\0') {
+        strncpy(settings->obd_adapter_ip, OBD2_DEFAULT_ADAPTER_IP,
+                sizeof(settings->obd_adapter_ip) - 1);
+    }
+
+    if (settings->wifi_password[0] == '\0') {
+        strncpy(settings->wifi_password, OBD2_DEFAULT_WIFI_PASSWORD,
+                sizeof(settings->wifi_password) - 1);
+    }
+
+    if (settings->brightness == 0) {
+        settings->brightness = 70;
+    }
+}
+
 esp_err_t settings_load(app_settings_t *settings)
 {
     if (settings == NULL) {
@@ -20,6 +45,7 @@ esp_err_t settings_load(app_settings_t *settings)
     err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "NVS open failed: %s, using defaults", esp_err_to_name(err));
+        settings_apply_defaults(settings);
         return err;
     }
 
@@ -74,9 +100,27 @@ esp_err_t settings_load(app_settings_t *settings)
         ESP_LOGW(TAG, "Failed to read bright: %s", esp_err_to_name(read_err));
     }
 
+    uint8_t manual = 0;
+    read_err = nvs_get_u8(nvs, "wifi_manual", &manual);
+    if (read_err == ESP_OK) {
+        settings->wifi_manual_mode = (manual != 0);
+    }
+
+    read_err = nvs_get_u8(nvs, "wifi_auth", &settings->wifi_authmode);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read wifi_auth: %s", esp_err_to_name(read_err));
+    }
+
     nvs_close(nvs);
 
-    ESP_LOGI(TAG, "Settings loaded from NVS");
+    settings_apply_defaults(settings);
+
+    ESP_LOGI(TAG, "Settings loaded (conn=%d, ip=%s:%u, ssid=%s, manual=%d)",
+             settings->preferred_connection,
+             settings->obd_adapter_ip,
+             settings->obd_adapter_port,
+             settings->wifi_ssid[0] ? settings->wifi_ssid : "(auto-scan)",
+             settings->wifi_manual_mode);
     return ESP_OK;
 }
 
@@ -104,6 +148,8 @@ esp_err_t settings_save(const app_settings_t *settings)
     nvs_set_u8(nvs, "haptic", settings->haptic_enabled ? 1 : 0);
     nvs_set_u8(nvs, "sound", settings->sound_enabled ? 1 : 0);
     nvs_set_u8(nvs, "bright", settings->brightness);
+    nvs_set_u8(nvs, "wifi_manual", settings->wifi_manual_mode ? 1 : 0);
+    nvs_set_u8(nvs, "wifi_auth", settings->wifi_authmode);
 
     err = nvs_commit(nvs);
     if (err != ESP_OK) {
