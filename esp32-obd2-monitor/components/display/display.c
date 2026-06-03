@@ -4,6 +4,8 @@
 #include "splash.h"
 #include "styles.h"
 #include "app.h"
+#include "haptic.h"
+#include "telemetry.h"
 #include "esp_log.h"
 
 extern app_settings_t g_settings;
@@ -31,17 +33,21 @@ void display_init(void)
     lvgl_init();
     lvgl_set_backlight(g_settings.brightness);
 
+    telemetry_init();
+    haptic_init();
+
+    lvgl_start();
+
     if (lvgl_lock(-1)) {
-        styles_init();
+        styles_init((uint8_t)g_settings.theme);
         dashboard_init();
         splash_run_boot_animation(dashboard_get_main_screen());
         dashboard_finish_boot_screen();
+        lv_obj_invalidate(lv_scr_act());
         lv_refr_now(NULL);
         live_updates_enabled = true;
         lvgl_unlock();
     }
-
-    lvgl_start();
 
     ESP_LOGI(TAG, "Display initialized");
 }

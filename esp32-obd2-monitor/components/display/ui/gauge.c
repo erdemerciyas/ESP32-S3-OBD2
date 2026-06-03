@@ -1,7 +1,9 @@
 #include "gauge.h"
 #include "styles.h"
+#include "ui_fonts.h"
 #include "board_config.h"
 #include "app.h"
+#include "obd_service.h"
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
@@ -40,6 +42,10 @@ static gauge_type_t current_fullscreen_gauge = GAUGE_RPM;
 static gauge_type_t pending_gauge = GAUGE_RPM;
 static int16_t fullscreen_gauge_values[GAUGE_MAX] = {0};
 static int16_t gauge_target_values[GAUGE_MAX] = {0};
+static bool gauge_value_valid[GAUGE_MAX] = {false};
+static bool gauge_nav_available[GAUGE_MAX] = {true};
+static lv_obj_t *indicator_dots[GAUGE_MAX];
+static lv_obj_t *indicator_index_label;
 static char value_text_buf[16];
 static bool gauge_transition_busy;
 static int16_t last_drawn_value = -1;
@@ -47,7 +53,7 @@ static uint16_t last_drawn_arc = 0xFFFF;
 static lv_color_t last_drawn_arc_color;
 static lv_color_t last_drawn_value_color;
 
-#define GAUGE_ARC_MARGIN         28
+#define GAUGE_ARC_MARGIN         UI_ROUND_INSET
 #define GAUGE_ARC_SIZE           (UI_SCREEN_W - (GAUGE_ARC_MARGIN * 2))
 #define GAUGE_ARC_STROKE_TRACK   12
 #define GAUGE_ARC_STROKE_VALUE   14
@@ -126,7 +132,21 @@ static void apply_gauge_content(gauge_type_t type)
     lv_obj_set_style_text_color(fullscreen_label_name, lv_color_hex(config->color_hex), 0);
     lv_label_set_text(fullscreen_label_unit, config->unit);
 
-    snprintf(value_text_buf, sizeof(value_text_buf), "%d", value);
+    if (!gauge_value_valid[type]) {
+        lv_label_set_text(fullscreen_label_value, "--");
+        lv_obj_set_style_text_color(fullscreen_label_value, color_text_dim, 0);
+        lv_obj_set_style_arc_color(fullscreen_arc_indicator, color_card_border, LV_PART_INDICATOR);
+        lv_arc_set_value(fullscreen_arc_indicator, 0);
+        return;
+    }
+
+    if (type == GAUGE_VOLTAGE) {
+        snprintf(value_text_buf, sizeof(value_text_buf), "%.1f", value / 10.0f);
+    } else if (type == GAUGE_FUEL_CONSUMPTION) {
+        snprintf(value_text_buf, sizeof(value_text_buf), "%.1f", value / 10.0f);
+    } else {
+        snprintf(value_text_buf, sizeof(value_text_buf), "%d", value);
+    }
     lv_label_set_text(fullscreen_label_value, value_text_buf);
     lv_obj_set_style_text_color(fullscreen_label_value, calc_value_color(type), 0);
 
@@ -265,7 +285,7 @@ void gauge_create_fullscreen(lv_obj_t *parent, gauge_type_t type)
     lv_obj_set_width(fullscreen_label_unit, GAUGE_INFO_W);
     lv_obj_set_style_text_align(fullscreen_label_unit, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(fullscreen_label_unit, LV_ALIGN_BOTTOM_MID, 0, -12);
-    lv_obj_set_style_text_font(fullscreen_label_unit, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(fullscreen_label_unit, UI_FONT_XL, 0);
     lv_obj_set_style_text_color(fullscreen_label_unit, color_text_dim, 0);
     lv_obj_set_style_text_letter_space(fullscreen_label_unit, 2, 0);
 
@@ -292,15 +312,6 @@ bool gauge_is_transitioning(void)
     return gauge_transition_busy;
 }
 
-static int16_t value_change_threshold(gauge_type_t type)
-{
-    const int16_t max_v = gauge_configs[type].max_value;
-    if (max_v <= 20) {
-        return 1;
-    }
-    return max_v / 40;
-}
-
 static void render_gauge_value(gauge_type_t type, int16_t value)
 {
     if (type != current_fullscreen_gauge || gauge_transition_busy) {
@@ -313,7 +324,27 @@ static void render_gauge_value(gauge_type_t type, int16_t value)
         last_drawn_arc = arc_value;
     }
 
-    snprintf(value_text_buf, sizeof(value_text_buf), "%d", value);
+    if (!gauge_value_valid[type]) {
+        if (strcmp(lv_label_get_text(fullscreen_label_value), "--") != 0) {
+            lv_label_set_text(fullscreen_label_value, "--");
+        }
+        lv_obj_set_style_text_color(fullscreen_label_value, color_text_dim, 0);
+        if (last_drawn_arc != 0) {
+            lv_arc_set_value(fullscreen_arc_indicator, 0);
+            lv_obj_set_style_arc_color(fullscreen_arc_indicator, color_card_border, LV_PART_INDICATOR);
+            last_drawn_arc = 0;
+        }
+        last_drawn_value = value;
+        return;
+    }
+
+    if (type == GAUGE_VOLTAGE) {
+        snprintf(value_text_buf, sizeof(value_text_buf), "%.1f", value / 10.0f);
+    } else if (type == GAUGE_FUEL_CONSUMPTION) {
+        snprintf(value_text_buf, sizeof(value_text_buf), "%.1f", value / 10.0f);
+    } else {
+        snprintf(value_text_buf, sizeof(value_text_buf), "%d", value);
+    }
     if (strcmp(lv_label_get_text(fullscreen_label_value), value_text_buf) != 0) {
         lv_label_set_text(fullscreen_label_value, value_text_buf);
     }
@@ -361,6 +392,13 @@ static int16_t smooth_step(gauge_type_t type, int16_t current, int16_t target)
     return current + step;
 }
 
+void gauge_set_value_valid(gauge_type_t type, bool valid)
+{
+    if (type < GAUGE_MAX) {
+        gauge_value_valid[type] = valid;
+    }
+}
+
 void gauge_update_fullscreen(gauge_type_t type, int16_t value)
 {
     if (type >= GAUGE_MAX) {
@@ -387,9 +425,62 @@ void gauge_tick(void)
                        fullscreen_gauge_values[current_fullscreen_gauge]);
 }
 
+void gauge_sync_availability(void)
+{
+    bool any = false;
+    for (int i = 0; i < GAUGE_MAX; i++) {
+        gauge_nav_available[i] = obd_service_is_gauge_available((uint8_t)i);
+        if (gauge_nav_available[i]) {
+            any = true;
+        }
+    }
+    if (!any) {
+        gauge_nav_available[GAUGE_RPM] = true;
+    }
+}
+
+bool gauge_is_available(gauge_type_t type)
+{
+    return type < GAUGE_MAX && gauge_nav_available[type];
+}
+
+static gauge_type_t step_available(gauge_type_t from, int direction)
+{
+    for (int step = 1; step <= GAUGE_MAX; step++) {
+        const int next = (int)from + direction * step;
+        const gauge_type_t wrapped =
+            (gauge_type_t)((next + GAUGE_MAX) % GAUGE_MAX);
+        if (gauge_nav_available[wrapped]) {
+            return wrapped;
+        }
+    }
+    return from;
+}
+
+gauge_type_t gauge_next_available(gauge_type_t from)
+{
+    return step_available(from, 1);
+}
+
+gauge_type_t gauge_prev_available(gauge_type_t from)
+{
+    return step_available(from, -1);
+}
+
+gauge_type_t gauge_first_available(void)
+{
+    for (int i = 0; i < GAUGE_MAX; i++) {
+        if (gauge_nav_available[i]) {
+            return (gauge_type_t)i;
+        }
+    }
+    return GAUGE_RPM;
+}
+
 void gauge_set_active(gauge_type_t type)
 {
-    if (type >= GAUGE_MAX || type == current_fullscreen_gauge) {
+    if (type >= GAUGE_MAX || !gauge_nav_available[type] ||
+        type == current_fullscreen_gauge) {
         return;
     }
 
@@ -401,9 +492,93 @@ void gauge_set_active(gauge_type_t type)
     last_drawn_value = -1;
     last_drawn_arc = 0xFFFF;
     start_soft_transition(type);
+    gauge_update_indicator_row(type);
 }
 
 gauge_type_t gauge_get_active(void)
 {
     return current_fullscreen_gauge;
+}
+
+void gauge_create_indicator_row(lv_obj_t *parent)
+{
+    const int row_y = UI_SCREEN_H - 24;
+
+    for (int i = 0; i < GAUGE_MAX; i++) {
+        indicator_dots[i] = lv_obj_create(parent);
+        lv_obj_set_size(indicator_dots[i], 8, 8);
+        lv_obj_set_pos(indicator_dots[i], 0, row_y);
+        lv_obj_set_style_radius(indicator_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(indicator_dots[i], color_card_border, 0);
+        lv_obj_set_style_bg_opa(indicator_dots[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(indicator_dots[i], 0, 0);
+        lv_obj_remove_flag(indicator_dots[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(indicator_dots[i], LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    indicator_index_label = lv_label_create(parent);
+    lv_obj_align(indicator_index_label, LV_ALIGN_TOP_MID, 0, UI_ROUND_INSET / 2);
+    lv_obj_set_style_text_font(indicator_index_label, UI_FONT_SM, 0);
+    lv_obj_set_style_text_color(indicator_index_label, color_text_dim, 0);
+    gauge_update_indicator_row(current_fullscreen_gauge);
+}
+
+void gauge_raise_indicator_layers(void)
+{
+    for (int i = 0; i < GAUGE_MAX; i++) {
+        if (indicator_dots[i] != NULL) {
+            lv_obj_move_foreground(indicator_dots[i]);
+        }
+    }
+    if (indicator_index_label != NULL) {
+        lv_obj_move_foreground(indicator_index_label);
+    }
+}
+
+void gauge_update_indicator_row(gauge_type_t active)
+{
+    unsigned visible = 0;
+    int active_slot = -1;
+
+    for (int i = 0; i < GAUGE_MAX; i++) {
+        if (!gauge_nav_available[i]) {
+            if (indicator_dots[i] != NULL) {
+                lv_obj_add_flag(indicator_dots[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            continue;
+        }
+        if (indicator_dots[i] != NULL) {
+            lv_obj_remove_flag(indicator_dots[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (i == (int)active) {
+            active_slot = (int)visible;
+        }
+        visible++;
+    }
+
+    const int row_w = (int)visible * 8 + ((int)visible > 0 ? ((int)visible - 1) * 6 : 0);
+    const int row_x = (UI_SCREEN_W - row_w) / 2;
+    const int row_y = UI_SCREEN_H - 24;
+    unsigned slot = 0;
+
+    for (int i = 0; i < GAUGE_MAX; i++) {
+        if (!gauge_nav_available[i] || indicator_dots[i] == NULL) {
+            continue;
+        }
+        lv_obj_set_pos(indicator_dots[i], row_x + (int)slot * (8 + 6), row_y);
+        lv_obj_set_style_bg_color(indicator_dots[i],
+                                  (i == (int)active) ? color_primary : color_card_border, 0);
+        slot++;
+    }
+
+    char buf[24];
+    if (visible == 0) {
+        snprintf(buf, sizeof(buf), "--");
+    } else {
+        snprintf(buf, sizeof(buf), "%d/%u",
+                 active_slot >= 0 ? active_slot + 1 : 1, visible);
+    }
+    if (indicator_index_label != NULL) {
+        lv_label_set_text(indicator_index_label, buf);
+    }
 }

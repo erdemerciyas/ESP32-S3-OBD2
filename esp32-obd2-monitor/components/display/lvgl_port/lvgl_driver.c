@@ -28,6 +28,7 @@ static const char *TAG = "lvgl_driver";
 #define LEDC_BL_CHANNEL  LEDC_CHANNEL_0
 
 static lv_display_t *display_handle = NULL;
+static esp_io_expander_handle_t s_board_expander = NULL;
 static esp_lcd_panel_handle_t panel_handle = NULL;
 static esp_lcd_touch_handle_t touch_panel = NULL;
 static lv_indev_t *touch_handle = NULL;
@@ -218,6 +219,11 @@ static void lvgl_handler_task(void *arg)
     }
 }
 
+esp_io_expander_handle_t board_expander_get(void)
+{
+    return s_board_expander;
+}
+
 void lvgl_init(void)
 {
     ESP_LOGI(TAG, "Initializing LVGL for Waveshare ESP32-S3-Touch-LCD-2.1...");
@@ -230,6 +236,7 @@ void lvgl_init(void)
 
     esp_io_expander_handle_t expander = NULL;
     ESP_ERROR_CHECK(tca9554_new_i2c_expander(BOARD_I2C_PORT, &expander));
+    s_board_expander = expander;
     ESP_ERROR_CHECK(init_board_expander(expander));
 
     ESP_LOGI(TAG, "Install 3-wire SPI panel IO");

@@ -1,4 +1,5 @@
 #include "styles.h"
+#include "ui_fonts.h"
 #include "app.h"
 #include "esp_log.h"
 
@@ -34,21 +35,35 @@ static lv_style_t style_slider;
 /* Carbon fiber pattern - 4x4 grid */
 static lv_style_t style_carbon_bg;
 
-void styles_init(void)
+void styles_init(uint8_t theme_mode)
 {
-    ESP_LOGI(TAG, "Initializing workshop-dusk theme...");
+    ESP_LOGI(TAG, "Initializing theme mode %u", theme_mode);
 
-    color_primary = APP_COLOR_RGB(0xF0, 0x8A, 0x1C);   /* amber-500 */
-    color_secondary = APP_COLOR_RGB(0xB1, 0x4A, 0x2A); /* rust-500 */
-    color_accent = APP_COLOR_RGB(0xFF, 0xB4, 0x4A);    /* amber-300 */
-    color_success = APP_COLOR_RGB(0x4A, 0xD6, 0xC2);  /* cyan */
-    color_warning = APP_COLOR_RGB(0xFF, 0xB4, 0x4A);
-    color_danger = APP_COLOR_RGB(0xB1, 0x4A, 0x2A);
-    color_text = APP_COLOR_RGB(0xF4, 0xEB, 0xD9);      /* ink-100 */
-    color_text_dim = APP_COLOR_RGB(0x6B, 0x62, 0x53);  /* ink-400 */
-    color_bg_dark = APP_COLOR_RGB(0x05, 0x06, 0x05);   /* lcd-bg */
-    color_card_bg = APP_COLOR_RGB(0x18, 0x16, 0x0F);   /* ink-700 */
-    color_card_border = APP_COLOR_RGB(0x3B, 0x36, 0x2D); /* ink-500 */
+    if (theme_mode == THEME_LIGHT) {
+        color_primary = APP_COLOR_RGB(0xC6, 0x6A, 0x0C);
+        color_secondary = APP_COLOR_RGB(0x8B, 0x3A, 0x1A);
+        color_accent = APP_COLOR_RGB(0xE6, 0x8A, 0x10);
+        color_success = APP_COLOR_RGB(0x2A, 0x9A, 0x88);
+        color_warning = APP_COLOR_RGB(0xD6, 0x8A, 0x20);
+        color_danger = APP_COLOR_RGB(0xA0, 0x3A, 0x20);
+        color_text = APP_COLOR_RGB(0x18, 0x16, 0x0F);
+        color_text_dim = APP_COLOR_RGB(0x6B, 0x62, 0x53);
+        color_bg_dark = APP_COLOR_RGB(0xF4, 0xEB, 0xD9);
+        color_card_bg = APP_COLOR_RGB(0xFF, 0xFF, 0xFA);
+        color_card_border = APP_COLOR_RGB(0xD9, 0xCD, 0xB4);
+    } else {
+        color_primary = APP_COLOR_RGB(0xF0, 0x8A, 0x1C);
+        color_secondary = APP_COLOR_RGB(0xB1, 0x4A, 0x2A);
+        color_accent = APP_COLOR_RGB(0xFF, 0xB4, 0x4A);
+        color_success = APP_COLOR_RGB(0x4A, 0xD6, 0xC2);
+        color_warning = APP_COLOR_RGB(0xFF, 0xB4, 0x4A);
+        color_danger = APP_COLOR_RGB(0xB1, 0x4A, 0x2A);
+        color_text = APP_COLOR_RGB(0xF4, 0xEB, 0xD9);
+        color_text_dim = APP_COLOR_RGB(0x6B, 0x62, 0x53);
+        color_bg_dark = APP_COLOR_RGB(0x05, 0x06, 0x05);
+        color_card_bg = APP_COLOR_RGB(0x18, 0x16, 0x0F);
+        color_card_border = APP_COLOR_RGB(0x3B, 0x36, 0x2D);
+    }
 
     /* Background styles */
     lv_style_init(&style_bg_dark);
@@ -99,28 +114,28 @@ void styles_init(void)
     /* Title text style */
     lv_style_init(&style_text_title);
     lv_style_set_text_color(&style_text_title, color_primary);
-    lv_style_set_text_font(&style_text_title, &lv_font_montserrat_24);
+    lv_style_set_text_font(&style_text_title, UI_FONT_XL);
     lv_style_set_text_align(&style_text_title, LV_TEXT_ALIGN_CENTER);
 
     /* Normal text style */
     lv_style_init(&style_text_normal);
     lv_style_set_text_color(&style_text_normal, color_text);
-    lv_style_set_text_font(&style_text_normal, &lv_font_montserrat_16);
+    lv_style_set_text_font(&style_text_normal, UI_FONT_LG);
 
     /* Dim text style */
     lv_style_init(&style_text_dim);
     lv_style_set_text_color(&style_text_dim, color_text_dim);
-    lv_style_set_text_font(&style_text_dim, &lv_font_montserrat_12);
+    lv_style_set_text_font(&style_text_dim, UI_FONT_SM);
 
     /* Accent text style */
     lv_style_init(&style_text_accent);
     lv_style_set_text_color(&style_text_accent, color_accent);
-    lv_style_set_text_font(&style_text_accent, &lv_font_montserrat_14);
+    lv_style_set_text_font(&style_text_accent, UI_FONT_MD);
 
     /* Label style */
     lv_style_init(&style_label);
     lv_style_set_text_color(&style_label, color_text);
-    lv_style_set_text_font(&style_label, &lv_font_montserrat_10);
+    lv_style_set_text_font(&style_label, UI_FONT_SM);
     lv_style_set_text_color(&style_label, color_text_dim);
 
     /* Toggle style */

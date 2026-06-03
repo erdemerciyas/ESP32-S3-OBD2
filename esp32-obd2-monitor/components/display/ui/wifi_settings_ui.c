@@ -3,7 +3,10 @@
 #include "board_config.h"
 #include "connectivity.h"
 #include "wifi_manager.h"
+#include "telemetry.h"
 #include "lvgl_driver.h"
+#include "ui_fonts.h"
+#include "ui_icons.h"
 #include "app.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,6 +25,7 @@
 static lv_obj_t *status_saved_lbl;
 static lv_obj_t *status_obd_lbl;
 static lv_obj_t *status_msg_lbl;
+static lv_obj_t *status_wifi_icon;
 static lv_obj_t *network_list;
 static lv_obj_t *scan_btn;
 static lv_obj_t *auto_btn;
@@ -40,33 +44,99 @@ typedef struct {
     esp_err_t result;
 } wifi_ui_job_t;
 
+static lv_obj_t *wifi_ui_btn_content(lv_obj_t *btn, const char *icon_sym, const char *text,
+                                     lv_color_t text_color)
+{
+    lv_obj_t *row = lv_obj_create(btn);
+    lv_obj_remove_style_all(row);
+    lv_obj_set_size(row, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 6, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t *icon = ui_icon_create(row, icon_sym, UI_FONT_ICON);
+    lv_obj_set_style_text_color(icon, text_color, 0);
+    lv_obj_t *lbl = lv_label_create(row);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_font(lbl, UI_FONT_MD, 0);
+    lv_obj_set_style_text_color(lbl, text_color, 0);
+    return lbl;
+}
+
+void wifi_settings_ui_sync_wifi_ind(ui_wifi_ind_level_t level)
+{
+    if (status_wifi_icon != NULL) {
+        ui_wifi_ind_apply(status_wifi_icon, level);
+    }
+}
+
 static void wifi_ui_update_status_labels(void)
 {
     char saved_buf[96];
-    if (g_settings.wifi_manual_mode && g_settings.wifi_ssid[0] != '\0') {
-        snprintf(saved_buf, sizeof(saved_buf), "Kayitli: %s (manuel)", g_settings.wifi_ssid);
-    } else if (g_settings.wifi_ssid[0] != '\0') {
-        snprintf(saved_buf, sizeof(saved_buf), "Kayitli: %s", g_settings.wifi_ssid);
+    if (g_settings.wifi_ssid[0] != '\0') {
+        if (g_settings.obd_adapter_port != 0 && g_settings.obd_adapter_ip[0] != '\0') {
+            snprintf(saved_buf, sizeof(saved_buf), "Kayıtlı: %s  %s:%u",
+                     g_settings.wifi_ssid,
+                     g_settings.obd_adapter_ip,
+                     g_settings.obd_adapter_port);
+        } else {
+            snprintf(saved_buf, sizeof(saved_buf), "Kayıtlı: %s", g_settings.wifi_ssid);
+        }
+    } else if (!g_settings.wifi_manual_mode) {
+        snprintf(saved_buf, sizeof(saved_buf), "Kayıtlı: Otomatik tarama");
     } else {
-        snprintf(saved_buf, sizeof(saved_buf), "Kayitli: Otomatik tarama");
+        snprintf(saved_buf, sizeof(saved_buf), "Kayıtlı: — Tara ile seçin");
     }
     lv_label_set_text(status_saved_lbl, saved_buf);
 
-    if (connectivity_is_connected()) {
-        lv_label_set_text(status_obd_lbl, "OBD: Bagli");
-        lv_obj_set_style_text_color(status_obd_lbl, color_success, 0);
-    } else if (wifi_is_ap_connected()) {
-        lv_label_set_text(status_obd_lbl, "OBD: WiFi var, adaptor yok");
-        lv_obj_set_style_text_color(status_obd_lbl, color_warning, 0);
-    } else {
-        lv_label_set_text(status_obd_lbl, "OBD: Bagli degil");
-        lv_obj_set_style_text_color(status_obd_lbl, color_text_dim, 0);
+    switch (connectivity_get_state()) {
+        case CONN_STATE_OBD_READY:
+            lv_label_set_text(status_obd_lbl, "OBD: Hazır");
+            lv_obj_set_style_text_color(status_obd_lbl, color_success, 0);
+            break;
+        case CONN_STATE_LINK_UP:
+        case CONN_STATE_ELM_INIT:
+            lv_label_set_text(status_obd_lbl, "OBD: ELM327 başlatılıyor");
+            lv_obj_set_style_text_color(status_obd_lbl, color_warning, 0);
+            break;
+        case CONN_STATE_ERROR:
+            lv_label_set_text(status_obd_lbl, "OBD: Hata");
+            lv_obj_set_style_text_color(status_obd_lbl, color_danger, 0);
+            break;
+        default:
+            if (wifi_is_ap_connected()) {
+                lv_label_set_text(status_obd_lbl, "OBD: WiFi var, TCP yok");
+                lv_obj_set_style_text_color(status_obd_lbl, color_warning, 0);
+            } else {
+                lv_label_set_text(status_obd_lbl, "OBD: Bağlı değil");
+                lv_obj_set_style_text_color(status_obd_lbl, color_text_dim, 0);
+            }
+            break;
     }
 }
 
 static void wifi_ui_set_message(const char *text)
 {
     lv_label_set_text(status_msg_lbl, text);
+}
+
+static const char *wifi_ui_fail_hint(void)
+{
+    if (wifi_is_ap_connected() && wifi_tcp_ready()) {
+        return "TCP var; OBD yok — kontağı açın";
+    }
+    if (wifi_is_ap_connected()) {
+        return "WiFi var, ELM327 TCP yok (192.168.0.10?)";
+    }
+    switch (wifi_get_last_fail_stage()) {
+        case WIFI_FAIL_TCP:
+            return "WiFi OK ama TCP yok — kontak açık olsun";
+        case WIFI_FAIL_ASSOC:
+        default:
+            return "WiFi: telefondan WIFI_OBDII kopun, tekrar deneyin";
+    }
 }
 
 static void wifi_ui_set_buttons_enabled(bool enabled)
@@ -93,8 +163,9 @@ static void wifi_ui_populate_network_list(const wifi_ap_info_t *networks, int co
 
     if (count == 0) {
         lv_obj_t *empty = lv_label_create(network_list);
-        lv_label_set_text(empty, "Ag bulunamadi");
+        lv_label_set_text(empty, "Ağ bulunamadı");
         lv_obj_set_style_text_color(empty, color_text_dim, 0);
+        lv_obj_set_style_text_font(empty, UI_FONT_MD, 0);
         return;
     }
 
@@ -111,12 +182,22 @@ static void wifi_ui_populate_network_list(const wifi_ap_info_t *networks, int co
             lv_obj_set_style_border_width(btn, 2, 0);
         }
 
+        lv_obj_t *row = lv_obj_create(btn);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, LV_PCT(100), LV_PCT(100));
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
+
+        ui_icon_create(row, LV_SYMBOL_WIFI, UI_FONT_ICON);
         char line[64];
         snprintf(line, sizeof(line), "%s   %d dBm", networks[i].ssid, networks[i].rssi);
-        lv_obj_t *lbl = lv_label_create(btn);
+        lv_obj_t *lbl = lv_label_create(row);
         lv_label_set_text(lbl, line);
-        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 8, 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(lbl, UI_FONT_SM, 0);
+        lv_obj_set_style_text_color(lbl, color_text, 0);
     }
 }
 
@@ -132,16 +213,24 @@ static void wifi_ui_job_finished_cb(void *user_data)
     if (job->scan_only) {
         wifi_ui_populate_network_list(job->networks, job->network_count);
         wifi_ui_set_message(job->network_count > 0 ?
-                            "Ag secin ve dokunun" :
-                            "Tarama tamam, ag yok");
+                            "Ağ seçin ve dokunun" :
+                            "Tarama tamam, ağ yok");
     } else if (job->auto_mode) {
-        wifi_ui_set_message(job->result == ESP_OK ?
-                            "Otomatik baglanti basarili" :
-                            "Otomatik baglanti basarisiz");
+        if (job->result == ESP_OK) {
+            wifi_ui_set_message(connectivity_get_state() == CONN_STATE_OBD_READY ?
+                                "Otomatik bağlantı başarılı" :
+                                "WiFi/TCP OK — kontağı açın");
+        } else {
+            wifi_ui_set_message(wifi_ui_fail_hint());
+        }
     } else {
-        wifi_ui_set_message(job->result == ESP_OK ?
-                            "Baglandi ve kaydedildi" :
-                            "Baglanti basarisiz");
+        if (job->result == ESP_OK) {
+            wifi_ui_set_message(connectivity_get_state() == CONN_STATE_OBD_READY ?
+                                "Bağlandı ve kaydedildi" :
+                                "WiFi/TCP OK — kontağı açın");
+        } else {
+            wifi_ui_set_message(wifi_ui_fail_hint());
+        }
     }
 
     wifi_ui_update_status_labels();
@@ -200,9 +289,9 @@ static void wifi_ui_network_click_cb(lv_event_t *e)
 
     char msg[80];
     if (wifi_is_elm327_ssid(job->ssid)) {
-        snprintf(msg, sizeof(msg), "OBD baglaniyor: %s...", job->ssid);
+        snprintf(msg, sizeof(msg), "OBD bağlanıyor: %s...", job->ssid);
     } else {
-        snprintf(msg, sizeof(msg), "Baglaniyor: %s...", job->ssid);
+        snprintf(msg, sizeof(msg), "Bağlanıyor: %s...", job->ssid);
     }
     wifi_ui_set_message(msg);
 
@@ -222,7 +311,7 @@ static void wifi_ui_scan_btn_cb(lv_event_t *e)
     }
 
     job->scan_only = true;
-    wifi_ui_set_message("Taraniyor...");
+    wifi_ui_set_message("Taranıyor...");
     wifi_ui_start_job(job);
 }
 
@@ -239,7 +328,7 @@ static void wifi_ui_auto_btn_cb(lv_event_t *e)
     }
 
     job->auto_mode = true;
-    wifi_ui_set_message("Otomatik baglanti deneniyor...");
+    wifi_ui_set_message("Otomatik bağlantı deneniyor...");
     wifi_ui_start_job(job);
 }
 
@@ -253,43 +342,42 @@ void wifi_settings_ui_create(lv_obj_t *screen)
     lv_obj_add_style(status_card, style_get_card(), 0);
     lv_obj_remove_flag(status_card, LV_OBJ_FLAG_SCROLLABLE);
 
+    status_wifi_icon = ui_wifi_ind_create(status_card, -8, 6);
+    lv_obj_set_style_text_font(status_wifi_icon, UI_FONT_ICON, 0);
+
     status_saved_lbl = lv_label_create(status_card);
     lv_obj_set_pos(status_saved_lbl, 12, 10);
-    lv_obj_set_width(status_saved_lbl, content_w - 24);
-    lv_obj_set_style_text_font(status_saved_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(status_saved_lbl, content_w - 48);
+    lv_obj_set_style_text_font(status_saved_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_saved_lbl, color_text, 0);
     lv_label_set_long_mode(status_saved_lbl, LV_LABEL_LONG_DOT);
 
     status_obd_lbl = lv_label_create(status_card);
     lv_obj_set_pos(status_obd_lbl, 12, 32);
-    lv_obj_set_style_text_font(status_obd_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(status_obd_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_obd_lbl, color_text_dim, 0);
 
     status_msg_lbl = lv_label_create(status_card);
     lv_obj_set_pos(status_msg_lbl, 12, 54);
     lv_obj_set_width(status_msg_lbl, content_w - 24);
-    lv_obj_set_style_text_font(status_msg_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(status_msg_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_msg_lbl, color_accent, 0);
     lv_label_set_long_mode(status_msg_lbl, LV_LABEL_LONG_DOT);
-    lv_label_set_text(status_msg_lbl, "TARA ile aglari listeleyin");
+    lv_label_set_text(status_msg_lbl, "Tara → WIFI_OBDII seçin (telefonu AP'den ayırın)");
 
     scan_btn = lv_btn_create(screen);
     lv_obj_set_size(scan_btn, (content_w - 8) / 2, 36);
     lv_obj_set_pos(scan_btn, WIFI_UI_PAD, WIFI_UI_BTN_ROW_Y);
     lv_obj_add_style(scan_btn, style_get_btn_primary(), 0);
     lv_obj_add_event_cb(scan_btn, wifi_ui_scan_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *scan_lbl = lv_label_create(scan_btn);
-    lv_label_set_text(scan_lbl, "TARA");
-    lv_obj_center(scan_lbl);
+    wifi_ui_btn_content(scan_btn, LV_SYMBOL_REFRESH, "Tara", color_bg_dark);
 
     auto_btn = lv_btn_create(screen);
     lv_obj_set_size(auto_btn, (content_w - 8) / 2, 36);
     lv_obj_set_pos(auto_btn, WIFI_UI_PAD + (content_w - 8) / 2 + 8, WIFI_UI_BTN_ROW_Y);
     lv_obj_add_style(auto_btn, style_get_btn_secondary(), 0);
     lv_obj_add_event_cb(auto_btn, wifi_ui_auto_btn_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *auto_lbl = lv_label_create(auto_btn);
-    lv_label_set_text(auto_lbl, "OTOMATIK");
-    lv_obj_center(auto_lbl);
+    wifi_ui_btn_content(auto_btn, LV_SYMBOL_WIFI, "Otomatik", color_primary);
 
     network_list = lv_obj_create(screen);
     lv_obj_set_pos(network_list, WIFI_UI_PAD, WIFI_UI_LIST_TOP);
@@ -314,6 +402,10 @@ void wifi_settings_ui_refresh(void)
         return;
     }
 
+    telemetry_snapshot_t snap;
+    telemetry_get_snapshot(&snap);
+    wifi_settings_ui_sync_wifi_ind(
+        ui_wifi_ind_level_from(snap.wifi_ap_up, snap.wifi_tcp_up, snap.conn_state));
     wifi_ui_update_status_labels();
     lvgl_unlock();
 }

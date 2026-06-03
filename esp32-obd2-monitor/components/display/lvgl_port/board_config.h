@@ -11,9 +11,12 @@
 #define BOARD_LCD_WIDTH          480
 #define BOARD_LCD_HEIGHT         480
 
-/* UI layout (square panel; round mask is visual only in LVGL) */
+/* UI layout — inset for round Waveshare bezel */
+#define UI_ROUND_INSET           28
 #define UI_SCREEN_W              BOARD_LCD_WIDTH
 #define UI_SCREEN_H              BOARD_LCD_HEIGHT
+#define UI_SAFE_W                (UI_SCREEN_W - (UI_ROUND_INSET * 2))
+#define UI_SAFE_H                (UI_SCREEN_H - (UI_ROUND_INSET * 2))
 #define UI_SWIPE_THRESHOLD_PX    50
 #define UI_SWIPE_COOLDOWN_MS     400
 #define UI_DOUBLE_TAP_MS         320

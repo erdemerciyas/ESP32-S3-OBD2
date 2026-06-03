@@ -22,6 +22,8 @@ void wifi_clear_manual_network(void);
 void wifi_disconnect(void);
 esp_err_t wifi_send_cmd(const uint8_t *cmd, size_t len, uint8_t *resp, size_t *resp_len);
 bool wifi_is_connected(void);
+bool wifi_link_up(void);
+bool wifi_obd_session_ready(void);
 bool wifi_is_ap_connected(void);
 esp_err_t wifi_get_status(void);
 int wifi_scan_elm327_networks(wifi_ap_info_t *ap_list, int max_count);
@@ -29,3 +31,13 @@ int wifi_scan_all_networks(wifi_ap_info_t *ap_list, int max_count);
 bool wifi_connect_to_elm327(void);
 esp_err_t wifi_test_elm327_connection(uint8_t *version, size_t version_len);
 bool wifi_is_elm327_ssid(const char *ssid);
+
+typedef enum {
+    WIFI_FAIL_NONE = 0,
+    WIFI_FAIL_ASSOC,
+    WIFI_FAIL_TCP,
+    WIFI_FAIL_OBD,
+} wifi_fail_stage_t;
+
+wifi_fail_stage_t wifi_get_last_fail_stage(void);
+bool wifi_tcp_ready(void);

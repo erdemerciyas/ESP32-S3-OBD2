@@ -83,8 +83,14 @@ static void connectivity_reconnect_task(void *arg)
 
     while (1) {
         if (!connectivity_is_connected()) {
-            ESP_LOGI(TAG, "OBD adapter not connected, retrying...");
-            connectivity_auto_reconnect();
+            const bool wifi_manual_idle =
+                (g_settings.preferred_connection == CONN_TYPE_WIFI &&
+                 g_settings.wifi_manual_mode &&
+                 g_settings.wifi_ssid[0] == '\0');
+            if (!wifi_manual_idle) {
+                ESP_LOGI(TAG, "OBD adapter not connected, retrying...");
+                connectivity_auto_reconnect();
+            }
         }
         /* Full ELM327 auto-discovery can take 30+ seconds */
         vTaskDelay(pdMS_TO_TICKS(15000));
@@ -141,7 +147,7 @@ extern "C" void app_main(void)
 
     /* Display init uses a lot of stack (LVGL + dashboard UI) */
     display_ready_sem = xSemaphoreCreateBinary();
-    xTaskCreate(display_init_task, "display_init", 16384, NULL, 5, NULL);
+    xTaskCreate(display_init_task, "display_init", 24576, NULL, 5, NULL);
     xSemaphoreTake(display_ready_sem, portMAX_DELAY);
     vSemaphoreDelete(display_ready_sem);
     display_ready_sem = NULL;

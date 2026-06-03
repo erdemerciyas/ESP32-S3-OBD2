@@ -1,8 +1,10 @@
 #include "splash.h"
 #include "styles.h"
+#include "ui_fonts.h"
 #include "board_config.h"
 #include "app.h"
 #include "esp_log.h"
+#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -12,9 +14,11 @@ static const char *TAG = "splash";
 #define SPLASH_ARC_SIZE          (UI_SCREEN_W - (SPLASH_ARC_MARGIN * 2))
 #define SPLASH_ARC_TRACK         12
 #define SPLASH_ARC_VALUE         14
-#define SPLASH_LOAD_FRAMES       50
+#define SPLASH_LOAD_FRAMES       30
 #define SPLASH_FRAME_MS          16
-#define SPLASH_HOLD_FRAMES       8
+#define SPLASH_TOTAL_MS          5000
+#define SPLASH_LOAD_MS           (((SPLASH_LOAD_FRAMES) + 1) * SPLASH_FRAME_MS)
+#define SPLASH_HOLD_MS           (SPLASH_TOTAL_MS - SPLASH_LOAD_MS)
 
 static void splash_prepare_screen(lv_obj_t *scr)
 {
@@ -28,12 +32,19 @@ static void splash_prepare_screen(lv_obj_t *scr)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 }
 
-static void splash_pump(int frames)
+static void splash_hold(uint32_t hold_ms)
 {
-    for (int i = 0; i < frames; i++) {
+    const uint32_t steps = hold_ms / SPLASH_FRAME_MS;
+    for (uint32_t i = 0; i < steps; i++) {
         lv_timer_handler();
         lv_refr_now(NULL);
         vTaskDelay(pdMS_TO_TICKS(SPLASH_FRAME_MS));
+    }
+    const uint32_t rem = hold_ms % SPLASH_FRAME_MS;
+    if (rem > 0) {
+        lv_timer_handler();
+        lv_refr_now(NULL);
+        vTaskDelay(pdMS_TO_TICKS(rem));
     }
 }
 
@@ -66,25 +77,26 @@ void splash_run_boot_animation(lv_obj_t *next_screen)
     lv_obj_align(title, LV_ALIGN_CENTER, 0, -8);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(title, color_accent, 0);
+    lv_obj_set_style_text_letter_space(title, 4, 0);
 
     lv_obj_t *subtitle = lv_label_create(scr);
     lv_label_set_text(subtitle, "MONITOR");
     lv_obj_align(subtitle, LV_ALIGN_CENTER, 0, 38);
-    lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(subtitle, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(subtitle, color_text_dim, 0);
     lv_obj_set_style_text_letter_space(subtitle, 6, 0);
 
     lv_obj_t *status = lv_label_create(scr);
-    lv_label_set_text(status, "BASLATILIYOR");
+    lv_label_set_text(status, "BAŞLATILIYOR");
     lv_obj_align(status, LV_ALIGN_BOTTOM_MID, 0, -72);
-    lv_obj_set_style_text_font(status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(status, UI_FONT_MD, 0);
     lv_obj_set_style_text_color(status, color_primary, 0);
     lv_obj_set_style_text_letter_space(status, 3, 0);
 
     lv_obj_t *ver = lv_label_create(scr);
     lv_label_set_text_fmt(ver, "v%s", APP_VERSION);
     lv_obj_align(ver, LV_ALIGN_BOTTOM_MID, 0, -44);
-    lv_obj_set_style_text_font(ver, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(ver, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(ver, color_text_dim, 0);
 
     for (int frame = 0; frame <= SPLASH_LOAD_FRAMES; frame++) {
@@ -95,14 +107,18 @@ void splash_run_boot_animation(lv_obj_t *next_screen)
         vTaskDelay(pdMS_TO_TICKS(SPLASH_FRAME_MS));
     }
 
-    splash_pump(SPLASH_HOLD_FRAMES);
+    splash_hold(SPLASH_HOLD_MS);
 
     if (next_screen != NULL) {
-        lv_scr_load(next_screen);
-        lv_refr_now(NULL);
+        lv_screen_load_anim(next_screen, LV_SCR_LOAD_ANIM_FADE_ON, 200, 0, true);
+        for (int i = 0; i < 16; i++) {
+            lv_timer_handler();
+            lv_refr_now(NULL);
+            vTaskDelay(pdMS_TO_TICKS(16));
+        }
+    } else {
+        lv_obj_delete(scr);
     }
-    lv_obj_delete(scr);
-    lv_refr_now(NULL);
 
     ESP_LOGI(TAG, "Boot splash done");
 }

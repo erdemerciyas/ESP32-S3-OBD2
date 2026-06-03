@@ -30,7 +30,7 @@ extern lv_color_t color_bg_dark;
 extern lv_color_t color_card_bg;
 extern lv_color_t color_card_border;
 
-void styles_init(void);
+void styles_init(uint8_t theme_mode);
 
 lv_style_t *style_get_bg_dark(void);
 lv_style_t *style_get_card(void);

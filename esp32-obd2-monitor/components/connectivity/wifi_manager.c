@@ -1,5 +1,6 @@
 #include "wifi_manager.h"
 #include "elm327_wifi_profiles.h"
+#include "elm327_session.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
@@ -23,6 +24,7 @@ static bool connected = false;
 static int sock = -1;
 static bool wifi_ap_connected = false;
 static bool wifi_stack_ready = false;
+static wifi_fail_stage_t wifi_last_fail = WIFI_FAIL_NONE;
 
 static EventGroupHandle_t wifi_event_group;
 static const int WIFI_GOT_IP_BIT = BIT0;
@@ -140,6 +142,16 @@ static void wifi_append_auth_mode(wifi_auth_mode_t mode, wifi_auth_mode_t *list,
     }
     list[*count] = mode;
     (*count)++;
+}
+
+wifi_fail_stage_t wifi_get_last_fail_stage(void)
+{
+    return wifi_last_fail;
+}
+
+bool wifi_tcp_ready(void)
+{
+    return connected && sock >= 0;
 }
 
 bool wifi_is_elm327_ssid(const char *ssid)
@@ -341,7 +353,12 @@ bool wifi_connect_with_auth(const char *ssid, const char *password, wifi_auth_mo
     authmode = wifi_normalize_authmode(authmode);
 
     wifi_config_t wifi_config = {0};
-    wifi_config.sta.threshold.authmode = authmode;
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    if (authmode == WIFI_AUTH_OPEN || authmode == WIFI_AUTH_WEP) {
+        wifi_config.sta.threshold.authmode = authmode;
+    }
+    wifi_config.sta.pmf_cfg.capable = true;
+    wifi_config.sta.pmf_cfg.required = false;
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
 
     if (authmode == WIFI_AUTH_OPEN || authmode == WIFI_AUTH_WEP) {
@@ -397,6 +414,62 @@ static bool wifi_remember_password(const char *password)
     return true;
 }
 
+static void wifi_persist_assoc(const char *ssid, const char *password, wifi_auth_mode_t authmode)
+{
+    strncpy(g_settings.wifi_ssid, ssid, sizeof(g_settings.wifi_ssid) - 1);
+    g_settings.wifi_ssid[sizeof(g_settings.wifi_ssid) - 1] = '\0';
+    if (password != NULL) {
+        wifi_remember_password(password);
+    }
+    g_settings.wifi_authmode = (uint8_t)authmode;
+    settings_save(&g_settings);
+}
+
+static void wifi_persist_tcp_endpoint(const char *ip, uint16_t port)
+{
+    if (ip == NULL || ip[0] == '\0' || port == 0) {
+        return;
+    }
+
+    bool changed = (strcmp(g_settings.obd_adapter_ip, ip) != 0 ||
+                    g_settings.obd_adapter_port != port);
+    strncpy(g_settings.obd_adapter_ip, ip, sizeof(g_settings.obd_adapter_ip) - 1);
+    g_settings.obd_adapter_ip[sizeof(g_settings.obd_adapter_ip) - 1] = '\0';
+    g_settings.obd_adapter_port = port;
+
+    if (changed) {
+        settings_save(&g_settings);
+        ESP_LOGI(TAG, "Saved ELM327 TCP endpoint %s:%u", ip, (unsigned)port);
+    }
+}
+
+static void wifi_save_manual_selection(const char *ssid, wifi_auth_mode_t authmode)
+{
+    strncpy(g_settings.wifi_ssid, ssid, sizeof(g_settings.wifi_ssid) - 1);
+    g_settings.wifi_ssid[sizeof(g_settings.wifi_ssid) - 1] = '\0';
+    g_settings.wifi_authmode = (uint8_t)wifi_normalize_authmode(authmode);
+    g_settings.wifi_manual_mode = true;
+    g_settings.preferred_connection = CONN_TYPE_WIFI;
+    settings_save(&g_settings);
+    ESP_LOGI(TAG, "Manual WiFi profile saved: %s", ssid);
+}
+
+static bool wifi_try_assoc_once(const char *ssid, const char *password, wifi_auth_mode_t auth)
+{
+    if (wifi_connect_with_auth(ssid, password, auth)) {
+        wifi_persist_assoc(ssid, password, auth);
+        return true;
+    }
+    return false;
+}
+
+static bool wifi_is_wifi_obdii_ssid(const char *ssid)
+{
+    return ssid != NULL &&
+           (strcmp(ssid, "WIFI_OBDII") == 0 || strcmp(ssid, "WiFi_OBDII") == 0 ||
+            strcmp(ssid, "WiFi-OBDII") == 0);
+}
+
 static bool wifi_associate_obd_ap(const char *ssid, wifi_auth_mode_t scan_authmode)
 {
     wifi_auth_mode_t auth_modes[6];
@@ -411,14 +484,28 @@ static bool wifi_associate_obd_ap(const char *ssid, wifi_auth_mode_t scan_authmo
     const bool same_saved_ssid =
         (g_settings.wifi_ssid[0] != '\0' && strcmp(ssid, g_settings.wifi_ssid) == 0);
 
-    ESP_LOGI(TAG, "Trying universal OBD WiFi credentials for: %s", ssid);
+    wifi_last_fail = WIFI_FAIL_ASSOC;
+    ESP_LOGI(TAG, "Trying OBD WiFi credentials for: %s", ssid);
+
+    /* Car Scanner: most ELM327 hotspots are open — try before WPA password sweep */
+    if (wifi_is_elm327_ssid(ssid) || scan_authmode == WIFI_AUTH_OPEN) {
+        ESP_LOGI(TAG, "Trying open WiFi (no password)");
+        if (wifi_try_assoc_once(ssid, "", WIFI_AUTH_OPEN)) {
+            g_settings.wifi_password[0] = '\0';
+            settings_save(&g_settings);
+            wifi_last_fail = WIFI_FAIL_NONE;
+            return true;
+        }
+    }
 
     for (int a = 0; a < auth_count; a++) {
         const wifi_auth_mode_t auth = auth_modes[a];
 
         if (auth == WIFI_AUTH_OPEN) {
-            if (wifi_connect_with_auth(ssid, "", WIFI_AUTH_OPEN)) {
+            if (wifi_try_assoc_once(ssid, "", WIFI_AUTH_OPEN)) {
                 g_settings.wifi_password[0] = '\0';
+                settings_save(&g_settings);
+                wifi_last_fail = WIFI_FAIL_NONE;
                 return true;
             }
             continue;
@@ -426,8 +513,20 @@ static bool wifi_associate_obd_ap(const char *ssid, wifi_auth_mode_t scan_authmo
 
         if (same_saved_ssid && g_settings.wifi_password[0] != '\0') {
             ESP_LOGI(TAG, "Trying saved password for %s", ssid);
-            if (wifi_connect_with_auth(ssid, g_settings.wifi_password, auth)) {
+            if (wifi_try_assoc_once(ssid, g_settings.wifi_password, auth)) {
+                wifi_last_fail = WIFI_FAIL_NONE;
                 return true;
+            }
+        }
+
+        if (wifi_is_wifi_obdii_ssid(ssid)) {
+            for (size_t i = 0; i < ELM327_WIFI_OBDII_PASSWORD_COUNT; i++) {
+                const char *password = elm327_wifi_obdii_passwords[i];
+                ESP_LOGI(TAG, "Trying WIFI_OBDII password \"%s\"", password);
+                if (wifi_try_assoc_once(ssid, password, auth)) {
+                    wifi_last_fail = WIFI_FAIL_NONE;
+                    return true;
+                }
             }
         }
 
@@ -438,8 +537,8 @@ static bool wifi_associate_obd_ap(const char *ssid, wifi_auth_mode_t scan_authmo
             }
 
             ESP_LOGI(TAG, "Trying OBD password \"%s\" (auth=%d)", password, auth);
-            if (wifi_connect_with_auth(ssid, password, auth)) {
-                wifi_remember_password(password);
+            if (wifi_try_assoc_once(ssid, password, auth)) {
+                wifi_last_fail = WIFI_FAIL_NONE;
                 return true;
             }
         }
@@ -511,6 +610,8 @@ static bool wifi_get_gateway_ip(char *ip_str, size_t len)
     return true;
 }
 
+static bool wifi_try_tcp_endpoint(const char *ip, uint16_t port);
+
 static bool endpoint_already_tried(const char *ip, uint16_t port,
                                    const char tried[][32], const uint16_t *ports, int count)
 {
@@ -522,7 +623,7 @@ static bool endpoint_already_tried(const char *ip, uint16_t port,
     return false;
 }
 
-static int wifi_open_tcp_socket(const char *ip, uint16_t port)
+static int wifi_open_tcp_socket_ex(const char *ip, uint16_t port, int timeout_sec)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -530,7 +631,7 @@ static int wifi_open_tcp_socket(const char *ip, uint16_t port)
     }
 
     struct timeval timeout = {
-        .tv_sec = ELM327_TCP_CONNECT_TIMEOUT_S,
+        .tv_sec = timeout_sec,
         .tv_usec = 0,
     };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
@@ -552,6 +653,101 @@ static int wifi_open_tcp_socket(const char *ip, uint16_t port)
     }
 
     return fd;
+}
+
+static int wifi_open_tcp_socket(const char *ip, uint16_t port)
+{
+    return wifi_open_tcp_socket_ex(ip, port, ELM327_TCP_CONNECT_TIMEOUT_S);
+}
+
+static bool wifi_get_sta_ip_octets(uint8_t *o1, uint8_t *o2, uint8_t *o3, uint8_t *o4)
+{
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif == NULL) {
+        return false;
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK || ip_info.ip.addr == 0) {
+        return false;
+    }
+
+    *o1 = esp_ip4_addr1(&ip_info.ip);
+    *o2 = esp_ip4_addr2(&ip_info.ip);
+    *o3 = esp_ip4_addr3(&ip_info.ip);
+    *o4 = esp_ip4_addr4(&ip_info.ip);
+    return true;
+}
+
+static bool wifi_probe_ip_ports(const char *ip,
+                                char tried[][32],
+                                uint16_t *tried_ports,
+                                int *tried_count,
+                                int tried_max,
+                                bool fast_discovery)
+{
+    const int timeout_sec = fast_discovery ? ELM327_TCP_DISCOVERY_TIMEOUT_S
+                                           : ELM327_TCP_CONNECT_TIMEOUT_S;
+
+    for (size_t p = 0; p < ELM327_TCP_PORT_COUNT; p++) {
+        uint16_t port = elm327_tcp_ports[p];
+        if (endpoint_already_tried(ip, port, tried, tried_ports, *tried_count)) {
+            continue;
+        }
+
+        int fd = wifi_open_tcp_socket_ex(ip, port, timeout_sec);
+        if (fd < 0) {
+            if (*tried_count < tried_max) {
+                strncpy(tried[*tried_count], ip, 31);
+                tried[*tried_count][31] = '\0';
+                tried_ports[*tried_count] = port;
+                (*tried_count)++;
+            }
+            continue;
+        }
+
+        close(fd);
+        if (wifi_try_tcp_endpoint(ip, port)) {
+            return true;
+        }
+
+        if (*tried_count < tried_max) {
+            strncpy(tried[*tried_count], ip, 31);
+            tried[*tried_count][31] = '\0';
+            tried_ports[*tried_count] = port;
+            (*tried_count)++;
+        }
+    }
+
+    return false;
+}
+
+static bool wifi_probe_subnet_adapters(char tried[][32],
+                                       uint16_t *tried_ports,
+                                       int *tried_count,
+                                       int tried_max)
+{
+    uint8_t o1, o2, o3, o4;
+    if (!wifi_get_sta_ip_octets(&o1, &o2, &o3, &o4)) {
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Subnet scan on %u.%u.%u.0/24 (STA .%u)", o1, o2, o3, o4);
+
+    char ip[16];
+    for (size_t h = 0; h < ELM327_SUBNET_HOST_COUNT; h++) {
+        uint8_t host = elm327_subnet_host_octets[h];
+        if (host == o4 || host == 0 || host == 255) {
+            continue;
+        }
+
+        snprintf(ip, sizeof(ip), "%u.%u.%u.%u", o1, o2, o3, host);
+        if (wifi_probe_ip_ports(ip, tried, tried_ports, tried_count, tried_max, true)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool wifi_response_looks_like_elm327(const char *resp, int len)
@@ -579,64 +775,41 @@ static bool wifi_response_looks_like_elm327(const char *resp, int len)
     return false;
 }
 
-static bool wifi_probe_elm327_tcp(int fd)
+static int wifi_elm_send(const char *data, size_t len)
 {
-    const char *probe_cmd = "ATI\r";
-    if (send(fd, probe_cmd, strlen(probe_cmd), 0) < 0) {
-        return false;
+    if (sock < 0 || data == NULL || len == 0) {
+        return -1;
     }
-
-    char resp[128] = {0};
-    int total = 0;
-
-    for (int attempt = 0; attempt < 4; attempt++) {
-        int received = recv(fd, resp + total, (int)sizeof(resp) - total - 1, 0);
-        if (received > 0) {
-            total += received;
-            resp[total] = '\0';
-            if (wifi_response_looks_like_elm327(resp, total)) {
-                ESP_LOGI(TAG, "ELM327 probe OK: %.48s%s", resp, total > 48 ? "..." : "");
-                return true;
-            }
-        } else if (received == 0) {
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(150));
-    }
-
-    ESP_LOGD(TAG, "ELM327 probe failed on this endpoint");
-    return false;
+    return (send(sock, data, len, 0) == (int)len) ? (int)len : -1;
 }
 
-static bool wifi_init_elm327_session(int fd)
+static int wifi_elm_recv(char *buf, size_t max_len, int timeout_ms)
 {
-    const char *init_cmds[] = {
-        "ATZ\r", "ATE0\r", "ATL0\r", "ATS0\r", "ATH0\r",
-        "ATAT1\r", "ATST32\r", "ATSP0\r",
+    if (sock < 0 || buf == NULL || max_len == 0) {
+        return 0;
+    }
+
+    struct timeval tv = {
+        .tv_sec = timeout_ms / 1000,
+        .tv_usec = (timeout_ms % 1000) * 1000,
     };
-    const int delays_ms[] = {800, 100, 100, 100, 100, 100, 100, 400};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    for (size_t i = 0; i < sizeof(init_cmds) / sizeof(init_cmds[0]); i++) {
-        send(fd, init_cmds[i], strlen(init_cmds[i]), 0);
-        vTaskDelay(pdMS_TO_TICKS(delays_ms[i]));
+    int n = recv(sock, buf, (int)max_len - 1, 0);
+    if (n > 0) {
+        buf[n] = '\0';
     }
+    return n;
+}
 
-    char drain[128];
-    for (int i = 0; i < 4; i++) {
-        int n = recv(fd, drain, sizeof(drain) - 1, 0);
-        if (n <= 0) {
-            break;
-        }
-    }
-
+static void wifi_apply_tcp_tuning(int fd)
+{
     int nodelay = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
     struct timeval timeout = {.tv_sec = 0, .tv_usec = 800000};
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    return true;
 }
 
 static void wifi_flush_rx(void)
@@ -684,34 +857,32 @@ static bool wifi_try_tcp_endpoint(const char *ip, uint16_t port)
         return false;
     }
 
-    if (!wifi_probe_elm327_tcp(fd)) {
-        close(fd);
-        return false;
-    }
-
-    if (!wifi_init_elm327_session(fd)) {
-        close(fd);
-        return false;
-    }
-
     if (sock >= 0) {
         close(sock);
     }
 
     sock = fd;
+    wifi_apply_tcp_tuning(fd);
+
+    if (!elm327_probe_adapter(wifi_elm_send, wifi_elm_recv)) {
+        close(fd);
+        sock = -1;
+        connected = false;
+        return false;
+    }
+
     connected = true;
-    strncpy(g_settings.obd_adapter_ip, ip, sizeof(g_settings.obd_adapter_ip) - 1);
-    g_settings.obd_adapter_ip[sizeof(g_settings.obd_adapter_ip) - 1] = '\0';
-    g_settings.obd_adapter_port = port;
+    wifi_persist_tcp_endpoint(ip, port);
     ESP_LOGI(TAG, "Connected to ELM327 at %s:%u", ip, (unsigned)port);
     return true;
 }
 
 static bool wifi_discover_tcp_endpoint(void)
 {
-    char tried_ips[24][32];
-    uint16_t tried_ports[24];
+    char tried_ips[48][32];
+    uint16_t tried_ports[48];
     int tried_count = 0;
+    const int tried_max = (int)(sizeof(tried_ips) / sizeof(tried_ips[0]));
 
     if (g_settings.obd_adapter_ip[0] != '\0' && g_settings.obd_adapter_port != 0) {
         if (wifi_try_tcp_endpoint(g_settings.obd_adapter_ip, g_settings.obd_adapter_port)) {
@@ -726,19 +897,13 @@ static bool wifi_discover_tcp_endpoint(void)
     char gateway_ip[16] = {0};
     if (wifi_get_gateway_ip(gateway_ip, sizeof(gateway_ip))) {
         ESP_LOGI(TAG, "DHCP gateway: %s", gateway_ip);
-        static const uint16_t gateway_ports[] = {35000, 35001, 8080, 23};
-        for (size_t i = 0; i < sizeof(gateway_ports) / sizeof(gateway_ports[0]); i++) {
-            uint16_t port = gateway_ports[i];
-            if (endpoint_already_tried(gateway_ip, port, tried_ips, tried_ports, tried_count)) {
-                continue;
-            }
-            if (wifi_try_tcp_endpoint(gateway_ip, port)) {
-                return true;
-            }
-            strncpy(tried_ips[tried_count], gateway_ip, sizeof(tried_ips[tried_count]) - 1);
-            tried_ports[tried_count] = port;
-            tried_count++;
+        if (wifi_probe_ip_ports(gateway_ip, tried_ips, tried_ports, &tried_count, tried_max, true)) {
+            return true;
         }
+    }
+
+    if (wifi_probe_subnet_adapters(tried_ips, tried_ports, &tried_count, tried_max)) {
+        return true;
     }
 
     for (size_t i = 0; i < ELM327_TCP_PROFILE_COUNT; i++) {
@@ -753,34 +918,49 @@ static bool wifi_discover_tcp_endpoint(void)
             return true;
         }
 
-        if (tried_count < (int)(sizeof(tried_ips) / sizeof(tried_ips[0]))) {
+        if (tried_count < tried_max) {
             strncpy(tried_ips[tried_count], ip, sizeof(tried_ips[tried_count]) - 1);
             tried_ports[tried_count] = port;
             tried_count++;
         }
     }
 
-    ESP_LOGE(TAG, "No ELM327 TCP endpoint responded");
+    ESP_LOGE(TAG, "No ELM327 TCP endpoint (%d probes)", tried_count);
     return false;
+}
+
+static bool wifi_join_saved_network(void)
+{
+    if (g_settings.wifi_ssid[0] == '\0') {
+        return false;
+    }
+
+    wifi_auth_mode_t saved_auth = (wifi_auth_mode_t)g_settings.wifi_authmode;
+    if (saved_auth == 0) {
+        saved_auth = WIFI_AUTH_WPA2_PSK;
+    }
+
+    ESP_LOGI(TAG, "Joining saved network: %s", g_settings.wifi_ssid);
+    return wifi_try_password_list(g_settings.wifi_ssid, saved_auth);
 }
 
 bool wifi_connect_to_obd_adapter(void)
 {
     ESP_LOGI(TAG, "Starting ELM327 WiFi connect (manual=%d)...", g_settings.wifi_manual_mode);
 
+    if (g_settings.wifi_manual_mode && g_settings.wifi_ssid[0] == '\0') {
+        ESP_LOGI(TAG, "Manual mode without saved SSID — connect skipped");
+        return false;
+    }
+
     if (!wifi_ap_connected) {
         bool wifi_ok = false;
-        wifi_auth_mode_t saved_auth = g_settings.wifi_authmode;
-        if (saved_auth == 0) {
-            saved_auth = WIFI_AUTH_WPA2_PSK;
-        }
 
-        if (g_settings.wifi_manual_mode && g_settings.wifi_ssid[0] != '\0') {
-            ESP_LOGI(TAG, "Using saved manual network: %s", g_settings.wifi_ssid);
-            wifi_ok = wifi_try_password_list(g_settings.wifi_ssid, saved_auth);
+        if (g_settings.wifi_manual_mode) {
+            wifi_ok = wifi_join_saved_network();
         } else {
             if (g_settings.wifi_ssid[0] != '\0') {
-                wifi_ok = wifi_try_password_list(g_settings.wifi_ssid, saved_auth);
+                wifi_ok = wifi_join_saved_network();
             }
             if (!wifi_ok) {
                 wifi_ok = wifi_connect_to_elm327();
@@ -792,15 +972,23 @@ bool wifi_connect_to_obd_adapter(void)
             return false;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1200));
+        vTaskDelay(pdMS_TO_TICKS(WIFI_DHCP_SETTLE_MS));
     }
 
+    wifi_last_fail = WIFI_FAIL_TCP;
     if (wifi_discover_tcp_endpoint()) {
+        wifi_last_fail = WIFI_FAIL_NONE;
         return true;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(800));
-    return wifi_discover_tcp_endpoint();
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    if (wifi_discover_tcp_endpoint()) {
+        wifi_last_fail = WIFI_FAIL_NONE;
+        return true;
+    }
+
+    ESP_LOGE(TAG, "No ELM327 TCP endpoint (gateway 192.168.0.10:35000?)");
+    return false;
 }
 
 bool wifi_connect_manual_network(const char *ssid, wifi_auth_mode_t authmode)
@@ -809,6 +997,7 @@ bool wifi_connect_manual_network(const char *ssid, wifi_auth_mode_t authmode)
         return false;
     }
 
+    wifi_last_fail = WIFI_FAIL_NONE;
     ESP_LOGI(TAG, "Manual connect to: %s", ssid);
 
     if (sock >= 0) {
@@ -820,35 +1009,33 @@ bool wifi_connect_manual_network(const char *ssid, wifi_auth_mode_t authmode)
     if (wifi_ap_connected) {
         esp_wifi_disconnect();
         wifi_ap_connected = false;
-        vTaskDelay(pdMS_TO_TICKS(300));
+        vTaskDelay(pdMS_TO_TICKS(400));
     }
 
     authmode = wifi_normalize_authmode(authmode);
     if (!wifi_associate_obd_ap(ssid, authmode)) {
-        ESP_LOGE(TAG, "Manual WiFi association failed: %s", ssid);
+        ESP_LOGE(TAG, "Manual WiFi association failed: %s (telefon ayni AP'de mi?)", ssid);
         return false;
     }
 
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    wifi_save_manual_selection(ssid, authmode);
 
+    vTaskDelay(pdMS_TO_TICKS(WIFI_DHCP_SETTLE_MS));
+
+    wifi_last_fail = WIFI_FAIL_TCP;
     if (!wifi_discover_tcp_endpoint()) {
-        vTaskDelay(pdMS_TO_TICKS(800));
+        vTaskDelay(pdMS_TO_TICKS(1500));
         if (!wifi_discover_tcp_endpoint()) {
             ESP_LOGE(TAG, "Manual TCP/ELM327 connect failed: %s", ssid);
-            esp_wifi_disconnect();
-            wifi_ap_connected = false;
+            /* Keep WiFi up so UI can show "WiFi var, TCP yok" and user can retry */
             return false;
         }
     }
 
-    strncpy(g_settings.wifi_ssid, ssid, sizeof(g_settings.wifi_ssid) - 1);
-    g_settings.wifi_ssid[sizeof(g_settings.wifi_ssid) - 1] = '\0';
-    g_settings.wifi_manual_mode = true;
-    g_settings.wifi_authmode = (uint8_t)authmode;
-    g_settings.preferred_connection = CONN_TYPE_WIFI;
+    wifi_last_fail = WIFI_FAIL_NONE;
     settings_save(&g_settings);
-
-    ESP_LOGI(TAG, "Manual network saved: %s", ssid);
+    ESP_LOGI(TAG, "Manual connect complete: %s -> %s:%u",
+             ssid, g_settings.obd_adapter_ip, g_settings.obd_adapter_port);
     return true;
 }
 
@@ -973,6 +1160,24 @@ esp_err_t wifi_send_cmd(const uint8_t *cmd, size_t len, uint8_t *resp, size_t *r
 bool wifi_is_connected(void)
 {
     return connected && wifi_ap_connected && sock >= 0;
+}
+
+bool wifi_link_up(void)
+{
+    return wifi_connect_to_obd_adapter();
+}
+
+bool wifi_obd_session_ready(void)
+{
+    if (!wifi_is_connected()) {
+        return false;
+    }
+
+    if (!elm327_init_session(wifi_elm_send, wifi_elm_recv)) {
+        return false;
+    }
+
+    return elm327_probe_obd_ready(wifi_elm_send, wifi_elm_recv);
 }
 
 esp_err_t wifi_get_status(void)

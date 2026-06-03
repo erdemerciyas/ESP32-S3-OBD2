@@ -1,7 +1,10 @@
 #pragma once
 
 #include "lvgl.h"
+#include "esp_io_expander.h"
 #include <stdbool.h>
+
+esp_io_expander_handle_t board_expander_get(void);
 
 #define DISPLAY_WIDTH 480
 #define DISPLAY_HEIGHT 480

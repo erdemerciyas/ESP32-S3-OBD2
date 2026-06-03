@@ -187,7 +187,7 @@ app_main
 | Özellik | Davranış |
 |---------|----------|
 | Kaydırma (≥50 px) | Gösterge önceki / sonraki (`dashboard_navigate_gauge_*`) |
-| Alt çizgi göstergeleri | Dokun → ilgili PID ekranı |
+| Alt nokta satırı | Aktif gösterge + `n/10` (kaydırma ile senkron) |
 | Çift dokunma (~320 ms) | Menü ekranı |
 | Menü kartları | Gösterge / Bağlantı / Ayarlar / Hakkında |
 | GERİ | Ana gösterge ekranı |
@@ -199,7 +199,10 @@ Layout sabitleri: `board_config.h` → `UI_SCREEN_W/H`, `UI_SWIPE_THRESHOLD_PX`,
 | Dosya | Rol |
 |-------|-----|
 | `components/display/ui/dashboard.c` | 5 ekran, touch/swipe/menu olayları |
-| `components/display/ui/gauge.c` | Tam ekran yay gösterge + 10 indicator |
+| `components/display/ui/gauge.c` | Tam ekran yay + indicator row + geçersiz `--` |
+| `components/connectivity/connectivity.c` | Bağlantı FSM + `connectivity_get_state()` |
+| `components/connectivity/elm327_session.c` | Paylaşılan AT init / OBD probe |
+| `components/telemetry/telemetry.c` | UI snapshot (obd + bağlantı) |
 | `components/display/ui/styles.c` | Renk paleti ve LVGL stilleri |
 
 ### Kritik kaynak dosyalar
@@ -401,6 +404,30 @@ ESP32-S3’te normal; `bt_manager.c` stub dalında derlenmeli. `CONFIG_BT_CLASSI
 | `sdkconfig.defaults` | S3, OCT PSRAM, font, stack, partition |
 | `build_flash.ps1` | Windows build/flash script |
 | `README.md` | Proje genel dokümantasyonu |
+
+---
+
+## Bağlantı durum makinesi (FSM)
+
+```
+DISCONNECTED → LINK_UP → ELM_INIT → OBD_READY
+                  ↘ ERROR
+```
+
+- **LINK_UP:** WiFi AP + TCP veya USB UART açık, ELM327 `ATI` probe OK
+- **OBD_READY:** `elm327_session` init + `010C` RPM probe OK
+- UI pill rengi: kırmızı / amber / yeşil (`dashboard.c` HUD)
+- Kopunca `obd_service_on_disconnect()` tüm `*_valid` bayraklarını temizler
+
+Sabitler `app.h` ile senkron: `OBD2_FAST_POLL_MS` (40), `GAUGE_UPDATE_RATE_HZ` (25), `WIFI_CONNECT_TIMEOUT_MS` (7000).
+
+### Parser birim testi
+
+```powershell
+idf.py test
+```
+
+`test/test_obd_parser.c` — örnek ELM327 cevabı `41 0C ...` ayrıştırma.
 
 ---
 

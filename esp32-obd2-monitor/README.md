@@ -2,25 +2,40 @@
 
 Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.1)** kartı ile araç OBD2 verilerini gerçek zamanlı izleyen gösterge paneli. 480×480 RGB ekranda LVGL 9 arayüzü.
 
-> **Yükleme, donanım pinleri, sorun giderme ve oturum notları:** [`UPLOAD.md`](UPLOAD.md) — bu dosyayı flash/build işlemleri için birincil kaynak olarak kullanın.
+> **Yükleme, donanım pinleri, sorun giderme ve oturum notları:** [`UPLOAD.md`](UPLOAD.md) — flash/build için birincil kaynak.
 
 ## Genel Bakış
 
 ### Özellikler
 
-- **Gerçek zamanlı PID’ler:** RPM, hız, antifriz, gaz, yakıt, yük, emme sıcaklığı, akü, yakıt tüketimi, DTC
-- **Tam ekran gösterge:** 10 parametre; sola/sağa kaydırarak geçiş
-- **Varsayılan açılış göstergesi:** Ana ekranda 4 sn uzun basış → NVS’e kaydedilir; sonraki açılışta bu gösterge ile başlar
-- **Dokunmatik menü:** Çift dokunma → menü; 4 alt ekran (Bağlantı, Ayarlar, Hakkında)
-- **Bağlantı:** WiFi (ELM327 tarama, yaygın şifre/auth denemeleri, IP alındıktan sonra TCP), USB-UART (GPIO43/44)
-- **Bluetooth SPP:** ESP32-S3 klasik BT desteklemez — OBD için WiFi veya USB ELM327 kullanın
-- **Açılış animasyonu:** `splash.c` boot splash, ardından ana gösterge
-- **Tema:** Workshop at Dusk (amber/krem, `ui-demo.html` ile uyumlu)
-- **NVS ayarları:** WiFi SSID/şifre, adaptör IP/port, parlaklık, varsayılan gösterge (`def_gauge`), otomatik yeniden bağlanma
+| Alan | Açıklama |
+|------|----------|
+| **PID’ler** | RPM, hız, antifriz, gaz, yakıt, yük, emme, akü, türetilmiş yakıt tüketimi (MAF+RPM), DTC |
+| **Evrensel OBD** | Bağlantıda `0100` / `0120` / `0140` destek bitmap’i; yalnız desteklenen PID’ler poll edilir; desteklenmeyen göstergeler kaydırmadan çıkar |
+| **Gösterge UI** | Tam ekran yay; sola/sağa yalnızca **mevcut** göstergeler; geçersiz değer `--`; alt nokta `n/N` (N = araçtaki desteklenen sayı) |
+| **WiFi HUD** | Sağ üst `LV_SYMBOL_WIFI`: kapalı → AP → TCP → OBD (renk/parlama) — gösterge, menü, bağlantı ekranı |
+| **Açılış** | `splash.c` ~5 sn EXTREME/MONITOR; ardından ana gösterge |
+| **Menü** | Çift dokunma; Bağlantı / Ayarlar / Hakkında; Türkçe metin + Font Awesome ikonları |
+| **Bağlantı** | WiFi ELM327 (tarama, OPEN öncelik, `WIFI_OBDII` profilleri, TCP keşfi), USB-UART (GPIO43/44) |
+| **FSM** | `DISCONNECTED` → `LINK_UP` → `ELM_INIT` → `OBD_READY` (`elm327_session`) |
+| **Telemetri** | `telemetry_snapshot_t` — UI ↔ `obd` gevşek bağlı |
+| **NVS** | `schema=2` — ayarlar, varsayılan açılış göstergesi, kayıtlı WiFi |
+| **Tema / haptic** | Workshop at Dusk; buzzer (TCA9554 EXIO8) |
+
+**Bluetooth:** ESP32-S3 klasik SPP desteklemez — OBD için WiFi veya USB ELM327.
+
+### Evrensel PID akışı
+
+1. OBD hazır olunca `obd_service_discover_supported_pids()` → ECU bitmap veya tablo probe.
+2. `pid_support_should_poll()` ile yalnız desteklenen Mode 01 PID’leri sorgulanır.
+3. 3 ardışık hata → `*_valid` sıfırlanır, PID “desteklenmiyor” işaretlenir.
+4. `gauge_sync_availability()` → kaydırma ve alt noktalar yalnız desteklenen göstergeler.
+
+Kod: `components/obd/pid_support.c`, `obd_service.c`, `components/display/ui/gauge.c`.
 
 ### Desteklenen araçlar
 
-Özellikle **Chevrolet Kalos 2005** (ISO 9141-2 / KWP) için hedeflenmiştir; standart OBD2 uyumlu araçlarla çalışır.
+**OBD-II uyumlu** tüm araçlar hedeflenir (PID seti ECU’ya göre değişir). Referans geliştirme: **Chevrolet Kalos 2005** — [`docs/vehicle-kalos-2005.md`](docs/vehicle-kalos-2005.md).
 
 ## Donanım
 
@@ -32,40 +47,28 @@ Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-L
 | IO genişletici | TCA9554 `0x20` — LCD RST/CS, TP RST, buzzer |
 | OBD | UART TX=43, RX=44 @ 38400 |
 
-Ayrıntılı pin / EXIO tablosu: [`UPLOAD.md` — Donanım](UPLOAD.md#donanım).
+Ayrıntı: [`UPLOAD.md` — Donanım](UPLOAD.md#donanım).
 
 ## Kurulum ve yükleme
 
 ### Gereksinimler
 
-- **ESP-IDF 5.1+** (bu projede **5.3.5** ile doğrulandı)
-- Python 3.8+, Ninja, USB sürücüsü (CP210x / CH340 / USB-JTAG)
+- **ESP-IDF 5.1+** (doğrulama: **5.3.5**)
+- Python 3.8+, Ninja, USB (CP210x / CH340 / USB-JTAG)
 
-### Windows (önerilen)
-
-Her yeni PowerShell oturumunda (veya `build_flash.ps1` ortamı kendisi yükler):
+### Windows
 
 ```powershell
 $env:IDF_TOOLS_PATH = "C:\Espressif"
 $env:Path = "C:\Espressif\python_env\idf5.3_py3.11_env\Scripts;" + $env:Path
 . C:\Espressif\frameworks\esp-idf-v5.3.5\export.ps1
-cd esp32-obd2-monitor   # depo kökünden
+cd esp32-obd2-monitor
 ```
 
 ```powershell
-# Script ile (UPLOAD.md ile aynı)
-.\build_flash.ps1 -Action build -Port COM3
 .\build_flash.ps1 -Action all -Port COM3
-
-# veya doğrudan
-idf.py build
-idf.py -p COM3 flash monitor
-```
-
-İlk kurulum / hedef değişimi:
-
-```powershell
-.\build_flash.ps1 -Action reconfigure
+# veya
+idf.py build flash -p COM3 monitor
 ```
 
 ### Linux / macOS
@@ -73,7 +76,6 @@ idf.py -p COM3 flash monitor
 ```bash
 . $IDF_PATH/export.sh
 cd esp32-obd2-monitor
-chmod +x build_flash.sh
 ./build_flash.sh all /dev/ttyUSB0
 ```
 
@@ -81,96 +83,100 @@ chmod +x build_flash.sh
 
 | Hareket | Sonuç |
 |---------|--------|
-| Sola kaydır | Sonraki gösterge |
-| Sağa kaydır | Önceki gösterge |
-| Uzun basış (4 sn) | Varsayılan açılış göstergesini kaydet (toast onayı) |
+| Sola / sağa kaydır | Sonraki / önceki **desteklenen** gösterge |
+| Uzun basış (4 sn) | Varsayılan açılış göstergesini NVS’e kaydet |
+| Alt noktalar + `n/N` | Aktif gösterge (N = bu araçta desteklenen sayı) |
 | Çift dokunma | Menü |
-| Menü kartı / GERİ | Alt sayfa / ana ekran |
+| Menü / GERİ | Alt sayfalar |
 
-Kaydırma eşiği ve uzun basış süresi: `board_config.h` (`UI_SWIPE_THRESHOLD_PX`, `UI_LONG_PRESS_MS`).
+Sabitler: `board_config.h` (`UI_SWIPE_THRESHOLD_PX`, `UI_LONG_PRESS_MS`, `UI_ROUND_INSET`).
+
+## WiFi / ELM327
+
+Referans: [Car Scanner — ELM327 Wi‑Fi](https://www.carscanner.info/wifi/)
+
+| Adım | ESP32 monitor |
+|------|----------------|
+| Adaptör AP’sine bağlan (`WIFI_OBDII`, `OBDII`, …) | Menü → Bağlantı → Tara |
+| Çoğu adaptör **şifresiz** | OPEN önce, sonra yaygın şifreler |
+| IP **192.168.0.10**, port **35000** | Varsayılan + gateway + `elm327_tcp_profiles[]` |
+| Telefon aynı AP’deyken ESP bağlanamaz | Bağlantı öncesi telefonu AP’den ayırın |
+
+- Başarı: DHCP IP + TCP; şifre/uç nokta NVS.
+- Kontak kapalı: “TCP hazır, kontağı açın” (RPM zorunlu değil).
+- Timeout: `WIFI_CONNECT_TIMEOUT_MS` = **15 s** (`app.h`).
 
 ## Proje yapısı
 
 ```
 esp32-obd2-monitor/
-├── main/
-│   ├── main.cpp              # display_init_task, OBD, gauge_update
-│   ├── idf_component.yml     # LVGL 9, ST7701, esp_lcd_touch, …
-│   └── CMakeLists.txt
+├── main/main.cpp
 ├── components/
+│   ├── app/                  # Sabitler (poll, WiFi timeout, IP/port)
+│   ├── connectivity/         # FSM, wifi/usb, elm327_session
 │   ├── display/
-│   │   ├── display.c
+│   │   ├── fonts/            # LVGL font .c (Türkçe + ikonlar; bkz. fonts/README.md)
 │   │   ├── lvgl_port/
-│   │   │   ├── board_config.h
-│   │   │   ├── lvgl_driver.c
-│   │   │   ├── tca9554_expander.c
-│   │   │   └── cst820_touch.c
 │   │   └── ui/
-│   │       ├── dashboard.c   # Ekranlar + touch
-│   │       ├── gauge.c
-│   │       ├── splash.c        # Boot splash
-│   │       ├── wifi_settings_ui.c
+│   │       ├── dashboard.c, gauge.c, splash.c
+│   │       ├── wifi_settings_ui.c, ui_icons.c, haptic.c
 │   │       └── styles.c
 │   ├── obd/
-│   ├── connectivity/           # elm327_wifi_profiles.h
-│   ├── system/
-│   └── app/
-├── partitions.csv            # 2 MB factory app
-├── sdkconfig.defaults        # OCT PSRAM, fontlar, stack
-├── build_flash.ps1
-├── build_flash.sh
-├── UPLOAD.md                 # Yükleme + düzenleme geçmişi
-├── ui-demo.html              # Tarayıcı UI önizlemesi
+│   │   ├── obd_service.c     # Poll, keşif, valid bayrakları
+│   │   ├── pid_table.c     # PID ↔ gösterge eşlemesi
+│   │   ├── pid_support.c   # 0100/0120/0140 bitmap
+│   │   └── obd_parser.c
+│   ├── telemetry/
+│   └── system/               # NVS settings
+├── test/                     # Unity: test_obd_parser, test_pid_support
+├── docs/
+├── build_flash.ps1 / .sh
+├── UPLOAD.md
 └── README.md
 ```
 
 ## Çalışma modu
 
-| Görev | Öncelik | Stack | Görev |
-|-------|---------|-------|--------|
-| `display_init` | 5 | 16 KB | LVGL + dashboard + splash (bir kez) |
-| `conn_reconnect` | 5 | 12 KB | Otomatik yeniden bağlanma (~15 s) |
-| `obd_diagnostic` | 6 | 8 KB | İlk DTC / protokol |
-| `obd_fast` | 6 | 4 KB | Hızlı PID (40 ms — RPM, hız, gaz) |
-| `obd_slow` | 4 | 4 KB | Yavaş PID (2 s) |
-| `obd_dtc` | 3 | 4 KB | Periyodik DTC (30 s) |
-| `gauge_update` | 4 | 8 KB | Gösterge UI (25 Hz) |
-| `lvgl_handler` | 5 | 8 KB | `lv_timer_handler` (core 1) |
+| Görev | Öncelik | Stack | Not |
+|-------|---------|-------|-----|
+| `display_init` | 5 | 16 KB | LVGL + splash + dashboard |
+| `conn_reconnect` | 5 | 12 KB | Otomatik yeniden bağlanma |
+| `obd_fast` | 6 | 4 KB | 40 ms — desteklenen hızlı PID |
+| `obd_slow` | 4 | 4 KB | 2 s — desteklenen yavaş PID |
+| `obd_dtc` | 3 | 4 KB | 30 s DTC |
+| `gauge_update` | 4 | 8 KB | 25 Hz UI |
+| `lvgl_handler` | 5 | 8 KB | core 1 |
 
-Sabitler: `app.h` — `OBD2_FAST_POLL_MS`, `GAUGE_UPDATE_RATE_HZ`, `WIFI_CONNECT_TIMEOUT_MS` (7 s).
+Sabitler: `app.h` — `OBD2_FAST_POLL_MS`, `GAUGE_UPDATE_RATE_HZ`, `OBD2_DEFAULT_ADAPTER_*`.
 
 ## Yapılandırma
 
-`idf.py menuconfig` → **OBD2 Monitor Settings** (WiFi SSID, adaptör IP/port, UART baud).
+`idf.py menuconfig` → **OBD2 Monitor Settings** (isteğe bağlı SSID/IP override).
 
-Varsayılan bağlantı tipi NVS’te; `connectivity_start(preferred_connection)` ile açılışta başlar.
-
-### WiFi / ELM327 notları
-
-- Bağlantı başarısı **DHCP ile IP alındıktan** sonra sayılır (`IP_EVENT_STA_GOT_IP`), yalnızca AP’ye ilişme yeterli değildir.
-- ELM327 SSID’leri için `elm327_wifi_profiles.h` şifre listesi + WPA2/WPA/WPA2 karışık auth sırası denenir; başarılı şifre NVS’e yazılır.
-- TCP uç noktası bulununca adaptör IP/port NVS’e kaydedilir.
+NVS: bağlantı tipi, WiFi profili, varsayılan gösterge, tema, parlaklık, haptic.
 
 ## Sorun giderme
 
-Özet tablolar ve log örnekleri **`UPLOAD.md` → Sorun giderme** bölümünde.
+Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 
 | Belirti | İlk bakılacak |
 |---------|----------------|
-| Siyah ekran | TCA9554 log, OCT PSRAM, ST7701 init — UPLOAD.md |
-| `idf.py` yok | `export.ps1`, `IDF_TOOLS_PATH` |
-| Partition küçük | `partitions.csv` + custom partition |
-| Dokunmatik yok | CST820 chip id, I2C `0x15` |
-| Kaydırma yok | Güncel `dashboard.c` touch overlay |
-| WiFi “bağlı” ama OBD yok | IP alındı mı? TCP log; `wifi_manager.c` |
-| Buzzer ötüyor | EXIO8 boot’ta LOW (`0x7F`) |
-| BT bağlanmıyor | ESP32-S3 SPP desteklemez — WiFi/USB |
+| Siyah ekran | TCA9554, PSRAM, ST7701 — UPLOAD.md |
+| Boş / eksik metin | Font charset (`fonts/gen_fonts.ps1`, `0x20-0x7E,0xA0-0x17F`) |
+| WiFi listede var, bağlanmıyor | Telefonu AP’den çıkar; OPEN; 15 s timeout |
+| Tüm göstergeler `--` | Kontak; PID keşfi log; ELM327 protokol |
+| Kaydırma 10 boş sayfa | Güncel firmware (evrensel PID filtresi) |
 
 ## Geliştirme
 
-- Yeni PID: `pid_table`, `obd_service.c`, `gauge_configs[]` (`gauge.c`)
-- UI sabitleri: `board_config.h`
-- Canlı HTML önizleme: `ui-demo.html` (tarayıcıda açın)
+| Görev | Dosyalar |
+|-------|----------|
+| Yeni PID + gösterge | `pid_table.c`, `apply_pid` (`obd_service.c`), `gauge_configs[]` |
+| Destek bitmap | `pid_support.c` |
+| ELM327 / WiFi | `elm327_session.c`, `wifi_manager.c`, `elm327_wifi_profiles.h` |
+| UI / ikon | `ui_icons.c`, `dashboard.c`, `board_config.h` |
+| Font üretimi | `components/display/fonts/README.md`, `gen_fonts.ps1` |
+| Testler | `test/test_obd_parser.c`, `test/test_pid_support.c` |
 
 ## Lisans
 

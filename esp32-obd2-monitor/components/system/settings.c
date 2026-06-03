@@ -4,9 +4,11 @@
 #include "nvs.h"
 #include "esp_log.h"
 #include "app.h"
+#include "settings.h"
 
 static const char *TAG = "settings";
 static const char *NVS_NAMESPACE = "obd2_settings";
+#define SETTINGS_SCHEMA_VERSION 3
 
 static void settings_apply_defaults(app_settings_t *settings)
 {
@@ -109,6 +111,9 @@ esp_err_t settings_load(app_settings_t *settings)
     read_err = nvs_get_u8(nvs, "wifi_manual", &manual);
     if (read_err == ESP_OK) {
         settings->wifi_manual_mode = (manual != 0);
+    } else if (read_err == ESP_ERR_NVS_NOT_FOUND) {
+        /* First boot: only connect after user picks a network from scan */
+        settings->wifi_manual_mode = true;
     }
 
     read_err = nvs_get_u8(nvs, "wifi_auth", &settings->wifi_authmode);
@@ -121,9 +126,25 @@ esp_err_t settings_load(app_settings_t *settings)
         ESP_LOGW(TAG, "Failed to read def_gauge: %s", esp_err_to_name(read_err));
     }
 
+    uint8_t schema = 0;
+    bool persist_migration = false;
+    read_err = nvs_get_u8(nvs, "schema", &schema);
+    if (read_err == ESP_OK && schema < SETTINGS_SCHEMA_VERSION) {
+        ESP_LOGI(TAG, "NVS schema %u -> %u (defaults applied)", schema, SETTINGS_SCHEMA_VERSION);
+        if (schema < 3 && settings->wifi_ssid[0] != '\0') {
+            settings->wifi_manual_mode = true;
+            persist_migration = true;
+            ESP_LOGI(TAG, "Migrated saved SSID to manual-only WiFi mode");
+        }
+    }
+
     nvs_close(nvs);
 
     settings_apply_defaults(settings);
+
+    if (persist_migration) {
+        settings_save(settings);
+    }
 
     ESP_LOGI(TAG, "Settings loaded (conn=%d, ip=%s:%u, ssid=%s, manual=%d, gauge=%u)",
              settings->preferred_connection,
@@ -162,6 +183,7 @@ esp_err_t settings_save(const app_settings_t *settings)
     nvs_set_u8(nvs, "wifi_manual", settings->wifi_manual_mode ? 1 : 0);
     nvs_set_u8(nvs, "wifi_auth", settings->wifi_authmode);
     nvs_set_u8(nvs, "def_gauge", settings->default_gauge);
+    nvs_set_u8(nvs, "schema", SETTINGS_SCHEMA_VERSION);
 
     err = nvs_commit(nvs);
     if (err != ESP_OK) {
