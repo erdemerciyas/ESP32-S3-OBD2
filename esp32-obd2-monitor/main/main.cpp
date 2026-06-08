@@ -2,7 +2,9 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
@@ -128,13 +130,34 @@ static void gauge_update_task(void *arg)
 }
 
 static SemaphoreHandle_t display_ready_sem;
+static bool display_task_uses_caps;
+
+static void connectivity_boot_task(void *arg)
+{
+    (void)arg;
+    /* Let splash/UI settle before starting RF scan (reduces ISR contention at boot) */
+    vTaskDelay(pdMS_TO_TICKS(3000));
+
+    esp_err_t conn_err = connectivity_start(g_settings.preferred_connection);
+    if (conn_err != ESP_OK) {
+        ESP_LOGW(TAG, "Initial connectivity failed, background reconnect active");
+    }
+    vTaskDelete(NULL);
+}
 
 static void display_init_task(void *arg)
 {
     (void)arg;
+    ESP_LOGI(TAG, "display_init task started (int_free=%u spiram_free=%u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     display_init();
     xSemaphoreGive(display_ready_sem);
-    vTaskDelete(NULL);
+    if (display_task_uses_caps) {
+        vTaskDeleteWithCaps(NULL);
+    } else {
+        vTaskDelete(NULL);
+    }
 }
 
 extern "C" void app_main(void)
@@ -150,20 +173,36 @@ extern "C" void app_main(void)
     conn_log_init();
     conn_log_dump();
 
-    /* Display init uses a lot of stack (LVGL + dashboard UI) */
+    /* Display init uses a lot of stack (LVGL + dashboard UI) — prefer PSRAM stack */
     display_ready_sem = xSemaphoreCreateBinary();
-    xTaskCreate(display_init_task, "display_init", 40960, NULL, 5, NULL);
-    xSemaphoreTake(display_ready_sem, portMAX_DELAY);
+    display_task_uses_caps = false;
+
+    ESP_LOGI(TAG, "Creating display_init task (int_free=%u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+    BaseType_t disp_ok = xTaskCreateWithCaps(
+        display_init_task, "display_init", 40960, NULL, 5, NULL,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (disp_ok == pdPASS) {
+        display_task_uses_caps = true;
+    } else {
+        ESP_LOGW(TAG, "display_init PSRAM stack failed (int_free=%u), retry internal 32KB",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        disp_ok = xTaskCreate(display_init_task, "display_init", 32768, NULL, 5, NULL);
+    }
+    if (disp_ok != pdPASS) {
+        ESP_LOGE(TAG, "display_init task create failed — cannot start UI");
+    } else {
+        xSemaphoreTake(display_ready_sem, portMAX_DELAY);
+    }
     vSemaphoreDelete(display_ready_sem);
     display_ready_sem = NULL;
 
     obd_service_init();
 
-    /* Start connectivity (WiFi/BT/USB) */
-    esp_err_t conn_err = connectivity_start(g_settings.preferred_connection);
-    if (conn_err != ESP_OK) {
-        ESP_LOGW(TAG, "Initial connectivity failed, background reconnect active");
-    }
+    /* UI + gauge tasks first; BT scan/connect runs in background (can take 30+ s) */
+    xTaskCreate(gauge_update_task, "gauge_update", 12288, NULL, 4, NULL);
+    xTaskCreate(connectivity_boot_task, "conn_boot", 12288, NULL, 4, NULL);
 
     /* Auto-reconnect when adapter drops or is not yet available */
     xTaskCreate(connectivity_reconnect_task, "conn_reconnect", 12288, NULL, 5, NULL);
@@ -175,9 +214,6 @@ extern "C" void app_main(void)
     xTaskCreate(obd_polling_task, "obd_fast", 4096, NULL, 6, NULL);
     xTaskCreate(obd_slow_poll_task, "obd_slow", 4096, NULL, 4, NULL);
     xTaskCreate(obd_dtc_poll_task, "obd_dtc", 4096, NULL, 3, NULL);
-
-    /* UI gauge updates */
-    xTaskCreate(gauge_update_task, "gauge_update", 8192, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "Application started successfully");
 }

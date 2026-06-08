@@ -1,22 +1,40 @@
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+
 /** Known ELM327 Bluetooth / BLE adapter name substrings (case-insensitive). */
 static const char *const bt_elm327_name_hints[] = {
     "OBDII",
     "OBD2",
     "OBD",
     "ELM327",
+    "ELM",
     "VGATE",
     "V-LINK",
+    "VLINK",
     "IOS-VLINK",
+    "OBDLINK",
     "OBDLink",
+    "MX+",
     "VEEPEAK",
     "LELINK",
     "ICAR",
+    "ICARPRO",
     "KONNWEI",
+    "KW",
     "ANCEL",
+    "SCAN",
+    "CAR",
+    "WIFI_OBD",
+    "VLINKED",
     "BT",
     "BLE",
+    "OBDII",
+    "OBD-II",
+    "OBDADAPTER",
+    "DONGLE",
     NULL,
 };
 

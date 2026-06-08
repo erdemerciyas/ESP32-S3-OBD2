@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,6 +62,7 @@ typedef struct {
     bt_device_info_t devices[BT_SCAN_MAX_RESULTS];
     int device_count;
     esp_err_t result;
+    bool caps_stack;
 } bt_ui_job_t;
 
 static lv_obj_t *bt_ui_btn_content(lv_obj_t *btn, const char *icon_sym, const char *text,
@@ -210,7 +212,7 @@ static void bt_ui_populate_device_list(const bt_device_info_t *devices, int coun
 
     if (count == 0) {
         lv_obj_t *empty = lv_label_create(device_list);
-        lv_label_set_text(empty, "No devices found");
+        lv_label_set_text(empty, "No BLE devices found");
         lv_obj_set_style_text_color(empty, color_text_dim, 0);
         lv_obj_set_style_text_font(empty, UI_FONT_MD, 0);
         return;
@@ -268,8 +270,8 @@ static void bt_ui_job_finished_cb(void *user_data)
         case BT_UI_JOB_SCAN:
             bt_ui_populate_device_list(job->devices, job->device_count);
             bt_ui_set_message(job->device_count > 0 ?
-                              "Tap a device to connect" :
-                              "Scan complete, no devices");
+                              "All BLE devices — tap to connect" :
+                              "Scan complete — no BLE devices");
             break;
         case BT_UI_JOB_AUTO:
             if (job->result == ESP_OK) {
@@ -334,7 +336,11 @@ static void bt_ui_worker_task(void *arg)
     }
 
     lv_async_call(bt_ui_job_finished_cb, job);
-    vTaskDelete(NULL);
+    if (job->caps_stack) {
+        vTaskDeleteWithCaps(NULL);
+    } else {
+        vTaskDelete(NULL);
+    }
 }
 
 static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
@@ -348,7 +354,15 @@ static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
     worker_busy = true;
     bt_ui_set_buttons_enabled(false);
 
-    BaseType_t created = xTaskCreate(bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, job, 5, NULL);
+    job->caps_stack = false;
+    BaseType_t created = xTaskCreateWithCaps(
+        bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, job, 5, NULL,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (created == pdPASS) {
+        job->caps_stack = true;
+    } else {
+        created = xTaskCreate(bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, job, 5, NULL);
+    }
     if (created != pdPASS) {
         ESP_LOGE(TAG, "Failed to start BT UI worker task");
         worker_busy = false;
@@ -406,7 +420,7 @@ static void bt_ui_scan_btn_cb(lv_event_t *e)
     }
 
     job->kind = BT_UI_JOB_SCAN;
-    bt_ui_set_message("Scanning Bluetooth...");
+    bt_ui_set_message("Scanning all BLE devices...");
     bt_ui_start_job(job, false);
 }
 

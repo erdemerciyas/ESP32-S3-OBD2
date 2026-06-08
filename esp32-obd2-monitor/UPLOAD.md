@@ -146,6 +146,7 @@ Partition değişince tam yeniden yapılandırma gerekir (`sdkconfig` silinip `s
 | 9 | Buzzer sürekli ötüyordu | EXIO8 başlangıçta LOW (`0x7F` reset + `BOARD_EXIO_BUZZER`) |
 | 10 | Settings açılınca siyah ekran | `CONFIG_LV_MEM_SIZE_KILOBYTES=128`; gauge order listesi lazy-build (`dashboard.c`) |
 | 11 | BT Scan UI thread'den çökme | `bt_cmd` worker task (20 KB) — NimBLE scan/connect kuyruğu |
+| 12 | Menüden ana ekrana dönünce reboot | `LV_SCR_LOAD_ANIM_FADE_ON` kaldırıldı → `lv_scr_load` + `gauge_cancel_transition()`; `lvgl_handler` 16 KB, `gauge_update` 12 KB |
 
 ### Başarılı boot log (referans)
 
@@ -183,7 +184,8 @@ app_main
             ├─ lv_refr_now()
             └─ lvgl_start() → lvgl_handler_task (core 1)
 
-  └─ gauge_update_task (8 KB) → display_update_gauges() @ 10 Hz
+  └─ gauge_update_task (12 KB) → display_update_gauges() @ 25 Hz
+  └─ lvgl_handler_task (16 KB, core 1) → lv_timer_handler()
 ```
 
 ### UI / dokunmatik (480×480 tam ekran)
@@ -194,7 +196,7 @@ app_main
 | Alt nokta satırı | Aktif gösterge + `n/10` (kaydırma ile senkron) |
 | Çift dokunma (~320 ms) | Menü ekranı |
 | Menü kartları | Gauge / Connection / Settings / About (English UI) |
-| BACK | Ana gösterge ekranı |
+| BACK | Ana gösterge ekranı (`lv_scr_load` — fade animasyonu kullanılmaz) |
 | Settings | Brightness, max RPM/speed, swipe order (+/−), haptic, sound |
 
 Tema: **Dark only** — Workshop at Dusk (`styles.c`); çoklu tema kaldırıldı.
@@ -402,6 +404,12 @@ Sürücü (CP210x / CH340 / USB-JTAG) ve kablo.
 - Seri log: `Dashboard ready — swipe gauges, double-tap menu`
 - Gösterge alanı taşması (eski layout) swipe’ı bozabilir; güncel `gauge.c` tam 480×480 kullanır
 
+### Menüden ana ekrana dönünce reboot
+
+- Eski firmware ana ekrana `lv_screen_load_anim(..., LV_SCR_LOAD_ANIM_FADE_ON, ...)` kullanıyordu; tam ekran gauge arc + opacity katmanları LVGL panic/reboot tetikliyordu
+- Güncel: `dashboard_show_screen(DASHBOARD_MAIN)` → `gauge_cancel_transition()` + `lv_scr_load()` (açılışla aynı yol)
+- Ek güvenlik: `lvgl_handler` stack **16 KB**, `gauge_update` stack **12 KB** (`lvgl_driver.c`, `main.cpp`)
+
 ### Buzzer sürekli ötüyor
 
 - EXIO8 (TCA9554 pin 7) boot'ta LOW olmalı
@@ -474,4 +482,4 @@ Proje kökü: `alternative/` (monorepo). Yalnız `esp32-obd2-monitor/` commit ed
 
 ---
 
-*Son güncelleme: Haziran 2026 — BLE ELM327 (NimBLE), English UI, Settings (max RPM/speed, swipe order), LVGL 128 KB heap, siyah ekran düzeltmeleri, `font_gauge_96`.*
+*Son güncelleme: Haziran 2026 — ana ekrana dönüş reboot düzeltmesi (`lv_scr_load`), LVGL/gauge task stack artışı, BLE ELM327 (NimBLE), English UI, Settings, LVGL 128 KB heap, `font_gauge_96`.*

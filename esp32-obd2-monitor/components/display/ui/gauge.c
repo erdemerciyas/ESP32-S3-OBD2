@@ -387,6 +387,18 @@ bool gauge_is_transitioning(void)
     return gauge_transition_busy;
 }
 
+void gauge_cancel_transition(void)
+{
+    if (gauge_face == NULL) {
+        gauge_transition_busy = false;
+        return;
+    }
+
+    lv_anim_delete(gauge_face, anim_opa_exec);
+    gauge_transition_busy = false;
+    lv_obj_set_style_opa(gauge_face, LV_OPA_COVER, 0);
+}
+
 static void render_gauge_value(gauge_type_t type, int16_t value)
 {
     if (type != current_fullscreen_gauge || gauge_transition_busy) {
@@ -584,11 +596,11 @@ gauge_type_t gauge_get_active(void)
 
 void gauge_create_indicator_row(lv_obj_t *parent)
 {
-    const int row_y = UI_SCREEN_H - 24;
+    const int row_y = UI_GAUGE_DOT_ROW_Y;
 
     for (int i = 0; i < GAUGE_MAX; i++) {
         indicator_dots[i] = lv_obj_create(parent);
-        lv_obj_set_size(indicator_dots[i], 8, 8);
+        lv_obj_set_size(indicator_dots[i], UI_GAUGE_DOT_SIZE, UI_GAUGE_DOT_SIZE);
         lv_obj_set_pos(indicator_dots[i], 0, row_y);
         lv_obj_set_style_radius(indicator_dots[i], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(indicator_dots[i], color_card_border, 0);
@@ -639,9 +651,10 @@ void gauge_update_indicator_row(gauge_type_t active)
         visible++;
     }
 
-    const int row_w = (int)visible * 8 + ((int)visible > 0 ? ((int)visible - 1) * 6 : 0);
+    const int row_w = (int)visible * UI_GAUGE_DOT_SIZE +
+                      ((int)visible > 0 ? ((int)visible - 1) * UI_GAUGE_DOT_SPACING : 0);
     const int row_x = (UI_SCREEN_W - row_w) / 2;
-    const int row_y = UI_SCREEN_H - 24;
+    const int row_y = UI_GAUGE_DOT_ROW_Y;
     unsigned draw_slot = 0;
 
     for (int order_slot = 0; order_slot < GAUGE_MAX; order_slot++) {
@@ -649,7 +662,8 @@ void gauge_update_indicator_row(gauge_type_t active)
         if (!gauge_nav_available[type] || indicator_dots[type] == NULL) {
             continue;
         }
-        lv_obj_set_pos(indicator_dots[type], row_x + (int)draw_slot * (8 + 6), row_y);
+        lv_obj_set_pos(indicator_dots[type],
+                       row_x + (int)draw_slot * (UI_GAUGE_DOT_SIZE + UI_GAUGE_DOT_SPACING), row_y);
         lv_obj_set_style_bg_color(indicator_dots[type],
                                   (type == active) ? lv_color_hex(gauge_get_color(type))
                                                    : color_card_border,

@@ -48,6 +48,18 @@ lv_obj_t *ui_conn_ind_create(lv_obj_t *parent, int x_ofs, int y_ofs)
     return icon;
 }
 
+lv_obj_t *ui_conn_ind_create_gauge_hud(lv_obj_t *parent)
+{
+    lv_obj_t *icon = lv_label_create(parent);
+    lv_label_set_text(icon, LV_SYMBOL_BLUETOOTH);
+    lv_obj_align(icon, LV_ALIGN_BOTTOM_MID, 0, UI_GAUGE_CONN_ICON_Y_OFS);
+    lv_obj_set_style_text_font(icon, UI_FONT_ICON, 0);
+    lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    ui_conn_ind_apply(icon, UI_CONN_IND_OFF);
+    return icon;
+}
+
 void ui_conn_ind_apply(lv_obj_t *icon, ui_conn_ind_level_t level)
 {
     if (icon == NULL) {

@@ -15,7 +15,7 @@ Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-L
 | **Gösterge UI** | Tam ekran yay; büyük değer fontu (`font_gauge_96`); sola/sağa yalnızca **mevcut** göstergeler; geçersiz değer `--`; alt nokta `n/N` |
 | **Bluetooth HUD** | Sağ üst BT ikonu: kapalı → bağlanıyor → ELM → OBD (renk/parlama) — gösterge, menü, Connection ekranı |
 | **Açılış** | `splash.c` ~5 sn EXTREME/MONITOR; ardından ana gösterge |
-| **Menü** | Çift dokunma; **Gauge / Connection / Settings / About**; Font Awesome ikonları |
+| **Menü** | Çift dokunma; **Gauge / Connection / Settings / About**; Font Awesome ikonları; **BACK** → ana ekran (`lv_scr_load`, fade animasyonu yok) |
 | **Bağlantı** | **BLE ELM327** (NimBLE central): Scan, Auto, Forget, Disconnect; kayıtlı adaptör; USB-UART (GPIO43/44) yedek |
 | **Bağlantı günlüğü** | `conn_log` — son 20 olay NVS'te; açılışta seri porta dökülür |
 | **FSM** | `DISCONNECTED` → `LINK_UP` → `ELM_INIT` → `OBD_READY` (`elm327_session`) |
@@ -172,8 +172,8 @@ esp32-obd2-monitor/
 | `obd_fast` | 6 | 4 KB | 40 ms — desteklenen hızlı PID |
 | `obd_slow` | 4 | 4 KB | 2 s — desteklenen yavaş PID |
 | `obd_dtc` | 3 | 4 KB | 30 s DTC |
-| `gauge_update` | 4 | 8 KB | 25 Hz UI |
-| `lvgl_handler` | 5 | 8 KB | core 1 |
+| `gauge_update` | 4 | **12 KB** | 25 Hz UI |
+| `lvgl_handler` | 5 | **16 KB** | core 1 |
 
 Sabitler: `app.h` — `OBD2_FAST_POLL_MS`, `GAUGE_UPDATE_RATE_HZ`, `BT_CONNECT_TIMEOUT_MS`.
 
@@ -196,6 +196,7 @@ Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 | Belirti | İlk bakılacak |
 |---------|----------------|
 | Siyah ekran | LVGL heap 128 KB; lazy settings UI; `display_init` 40 KB stack — UPLOAD.md |
+| Menüden BACK → reboot | Eski `LV_SCR_LOAD_ANIM_FADE_ON`; güncel `lv_scr_load` + `gauge_cancel_transition()` |
 | Scan'de reboot | Eski firmware (NimBLE UI thread); güncel `bt_cmd` worker |
 | BT listede var, bağlanmıyor | Adaptör BLE mi? (klasik SPP değil); `conn_log`; 15 s timeout |
 | Tüm göstergeler `--` | Kontak; PID keşfi log; ELM327 protokol |

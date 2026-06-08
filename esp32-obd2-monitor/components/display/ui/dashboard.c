@@ -42,11 +42,13 @@ static lv_timer_t *long_press_timer;
 static lv_obj_t *default_gauge_toast;
 static lv_timer_t *toast_hide_timer;
 static bool dashboard_first_show = true;
-static lv_obj_t *conn_wifi_icon;
+static lv_obj_t *conn_obd_hud_icon;
 static lv_obj_t *menu_wifi_icon;
 static lv_obj_t *dtc_banner;
 
 extern app_settings_t g_settings;
+
+static void dashboard_raise_gauge_hud_layers(void);
 
 static void settings_persist_from_ui(void)
 {
@@ -407,8 +409,15 @@ void dashboard_show_screen(dashboard_screen_t screen)
     }
 
     if (screen == DASHBOARD_MAIN) {
-        lv_screen_load_anim(target, LV_SCR_LOAD_ANIM_FADE_ON, 220, 0, false);
+        /* FADE_ON here caused reboots (nested opacity + gauge arc redraw). Match boot path. */
+        gauge_cancel_transition();
+        lv_scr_load(target);
+        dashboard_raise_gauge_hud_layers();
     } else {
+        if (lv_scr_act() == screen_dashboard) {
+            cancel_long_press_timer();
+            touch_tracking = false;
+        }
         lv_screen_load_anim(target, LV_SCR_LOAD_ANIM_MOVE_LEFT, 240, 0, false);
     }
 }
@@ -418,8 +427,8 @@ static void dashboard_update_conn_indicators(const telemetry_snapshot_t *snap)
     const ui_conn_ind_level_t level = ui_conn_ind_level_from(
         snap->bt_linked, snap->bt_serial_up, snap->conn_state);
 
-    if (conn_wifi_icon != NULL) {
-        ui_conn_ind_apply(conn_wifi_icon, level);
+    if (conn_obd_hud_icon != NULL) {
+        ui_conn_ind_apply(conn_obd_hud_icon, level);
     }
     if (menu_wifi_icon != NULL) {
         ui_conn_ind_apply(menu_wifi_icon, level);
@@ -581,9 +590,20 @@ static void create_default_gauge_toast(lv_obj_t *parent)
     lv_obj_remove_flag(default_gauge_toast, LV_OBJ_FLAG_CLICKABLE);
 }
 
-static void create_connection_wifi_icon(lv_obj_t *parent)
+static void create_connection_obd_hud_icon(lv_obj_t *parent)
 {
-    conn_wifi_icon = ui_conn_ind_create(parent, -UI_ROUND_INSET, UI_ROUND_INSET / 2);
+    conn_obd_hud_icon = ui_conn_ind_create_gauge_hud(parent);
+}
+
+static void dashboard_raise_gauge_hud_layers(void)
+{
+    gauge_raise_indicator_layers();
+    if (conn_obd_hud_icon != NULL) {
+        lv_obj_move_foreground(conn_obd_hud_icon);
+    }
+    if (touch_overlay != NULL) {
+        lv_obj_move_foreground(touch_overlay);
+    }
 }
 
 static void create_dashboard_screen(void)
@@ -601,7 +621,7 @@ static void create_dashboard_screen(void)
 
     gauge_create_fullscreen(screen_dashboard, startup_gauge);
     gauge_create_indicator_row(screen_dashboard);
-    create_connection_wifi_icon(screen_dashboard);
+    create_connection_obd_hud_icon(screen_dashboard);
 
     dtc_banner = lv_label_create(screen_dashboard);
     lv_obj_set_width(dtc_banner, UI_SCREEN_W - 64);
@@ -614,13 +634,13 @@ static void create_dashboard_screen(void)
     create_default_gauge_toast(screen_dashboard);
     create_touch_overlay(screen_dashboard);
 
-    if (conn_wifi_icon != NULL) {
-        lv_obj_move_foreground(conn_wifi_icon);
-    }
     if (dtc_banner != NULL) {
         lv_obj_move_foreground(dtc_banner);
     }
-    gauge_raise_indicator_layers();
+    dashboard_raise_gauge_hud_layers();
+    if (default_gauge_toast != NULL) {
+        lv_obj_move_foreground(default_gauge_toast);
+    }
 }
 
 static lv_obj_t *create_sub_header(lv_obj_t *parent, const char *title, const char *icon_sym)
@@ -744,7 +764,7 @@ static void create_menu_screen(void)
     ui_subscreen_prepare(screen_menu);
 
     create_menu_card(screen_menu, LV_SYMBOL_CHARGE, "Gauges", "Live PID readings", 0, 0, DASHBOARD_MAIN);
-    create_menu_card(screen_menu, LV_SYMBOL_BLUETOOTH, "Connection", "Bluetooth (ELM327)", 1, 0, DASHBOARD_CONNECTION);
+    create_menu_card(screen_menu, LV_SYMBOL_BLUETOOTH, "Connection", "BLE OBD adapters", 1, 0, DASHBOARD_CONNECTION);
     create_menu_card(screen_menu, LV_SYMBOL_SETTINGS, "Settings", "Display and alerts", 0, 1, DASHBOARD_SETTINGS);
     create_menu_card(screen_menu, LV_SYMBOL_LIST, "About", "Version and hardware", 1, 1, DASHBOARD_ABOUT);
 

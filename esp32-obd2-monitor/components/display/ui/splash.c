@@ -110,12 +110,9 @@ void splash_run_boot_animation(lv_obj_t *next_screen)
     splash_hold(SPLASH_HOLD_MS);
 
     if (next_screen != NULL) {
-        lv_screen_load_anim(next_screen, LV_SCR_LOAD_ANIM_FADE_ON, 200, 0, true);
-        for (int i = 0; i < 16; i++) {
-            lv_timer_handler();
-            lv_refr_now(NULL);
-            vTaskDelay(pdMS_TO_TICKS(16));
-        }
+        lv_scr_load(next_screen);
+        lv_obj_delete(scr);
+        lv_refr_now(NULL);
     } else {
         lv_obj_delete(scr);
     }

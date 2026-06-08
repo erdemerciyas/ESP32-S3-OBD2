@@ -17,7 +17,8 @@ extern app_settings_t g_settings;
 
 static bool obd_ready;
 static bool serial_ready;
-static bool connect_failed;
+static volatile bool connect_failed;
+static volatile bool op_abort;
 static bt_fail_stage_t last_fail = BT_FAIL_NONE;
 
 #if CONFIG_BT_NIMBLE_ENABLED
@@ -37,7 +38,10 @@ static bt_fail_stage_t last_fail = BT_FAIL_NONE;
 extern void ble_store_config_init(void);
 
 #define BT_RX_BUF_SIZE 512
-#define BT_SCAN_DEFAULT_MS 5000
+#define BT_SCAN_DEFAULT_MS 10000
+#define BT_AUTO_CONNECT_MAX_ATTEMPTS 12
+#define BT_MAX_GATT_SVCS 16
+#define BT_MAX_GATT_CHRS 24
 #define BT_CMD_TASK_STACK  20480
 #define BT_CMD_QUEUE_LEN   4
 
@@ -58,6 +62,8 @@ typedef struct {
 } bt_cmd_msg_t;
 
 static bool stack_started;
+static bool port_inited;
+static volatile bool host_synced;
 static bool cmd_worker_started;
 static QueueHandle_t bt_cmd_q;
 static TaskHandle_t bt_cmd_task_h;
@@ -82,6 +88,7 @@ static bool scan_done;
 static bool bt_connect_auto_internal(void);
 static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display_name);
 static void bt_disconnect_internal(void);
+static void bt_abort_pending_ops(void);
 
 static void bt_addr_to_str(const ble_addr_t *addr, char *out, size_t out_len)
 {
@@ -149,6 +156,9 @@ static int bt_elm_send(const char *data, size_t len)
     }
 
     int rc = ble_gattc_write_no_rsp_flat(conn_handle, tx_char_handle, data, (uint16_t)len);
+    if (rc != 0) {
+        rc = ble_gattc_write_flat(conn_handle, tx_char_handle, data, (uint16_t)len, NULL, NULL);
+    }
     return (rc == 0) ? (int)len : -1;
 }
 
@@ -187,6 +197,23 @@ static uint16_t disc_svc_start;
 static uint16_t disc_svc_end;
 static uint16_t disc_found_chr;
 
+typedef struct {
+    uint16_t start_handle;
+    uint16_t end_handle;
+    uint16_t uuid16;
+} bt_gatt_svc_entry_t;
+
+typedef struct {
+    uint16_t val_handle;
+    uint16_t uuid16;
+    uint8_t properties;
+} bt_gatt_chr_entry_t;
+
+static bt_gatt_svc_entry_t gatt_svc_list[BT_MAX_GATT_SVCS];
+static int gatt_svc_list_count;
+static bt_gatt_chr_entry_t gatt_chr_list[BT_MAX_GATT_CHRS];
+static int gatt_chr_list_count;
+
 static int bt_gatt_op_done_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                               void *arg)
 {
@@ -217,13 +244,96 @@ static int bt_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *err
     return bt_gatt_op_done_cb(conn_handle, error, arg);
 }
 
+static uint16_t bt_uuid_to_u16(const ble_uuid_t *uuid)
+{
+    if (uuid == NULL) {
+        return 0;
+    }
+    if (uuid->type == BLE_UUID_TYPE_16) {
+        return ble_uuid_u16(uuid);
+    }
+    return 0;
+}
+
+static bool bt_is_standard_ble_svc(uint16_t uuid16)
+{
+    return uuid16 == 0x1800 || uuid16 == 0x1801 || uuid16 == 0x180A;
+}
+
+static int bt_all_svc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                              const struct ble_gatt_svc *service, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+
+    if (error != NULL && error->status == 0 && service != NULL &&
+        gatt_svc_list_count < BT_MAX_GATT_SVCS) {
+        uint16_t uuid16 = bt_uuid_to_u16(&service->uuid.u);
+        if (!bt_is_standard_ble_svc(uuid16)) {
+            bt_gatt_svc_entry_t *entry = &gatt_svc_list[gatt_svc_list_count++];
+            entry->start_handle = service->start_handle;
+            entry->end_handle = service->end_handle;
+            entry->uuid16 = uuid16;
+        }
+    }
+    return bt_gatt_op_done_cb(conn_handle, error, arg);
+}
+
+static int bt_all_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                              const struct ble_gatt_chr *chr, void *arg)
+{
+    (void)conn_handle;
+    (void)arg;
+
+    if (error != NULL && error->status == 0 && chr != NULL &&
+        gatt_chr_list_count < BT_MAX_GATT_CHRS) {
+        bt_gatt_chr_entry_t *entry = &gatt_chr_list[gatt_chr_list_count++];
+        entry->val_handle = chr->val_handle;
+        entry->uuid16 = bt_uuid_to_u16(&chr->uuid.u);
+        entry->properties = chr->properties;
+    }
+    return bt_gatt_op_done_cb(conn_handle, error, arg);
+}
+
 static bool bt_gatt_wait_op(int rc, int timeout_ms)
 {
     if (rc != 0) {
         return false;
     }
-    return gatt_disc_sem != NULL &&
-           xSemaphoreTake(gatt_disc_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    while (xTaskGetTickCount() < deadline) {
+        if (op_abort) {
+            return false;
+        }
+        if (gatt_disc_sem != NULL &&
+            xSemaphoreTake(gatt_disc_sem, pdMS_TO_TICKS(100)) == pdTRUE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void bt_abort_pending_ops(void)
+{
+    op_abort = true;
+    connect_failed = true;
+
+    if (!stack_started) {
+        return;
+    }
+
+    ble_gap_disc_cancel();
+    ble_gap_conn_cancel();
+
+    if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+        conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    }
+
+    serial_ready = false;
+    obd_ready = false;
+    notify_enabled = false;
 }
 
 static bool bt_discover_svc_uuid(const ble_uuid128_t *uuid)
@@ -259,6 +369,123 @@ static bool bt_discover_chr_uuid(const ble_uuid128_t *uuid, uint16_t *out_handle
     return true;
 }
 
+static bool bt_try_uuid_serial_pair(const ble_uuid128_t *svc_uuid,
+                                    const ble_uuid128_t *tx_uuid,
+                                    const ble_uuid128_t *rx_uuid,
+                                    bool rx_optional,
+                                    const char *label)
+{
+    uint16_t tx = 0;
+    uint16_t rx = 0;
+
+    if (!bt_discover_svc_uuid(svc_uuid) ||
+        !bt_discover_chr_uuid(tx_uuid, &tx)) {
+        return false;
+    }
+
+    if (rx_uuid != NULL && bt_discover_chr_uuid(rx_uuid, &rx) && rx != 0) {
+        tx_char_handle = tx;
+        rx_char_handle = rx;
+        ESP_LOGI(TAG, "Serial profile: %s (TX=%u RX=%u)", label, tx, rx);
+        return true;
+    }
+
+    if (rx_optional || rx_uuid == NULL) {
+        tx_char_handle = tx;
+        rx_char_handle = tx;
+        ESP_LOGI(TAG, "Serial profile: %s (TX/RX=%u)", label, tx);
+        return true;
+    }
+
+    return false;
+}
+
+static bool bt_discover_chrs_in_service(uint16_t start_handle, uint16_t end_handle)
+{
+    gatt_chr_list_count = 0;
+    if (gatt_disc_sem != NULL) {
+        xSemaphoreTake(gatt_disc_sem, 0);
+    }
+
+    int rc = ble_gattc_disc_all_chrs(conn_handle, start_handle, end_handle,
+                                     bt_all_chr_disc_cb, NULL);
+    return bt_gatt_wait_op(rc, 8000) && gatt_chr_list_count > 0;
+}
+
+static bool bt_pick_serial_from_chr_list(const char *label)
+{
+    uint16_t write_hdl = 0;
+    uint16_t notify_hdl = 0;
+    uint16_t indicate_hdl = 0;
+    uint16_t read_hdl = 0;
+
+    for (int i = 0; i < gatt_chr_list_count; i++) {
+        const bt_gatt_chr_entry_t *chr = &gatt_chr_list[i];
+        const uint8_t prop = chr->properties;
+
+        if ((prop & (BLE_GATT_CHR_PROP_WRITE | BLE_GATT_CHR_PROP_WRITE_NO_RSP)) != 0) {
+            if (write_hdl == 0 || chr->uuid16 == 0xFFE1 || chr->uuid16 == 0xFFF1 ||
+                chr->uuid16 == 0xABE1) {
+                write_hdl = chr->val_handle;
+            }
+        }
+        if ((prop & BLE_GATT_CHR_PROP_NOTIFY) != 0) {
+            if (notify_hdl == 0 || chr->uuid16 == 0xFFE2 || chr->uuid16 == 0xFFF2) {
+                notify_hdl = chr->val_handle;
+            }
+        }
+        if ((prop & BLE_GATT_CHR_PROP_INDICATE) != 0 && indicate_hdl == 0) {
+            indicate_hdl = chr->val_handle;
+        }
+        if ((prop & BLE_GATT_CHR_PROP_READ) != 0 && read_hdl == 0) {
+            read_hdl = chr->val_handle;
+        }
+    }
+
+    if (write_hdl == 0) {
+        return false;
+    }
+
+    tx_char_handle = write_hdl;
+    if (notify_hdl != 0 && notify_hdl != write_hdl) {
+        rx_char_handle = notify_hdl;
+    } else if (indicate_hdl != 0 && indicate_hdl != write_hdl) {
+        rx_char_handle = indicate_hdl;
+    } else if (read_hdl != 0 && read_hdl != write_hdl) {
+        rx_char_handle = read_hdl;
+    } else {
+        rx_char_handle = write_hdl;
+    }
+
+    ESP_LOGI(TAG, "Generic serial profile: %s (TX=%u RX=%u)", label, tx_char_handle, rx_char_handle);
+    return true;
+}
+
+static bool bt_discover_serial_profile_generic(void)
+{
+    gatt_svc_list_count = 0;
+    if (gatt_disc_sem != NULL) {
+        xSemaphoreTake(gatt_disc_sem, 0);
+    }
+
+    int rc = ble_gattc_disc_all_svcs(conn_handle, bt_all_svc_disc_cb, NULL);
+    if (!bt_gatt_wait_op(rc, 10000) || gatt_svc_list_count == 0) {
+        return false;
+    }
+
+    for (int i = 0; i < gatt_svc_list_count; i++) {
+        char label[24];
+        snprintf(label, sizeof(label), "svc 0x%04X", gatt_svc_list[i].uuid16);
+        if (bt_discover_chrs_in_service(gatt_svc_list[i].start_handle,
+                                        gatt_svc_list[i].end_handle) &&
+            bt_pick_serial_from_chr_list(label)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool bt_discover_serial_profile(void)
 {
     static const ble_uuid128_t nus_svc = BLE_UUID128_INIT(
@@ -271,32 +498,45 @@ static bool bt_discover_serial_profile(void)
         0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xe0, 0xff, 0x00, 0x00);
     static const ble_uuid128_t ffe1_chr = BLE_UUID128_INIT(
         0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xe1, 0xff, 0x00, 0x00);
-
     static const ble_uuid128_t ffe2_chr = BLE_UUID128_INIT(
         0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xe2, 0xff, 0x00, 0x00);
+    static const ble_uuid128_t fff0_svc = BLE_UUID128_INIT(
+        0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xf0, 0xff, 0x00, 0x00);
+    static const ble_uuid128_t fff1_chr = BLE_UUID128_INIT(
+        0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xf1, 0xff, 0x00, 0x00);
+    static const ble_uuid128_t fff2_chr = BLE_UUID128_INIT(
+        0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xf2, 0xff, 0x00, 0x00);
+    static const ble_uuid128_t abe0_svc = BLE_UUID128_INIT(
+        0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xe0, 0xab, 0x00, 0x00);
+    static const ble_uuid128_t abe1_chr = BLE_UUID128_INIT(
+        0xfb, 0x34, 0x9b, 0x5f, 0x80, 0x00, 0x00, 0x80, 0x00, 0x10, 0x00, 0x00, 0xe1, 0xab, 0x00, 0x00);
+    static const ble_uuid128_t issc_svc = BLE_UUID128_INIT(
+        0xdf, 0x1a, 0xfc, 0x1c, 0xaf, 0xdf, 0xa9, 0x8f, 0xe5, 0x4a, 0x7d, 0xfe, 0x43, 0x53, 0x53, 0x49);
+    static const ble_uuid128_t issc_tx = BLE_UUID128_INIT(
+        0x41, 0x53, 0x53, 0x49, 0x7d, 0xfe, 0xe5, 0x4a, 0x8f, 0xa9, 0xdf, 0xaf, 0x1c, 0xfc, 0x1a, 0xdf);
+    static const ble_uuid128_t issc_rx = BLE_UUID128_INIT(
+        0x42, 0x53, 0x53, 0x49, 0x7d, 0xfe, 0xe5, 0x4a, 0x8f, 0xa9, 0xdf, 0xaf, 0x1c, 0xfc, 0x1a, 0xdf);
 
     tx_char_handle = 0;
     rx_char_handle = 0;
 
-    if (bt_discover_svc_uuid(&nus_svc) &&
-        bt_discover_chr_uuid(&nus_tx, &tx_char_handle) &&
-        bt_discover_chr_uuid(&nus_rx, &rx_char_handle)) {
-        ESP_LOGI(TAG, "NUS serial profile found");
+    if (bt_try_uuid_serial_pair(&nus_svc, &nus_tx, &nus_rx, false, "NUS")) {
+        return true;
+    }
+    if (bt_try_uuid_serial_pair(&ffe0_svc, &ffe1_chr, &ffe2_chr, true, "FFE0")) {
+        return true;
+    }
+    if (bt_try_uuid_serial_pair(&fff0_svc, &fff1_chr, &fff2_chr, true, "FFF0")) {
+        return true;
+    }
+    if (bt_try_uuid_serial_pair(&abe0_svc, &abe1_chr, NULL, true, "ABE0")) {
+        return true;
+    }
+    if (bt_try_uuid_serial_pair(&issc_svc, &issc_tx, &issc_rx, false, "ISSC")) {
         return true;
     }
 
-    if (bt_discover_svc_uuid(&ffe0_svc) &&
-        bt_discover_chr_uuid(&ffe1_chr, &tx_char_handle)) {
-        if (bt_discover_chr_uuid(&ffe2_chr, &rx_char_handle)) {
-            ESP_LOGI(TAG, "FFE0/FFE1+FFE2 serial profile found");
-        } else {
-            rx_char_handle = tx_char_handle;
-            ESP_LOGI(TAG, "FFE0/FFE1 serial profile found");
-        }
-        return true;
-    }
-
-    return false;
+    return bt_discover_serial_profile_generic();
 }
 
 static int bt_enable_notifications(void)
@@ -314,6 +554,7 @@ static void bt_on_sync(void)
     if (rc != 0) {
         ESP_LOGE(TAG, "ensure_addr failed: %d", rc);
     }
+    host_synced = true;
     if (sync_sem != NULL) {
         xSemaphoreGive(sync_sem);
     }
@@ -322,10 +563,83 @@ static void bt_on_sync(void)
 static void bt_on_reset(int reason)
 {
     ESP_LOGW(TAG, "NimBLE reset: %d", reason);
+    host_synced = false;
     serial_ready = false;
     obd_ready = false;
     notify_enabled = false;
     conn_handle = BLE_HS_CONN_HANDLE_NONE;
+}
+
+static int bt_scan_find_index(const char *addr_str)
+{
+    for (int i = 0; i < scan_count; i++) {
+        if (strcmp(scan_buf[i].addr, addr_str) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void bt_scan_apply_name(bt_device_info_t *entry, const struct ble_hs_adv_fields *fields)
+{
+    if (fields == NULL || fields->name == NULL || fields->name_len == 0) {
+        return;
+    }
+
+    size_t copy = fields->name_len;
+    if (copy >= sizeof(entry->name)) {
+        copy = sizeof(entry->name) - 1;
+    }
+    memcpy(entry->name, fields->name, copy);
+    entry->name[copy] = '\0';
+}
+
+static void bt_scan_upsert_device(const struct ble_gap_disc_desc *d)
+{
+    char addr_str[BT_ADDR_STR_LEN];
+    bt_addr_to_str(&d->addr, addr_str, sizeof(addr_str));
+
+    int idx = bt_scan_find_index(addr_str);
+    if (idx < 0) {
+        if (scan_count >= BT_SCAN_MAX_RESULTS) {
+            return;
+        }
+        idx = scan_count++;
+        memset(&scan_buf[idx], 0, sizeof(scan_buf[idx]));
+        strncpy(scan_buf[idx].addr, addr_str, sizeof(scan_buf[idx].addr) - 1);
+        scan_buf[idx].addr_type = d->addr.type;
+        snprintf(scan_buf[idx].name, sizeof(scan_buf[idx].name), "BLE %s", addr_str);
+    }
+
+    if (d->rssi > scan_buf[idx].rssi) {
+        scan_buf[idx].rssi = d->rssi;
+    }
+
+    struct ble_hs_adv_fields fields;
+    memset(&fields, 0, sizeof(fields));
+    if (ble_hs_adv_parse_fields(&fields, d->data, d->length_data) == 0) {
+        bt_scan_apply_name(&scan_buf[idx], &fields);
+    }
+
+    scan_buf[idx].is_obd_hint = bt_name_looks_like_elm327(scan_buf[idx].name);
+}
+
+static int bt_scan_cmp_devices(const void *a, const void *b)
+{
+    const bt_device_info_t *da = (const bt_device_info_t *)a;
+    const bt_device_info_t *db = (const bt_device_info_t *)b;
+
+    if (da->is_obd_hint != db->is_obd_hint) {
+        return db->is_obd_hint - da->is_obd_hint;
+    }
+    return (int)db->rssi - (int)da->rssi;
+}
+
+static void bt_scan_sort_results(void)
+{
+    if (scan_count > 1) {
+        qsort(scan_buf, (size_t)scan_count, sizeof(scan_buf[0]), bt_scan_cmp_devices);
+    }
 }
 
 static int bt_gap_event(struct ble_gap_event *event, void *arg)
@@ -334,30 +648,7 @@ static int bt_gap_event(struct ble_gap_event *event, void *arg)
 
     switch (event->type) {
     case BLE_GAP_EVENT_DISC: {
-        struct ble_gap_disc_desc *d = &event->disc;
-        if (scan_count < BT_SCAN_MAX_RESULTS) {
-            bt_device_info_t *entry = &scan_buf[scan_count];
-            memset(entry, 0, sizeof(*entry));
-            bt_addr_to_str(&d->addr, entry->addr, sizeof(entry->addr));
-            entry->addr_type = d->addr.type;
-            entry->rssi = d->rssi;
-
-            struct ble_hs_adv_fields fields;
-            memset(&fields, 0, sizeof(fields));
-            if (ble_hs_adv_parse_fields(&fields, d->data, d->length_data) == 0 &&
-                fields.name != NULL && fields.name_len > 0) {
-                size_t copy = fields.name_len;
-                if (copy >= sizeof(entry->name)) {
-                    copy = sizeof(entry->name) - 1;
-                }
-                memcpy(entry->name, fields.name, copy);
-                entry->name[copy] = '\0';
-            } else {
-                snprintf(entry->name, sizeof(entry->name), "Device %d", scan_count + 1);
-            }
-            entry->is_obd_hint = bt_name_looks_like_elm327(entry->name);
-            scan_count++;
-        }
+        bt_scan_upsert_device(&event->disc);
         return 0;
     }
 
@@ -426,11 +717,14 @@ static void bt_host_task(void *param)
 
 static bool bt_wait_sync(int timeout_ms)
 {
+    if (host_synced) {
+        return true;
+    }
     if (sync_sem == NULL) {
         return false;
     }
-    xSemaphoreTake(sync_sem, 0);
-    return xSemaphoreTake(sync_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    /* Do not drain the semaphore — sync may already have fired before we wait */
+    return xSemaphoreTake(sync_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE || host_synced;
 }
 
 static bool bt_ensure_stack(void)
@@ -439,28 +733,33 @@ static bool bt_ensure_stack(void)
         return true;
     }
 
-    rx_mutex = xSemaphoreCreateMutex();
-    sync_sem = xSemaphoreCreateBinary();
-    connect_sem = xSemaphoreCreateBinary();
-    scan_complete_sem = xSemaphoreCreateBinary();
-    if (!rx_mutex || !sync_sem || !connect_sem || !scan_complete_sem) {
-        return false;
+    if (!port_inited) {
+        rx_mutex = xSemaphoreCreateMutex();
+        sync_sem = xSemaphoreCreateBinary();
+        connect_sem = xSemaphoreCreateBinary();
+        scan_complete_sem = xSemaphoreCreateBinary();
+        if (!rx_mutex || !sync_sem || !connect_sem || !scan_complete_sem) {
+            return false;
+        }
+
+        esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+
+        esp_err_t err = nimble_port_init();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
+            return false;
+        }
+
+        ble_hs_cfg.reset_cb = bt_on_reset;
+        ble_hs_cfg.sync_cb = bt_on_sync;
+        ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+        ble_store_config_init();
+
+        nimble_port_freertos_init(bt_host_task);
+        port_inited = true;
     }
 
-    esp_err_t err = nimble_port_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    ble_hs_cfg.reset_cb = bt_on_reset;
-    ble_hs_cfg.sync_cb = bt_on_sync;
-    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-    ble_store_config_init();
-
-    nimble_port_freertos_init(bt_host_task);
-
-    if (!bt_wait_sync(8000)) {
+    if (!bt_wait_sync(12000)) {
         ESP_LOGE(TAG, "NimBLE host sync timeout");
         return false;
     }
@@ -480,6 +779,11 @@ static int bt_run_scan(int duration_ms)
         return BLE_HS_ENOTSUP;
     }
 
+    bt_abort_pending_ops();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    op_abort = false;
+    connect_failed = false;
+
     scan_count = 0;
     scan_done = false;
     memset(scan_buf, 0, sizeof(scan_buf));
@@ -490,10 +794,10 @@ static int bt_run_scan(int duration_ms)
 
     struct ble_gap_disc_params params;
     memset(&params, 0, sizeof(params));
-    params.passive = 0;
-    params.itvl = 0x0010;
-    params.window = 0x0010;
-    params.filter_duplicates = 1;
+    params.passive = 1;
+    params.itvl = 0x0050;
+    params.window = 0x0030;
+    params.filter_duplicates = 0;
 
     int rc = ble_gap_disc(own_addr_type, duration_ms, &params, bt_gap_event, NULL);
     if (rc != 0) {
@@ -513,20 +817,30 @@ static int bt_run_scan(int duration_ms)
         }
     }
 
-    return scan_done ? 0 : BLE_HS_ETIMEOUT;
+    if (scan_done) {
+        bt_scan_sort_results();
+        ESP_LOGI(TAG, "BLE scan complete: %d device(s)", scan_count);
+        return 0;
+    }
+    return BLE_HS_ETIMEOUT;
 }
 
 static void bt_cmd_worker(void *arg)
 {
     (void)arg;
 
-    if (!bt_ensure_stack()) {
-        ESP_LOGE(TAG, "BT command worker: stack init failed");
-    }
-
     bt_cmd_msg_t msg;
     for (;;) {
         if (xQueueReceive(bt_cmd_q, &msg, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        if (!bt_ensure_stack()) {
+            ESP_LOGE(TAG, "BT stack not ready");
+            msg.ok = false;
+            if (msg.done != NULL) {
+                xSemaphoreGive(msg.done);
+            }
             continue;
         }
 
@@ -569,6 +883,7 @@ static void bt_start_cmd_worker(void)
         return;
     }
 
+    /* Internal RAM stack required for RF/cache freeze during BLE ops */
     if (xTaskCreatePinnedToCore(bt_cmd_worker, "bt_cmd", BT_CMD_TASK_STACK,
                                 NULL, 6, &bt_cmd_task_h, 0) != pdPASS) {
         ESP_LOGE(TAG, "BT cmd worker create failed");
@@ -608,6 +923,9 @@ static bool bt_finish_gatt_setup(void)
         gatt_disc_sem = xSemaphoreCreateBinary();
     }
 
+    ble_gattc_exchange_mtu(conn_handle, NULL, NULL);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     if (!bt_discover_serial_profile()) {
         last_fail = BT_FAIL_GATT;
         ESP_LOGW(TAG, "Serial GATT profile not found");
@@ -626,7 +944,7 @@ static bool bt_finish_gatt_setup(void)
     }
 
     if (connect_sem != NULL &&
-        xSemaphoreTake(connect_sem, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        xSemaphoreTake(connect_sem, pdMS_TO_TICKS(5000)) == pdTRUE) {
         return serial_ready;
     }
 
@@ -640,6 +958,9 @@ static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display
         return false;
     }
 
+    bt_abort_pending_ops();
+    vTaskDelay(pdMS_TO_TICKS(150));
+    op_abort = false;
     connect_failed = false;
     serial_ready = false;
     obd_ready = false;
@@ -670,7 +991,7 @@ static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display
     }
 
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BT_CONNECT_TIMEOUT_MS);
-    while (conn_handle == BLE_HS_CONN_HANDLE_NONE && !connect_failed &&
+    while (conn_handle == BLE_HS_CONN_HANDLE_NONE && !connect_failed && !op_abort &&
            xTaskGetTickCount() < deadline) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -696,6 +1017,11 @@ bool bt_init_stack(void)
 {
     bt_start_cmd_worker();
     return cmd_worker_started;
+}
+
+void bt_prepare_for_operation(void)
+{
+    bt_abort_pending_ops();
 }
 
 void bt_shutdown_stack(void)
@@ -780,16 +1106,27 @@ static bool bt_connect_auto_internal(void)
         return false;
     }
 
-    for (int i = 0; i < scan_count; i++) {
-        if (!scan_buf[i].is_obd_hint) {
-            continue;
-        }
+    if (scan_count == 0) {
+        last_fail = BT_FAIL_SCAN;
+        return false;
+    }
+
+    bt_scan_sort_results();
+
+    int attempts = scan_count;
+    if (attempts > BT_AUTO_CONNECT_MAX_ATTEMPTS) {
+        attempts = BT_AUTO_CONNECT_MAX_ATTEMPTS;
+    }
+
+    for (int i = 0; i < attempts; i++) {
         ble_addr_t addr;
         if (!bt_str_to_addr(scan_buf[i].addr, &addr)) {
             continue;
         }
         g_settings.bt_addr_type = scan_buf[i].addr_type;
-        ESP_LOGI(TAG, "Auto-connect candidate: %s (%s)", scan_buf[i].name, scan_buf[i].addr);
+        ESP_LOGI(TAG, "Auto-connect [%d/%d]: %s (%s)%s",
+                 i + 1, attempts, scan_buf[i].name, scan_buf[i].addr,
+                 scan_buf[i].is_obd_hint ? " [OBD]" : "");
         if (bt_connect_addr_internal(&addr, scan_buf[i].name)) {
             g_settings.bt_manual_mode = false;
             settings_save(&g_settings);
@@ -816,7 +1153,7 @@ int bt_scan_devices(bt_device_info_t *list, int max_count, int duration_ms)
         .scan_duration_ms = duration_ms,
     };
 
-    if (!bt_submit_cmd(&msg, pdMS_TO_TICKS(duration_ms + 8000))) {
+    if (!bt_submit_cmd(&msg, pdMS_TO_TICKS(duration_ms + 35000))) {
         last_fail = BT_FAIL_SCAN;
         return 0;
     }
@@ -1195,6 +1532,7 @@ static bool bt_classic_connect_addr(const esp_bd_addr_t addr, const char *name)
 
 bool bt_init_stack(void) { return bt_classic_init(); }
 void bt_shutdown_stack(void) { bt_disconnect(); }
+void bt_prepare_for_operation(void) {}
 
 bool bt_link_up(void)
 {
@@ -1382,6 +1720,7 @@ const char *bt_get_last_fail_hint(void)
 
 bool bt_init_stack(void) { return false; }
 void bt_shutdown_stack(void) {}
+void bt_prepare_for_operation(void) {}
 bool bt_link_up(void) { return false; }
 bool bt_obd_session_ready(void) { return false; }
 bool bt_connect_to_addr(const char *addr_str) { (void)addr_str; return false; }

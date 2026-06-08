@@ -6,7 +6,7 @@
 #include "esp_err.h"
 #include "app.h"
 
-#define BT_SCAN_MAX_RESULTS   16
+#define BT_SCAN_MAX_RESULTS   32
 
 typedef struct {
     char name[BT_DEVICE_NAME_MAX];
@@ -27,6 +27,8 @@ typedef enum {
 
 bool bt_init_stack(void);
 void bt_shutdown_stack(void);
+/** Cancel in-flight BLE scan/connect so user Scan/Connect is not blocked. */
+void bt_prepare_for_operation(void);
 
 bool bt_link_up(void);
 bool bt_obd_session_ready(void);

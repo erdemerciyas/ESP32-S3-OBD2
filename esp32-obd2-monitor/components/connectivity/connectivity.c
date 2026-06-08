@@ -738,7 +738,9 @@ esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found
 
     }
 
-    *found_count = bt_scan_devices(list, max_count, 5000);
+    bt_prepare_for_operation();
+
+    *found_count = bt_scan_devices(list, max_count, 0);
 
     connectivity_set_user_busy(false);
 
@@ -765,6 +767,8 @@ esp_err_t connectivity_bt_connect_manual(const char *addr, const char *name, uin
     ESP_LOGI(TAG, "Manual BT connect: %s (type=%u)", addr, addr_type);
 
     connectivity_set_user_busy(true);
+
+    bt_prepare_for_operation();
 
 
 
@@ -816,7 +820,7 @@ esp_err_t connectivity_bt_enable_auto_mode(void)
 
     connectivity_set_user_busy(true);
 
-
+    bt_prepare_for_operation();
 
     connectivity_lock();
 

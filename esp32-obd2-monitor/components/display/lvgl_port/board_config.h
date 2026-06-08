@@ -22,6 +22,13 @@
 #define UI_DOUBLE_TAP_MS         320
 #define UI_LONG_PRESS_MS         4000
 
+/* Main gauge HUD: pagination dots + OBD link icon above them */
+#define UI_GAUGE_DOT_ROW_Y       (UI_SCREEN_H - 24)
+#define UI_GAUGE_DOT_SIZE        8
+#define UI_GAUGE_DOT_SPACING     6
+#define UI_GAUGE_CONN_ICON_GAP   8
+#define UI_GAUGE_CONN_ICON_Y_OFS (-(24 + UI_GAUGE_DOT_SIZE + UI_GAUGE_CONN_ICON_GAP))
+
 #define BOARD_LCD_PIN_PCLK       41
 #define BOARD_LCD_PIN_DE         40
 #define BOARD_LCD_PIN_VSYNC      39
