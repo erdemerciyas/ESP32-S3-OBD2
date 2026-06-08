@@ -28,6 +28,8 @@ extern "C" {
 #define WIFI_CONNECT_TIMEOUT_MS 15000
 #define WIFI_DHCP_SETTLE_MS     3500
 #define BT_CONNECT_TIMEOUT_MS 15000
+#define BT_DEVICE_NAME_MAX    32
+#define BT_ADDR_STR_LEN       18
 
 #define OBD2_DEFAULT_WIFI_PASSWORD "12345678"
 #define OBD2_DEFAULT_ADAPTER_IP "192.168.0.10"
@@ -39,6 +41,8 @@ typedef enum {
     CONN_TYPE_WIFI,
     CONN_TYPE_BLUETOOTH
 } connection_type_t;
+
+#define APP_GAUGE_COUNT 10
 
 typedef enum {
     THEME_DARK = 0,
@@ -58,7 +62,15 @@ typedef struct {
     uint8_t brightness;
     bool wifi_manual_mode;
     uint8_t wifi_authmode;
+    char bt_device_name[BT_DEVICE_NAME_MAX];
+    char bt_device_addr[BT_ADDR_STR_LEN];
+    uint8_t bt_addr_type;
+    bool bt_manual_mode;
     uint8_t default_gauge;
+    uint16_t max_rpm;
+    uint16_t max_speed;
+    uint32_t gauge_colors[APP_GAUGE_COUNT];
+    uint8_t gauge_order[APP_GAUGE_COUNT];
 } app_settings_t;
 
 extern app_settings_t g_settings;

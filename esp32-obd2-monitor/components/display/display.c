@@ -39,10 +39,11 @@ void display_init(void)
     lvgl_start();
 
     if (lvgl_lock(-1)) {
-        styles_init((uint8_t)g_settings.theme);
+        styles_init(THEME_DARK);
         dashboard_init();
         splash_run_boot_animation(dashboard_get_main_screen());
         dashboard_finish_boot_screen();
+        lv_scr_load(dashboard_get_main_screen());
         lv_obj_invalidate(lv_scr_act());
         lv_refr_now(NULL);
         live_updates_enabled = true;

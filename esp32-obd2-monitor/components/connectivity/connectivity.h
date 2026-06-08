@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "app.h"
-#include "wifi_manager.h"
+#include "bt_manager.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,9 +26,11 @@ bool connectivity_is_connected(void);
 connectivity_state_t connectivity_get_state(void);
 const char *connectivity_get_status_text(void);
 esp_err_t connectivity_auto_reconnect(void);
-esp_err_t connectivity_wifi_scan(wifi_ap_info_t *list, int max_count, int *found_count);
-esp_err_t connectivity_wifi_connect_manual(const char *ssid, wifi_auth_mode_t authmode);
-esp_err_t connectivity_wifi_enable_auto_mode(void);
+esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found_count);
+esp_err_t connectivity_bt_connect_manual(const char *addr, const char *name, uint8_t addr_type);
+esp_err_t connectivity_bt_enable_auto_mode(void);
+esp_err_t connectivity_bt_disconnect(void);
+esp_err_t connectivity_bt_forget(void);
 
 #ifdef __cplusplus
 }

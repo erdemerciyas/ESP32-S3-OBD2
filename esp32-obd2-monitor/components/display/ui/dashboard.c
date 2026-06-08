@@ -6,7 +6,7 @@
 #include "telemetry.h"
 #include "haptic.h"
 #include "connectivity.h"
-#include "wifi_settings_ui.h"
+#include "bt_settings_ui.h"
 #include "ui_fonts.h"
 #include "ui_icons.h"
 #include "lvgl_driver.h"
@@ -76,7 +76,7 @@ static void show_default_gauge_saved_toast(void)
         return;
     }
 
-    lv_label_set_text(default_gauge_toast, "Varsayılan açılış kaydedildi");
+    lv_label_set_text(default_gauge_toast, "Default startup gauge saved");
     lv_obj_remove_flag(default_gauge_toast, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(default_gauge_toast);
     if (touch_overlay != NULL) {
@@ -138,11 +138,120 @@ static void sound_changed_cb(lv_event_t *e)
     settings_persist_from_ui();
 }
 
-static void theme_cycle_cb(lv_event_t *e)
+static lv_obj_t *gauge_order_list;
+static bool gauge_order_list_built;
+
+static void gauge_order_up_cb(lv_event_t *e);
+static void gauge_order_down_cb(lv_event_t *e);
+
+static void settings_rebuild_gauge_order_rows(void)
 {
-    (void)e;
-    g_settings.theme = (theme_mode_t)(((uint8_t)g_settings.theme + 1) % 3);
-    styles_init((uint8_t)g_settings.theme);
+    if (gauge_order_list == NULL) {
+        return;
+    }
+
+    lv_obj_clean(gauge_order_list);
+
+    for (int slot = 0; slot < GAUGE_MAX; slot++) {
+        const gauge_type_t type = (gauge_type_t)g_settings.gauge_order[slot];
+        const uint32_t gauge_color = gauge_get_color(type);
+
+        lv_obj_t *row = lv_obj_create(gauge_order_list);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, LV_PCT(100), 30);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *dot = lv_obj_create(row);
+        lv_obj_set_size(dot, 10, 10);
+        lv_obj_align(dot, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(gauge_color), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+
+        lv_obj_t *lbl = lv_label_create(row);
+        lv_label_set_text_fmt(lbl, "%d. %s", slot + 1, gauge_get_label(type));
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 18, 0);
+        lv_obj_set_style_text_font(lbl, UI_FONT_SM, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(gauge_color), 0);
+
+        lv_obj_t *up_btn = lv_btn_create(row);
+        lv_obj_set_size(up_btn, 28, 24);
+        lv_obj_align(up_btn, LV_ALIGN_RIGHT_MID, -34, 0);
+        lv_obj_add_style(up_btn, style_get_btn_secondary(), 0);
+        lv_obj_add_event_cb(up_btn, gauge_order_up_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)slot);
+        lv_obj_t *up_lbl = lv_label_create(up_btn);
+        lv_label_set_text(up_lbl, "+");
+        lv_obj_center(up_lbl);
+        lv_obj_set_style_text_font(up_lbl, UI_FONT_MD, 0);
+        if (slot == 0) {
+            lv_obj_add_state(up_btn, LV_STATE_DISABLED);
+        }
+
+        lv_obj_t *down_btn = lv_btn_create(row);
+        lv_obj_set_size(down_btn, 28, 24);
+        lv_obj_align(down_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_style(down_btn, style_get_btn_secondary(), 0);
+        lv_obj_add_event_cb(down_btn, gauge_order_down_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)slot);
+        lv_obj_t *down_lbl = lv_label_create(down_btn);
+        lv_label_set_text(down_lbl, "-");
+        lv_obj_center(down_lbl);
+        lv_obj_set_style_text_font(down_lbl, UI_FONT_MD, 0);
+        if (slot == GAUGE_MAX - 1) {
+            lv_obj_add_state(down_btn, LV_STATE_DISABLED);
+        }
+    }
+}
+
+static void gauge_order_up_cb(lv_event_t *e)
+{
+    const int slot = (int)(intptr_t)lv_event_get_user_data(e);
+    if (slot <= 0) {
+        return;
+    }
+    gauge_swap_order_slots(slot, slot - 1);
+    settings_persist_from_ui();
+    settings_rebuild_gauge_order_rows();
+    gauge_settings_changed();
+}
+
+static void gauge_order_down_cb(lv_event_t *e)
+{
+    const int slot = (int)(intptr_t)lv_event_get_user_data(e);
+    if (slot >= GAUGE_MAX - 1) {
+        return;
+    }
+    gauge_swap_order_slots(slot, slot + 1);
+    settings_persist_from_ui();
+    settings_rebuild_gauge_order_rows();
+    gauge_settings_changed();
+}
+
+static void max_rpm_changed_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
+    g_settings.max_rpm = (uint16_t)lv_slider_get_value(slider);
+    lv_obj_t *lbl = (lv_obj_t *)lv_event_get_user_data(e);
+    if (lbl != NULL) {
+        lv_label_set_text_fmt(lbl, "%u rpm", g_settings.max_rpm);
+    }
+    gauge_settings_changed();
+    settings_persist_from_ui();
+}
+
+static void max_speed_changed_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = (lv_obj_t *)lv_event_get_target(e);
+    g_settings.max_speed = (uint16_t)lv_slider_get_value(slider);
+    lv_obj_t *lbl = (lv_obj_t *)lv_event_get_user_data(e);
+    if (lbl != NULL) {
+        lv_label_set_text_fmt(lbl, "%u km/h", g_settings.max_speed);
+    }
+    gauge_settings_changed();
     settings_persist_from_ui();
 }
 static void ui_subscreen_prepare(lv_obj_t *scr);
@@ -283,7 +392,12 @@ void dashboard_show_screen(dashboard_screen_t screen)
     }
 
     if (screen == DASHBOARD_CONNECTION) {
-        wifi_settings_ui_refresh();
+        bt_settings_ui_refresh();
+    }
+
+    if (screen == DASHBOARD_SETTINGS && !gauge_order_list_built && gauge_order_list != NULL) {
+        settings_rebuild_gauge_order_rows();
+        gauge_order_list_built = true;
     }
 
     if (dashboard_first_show) {
@@ -299,23 +413,23 @@ void dashboard_show_screen(dashboard_screen_t screen)
     }
 }
 
-static void dashboard_update_wifi_indicators(const telemetry_snapshot_t *snap)
+static void dashboard_update_conn_indicators(const telemetry_snapshot_t *snap)
 {
-    const ui_wifi_ind_level_t level = ui_wifi_ind_level_from(
-        snap->wifi_ap_up, snap->wifi_tcp_up, snap->conn_state);
+    const ui_conn_ind_level_t level = ui_conn_ind_level_from(
+        snap->bt_linked, snap->bt_serial_up, snap->conn_state);
 
     if (conn_wifi_icon != NULL) {
-        ui_wifi_ind_apply(conn_wifi_icon, level);
+        ui_conn_ind_apply(conn_wifi_icon, level);
     }
     if (menu_wifi_icon != NULL) {
-        ui_wifi_ind_apply(menu_wifi_icon, level);
+        ui_conn_ind_apply(menu_wifi_icon, level);
     }
-    wifi_settings_ui_sync_wifi_ind(level);
+    bt_settings_ui_sync_conn_ind(level);
 }
 
 static void dashboard_update_hud(const telemetry_snapshot_t *snap)
 {
-    dashboard_update_wifi_indicators(snap);
+    dashboard_update_conn_indicators(snap);
 
     if (dtc_banner != NULL) {
         if (snap->obd.dtc_present && snap->obd.dtc_count > 0) {
@@ -469,7 +583,7 @@ static void create_default_gauge_toast(lv_obj_t *parent)
 
 static void create_connection_wifi_icon(lv_obj_t *parent)
 {
-    conn_wifi_icon = ui_wifi_ind_create(parent, -UI_ROUND_INSET, UI_ROUND_INSET / 2);
+    conn_wifi_icon = ui_conn_ind_create(parent, -UI_ROUND_INSET, UI_ROUND_INSET / 2);
 }
 
 static void create_dashboard_screen(void)
@@ -562,7 +676,7 @@ static lv_obj_t *create_footer_back_btn(lv_obj_t *parent)
 
     ui_icon_create(row, LV_SYMBOL_LEFT, UI_FONT_ICON);
     lv_obj_t *lbl = lv_label_create(row);
-    lv_label_set_text(lbl, "Geri");
+    lv_label_set_text(lbl, "Back");
     lv_obj_set_style_text_font(lbl, UI_FONT_MD, 0);
     lv_obj_set_style_text_color(lbl, color_bg_dark, 0);
     return btn;
@@ -629,12 +743,12 @@ static void create_menu_screen(void)
     screen_menu = lv_obj_create(NULL);
     ui_subscreen_prepare(screen_menu);
 
-    create_menu_card(screen_menu, LV_SYMBOL_CHARGE, "Gösterge", "Canlı PID okumaları", 0, 0, DASHBOARD_MAIN);
-    create_menu_card(screen_menu, LV_SYMBOL_WIFI, "Bağlantı", "WiFi / USB (ELM327)", 1, 0, DASHBOARD_CONNECTION);
-    create_menu_card(screen_menu, LV_SYMBOL_SETTINGS, "Ayarlar", "Ekran ve uyarılar", 0, 1, DASHBOARD_SETTINGS);
-    create_menu_card(screen_menu, LV_SYMBOL_LIST, "Hakkında", "Sürüm ve donanım", 1, 1, DASHBOARD_ABOUT);
+    create_menu_card(screen_menu, LV_SYMBOL_CHARGE, "Gauges", "Live PID readings", 0, 0, DASHBOARD_MAIN);
+    create_menu_card(screen_menu, LV_SYMBOL_BLUETOOTH, "Connection", "Bluetooth (ELM327)", 1, 0, DASHBOARD_CONNECTION);
+    create_menu_card(screen_menu, LV_SYMBOL_SETTINGS, "Settings", "Display and alerts", 0, 1, DASHBOARD_SETTINGS);
+    create_menu_card(screen_menu, LV_SYMBOL_LIST, "About", "Version and hardware", 1, 1, DASHBOARD_ABOUT);
 
-    menu_wifi_icon = ui_wifi_ind_create(screen_menu, -UI_PAD, UI_PAD);
+    menu_wifi_icon = ui_conn_ind_create(screen_menu, -UI_PAD, UI_PAD);
     lv_obj_move_foreground(menu_wifi_icon);
     create_footer_back_btn(screen_menu);
 }
@@ -642,20 +756,34 @@ static void create_menu_screen(void)
 static void create_settings_screen(void)
 {
     const int content_w = UI_SCREEN_W - (UI_PAD * 2);
-    const int card_h = 118;
+    const int scroll_h = UI_SCREEN_H - UI_HEADER_H - UI_FOOTER_H;
 
     screen_settings = lv_obj_create(NULL);
     ui_subscreen_prepare(screen_settings);
-    create_sub_header(screen_settings, "Ayarlar", LV_SYMBOL_SETTINGS);
+    create_sub_header(screen_settings, "Settings", LV_SYMBOL_SETTINGS);
 
-    lv_obj_t *group_display = lv_obj_create(screen_settings);
-    lv_obj_set_pos(group_display, UI_PAD, UI_HEADER_H + 8);
-    lv_obj_set_size(group_display, content_w, card_h);
+    lv_obj_t *scroll = lv_obj_create(screen_settings);
+    lv_obj_set_pos(scroll, 0, UI_HEADER_H);
+    lv_obj_set_size(scroll, UI_SCREEN_W, scroll_h);
+    lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(scroll, 0, 0);
+    lv_obj_set_style_pad_all(scroll, 0, 0);
+    lv_obj_add_flag(scroll, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(scroll, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(scroll, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(scroll, 10, 0);
+    lv_obj_set_style_pad_hor(scroll, UI_PAD, 0);
+    lv_obj_set_style_pad_top(scroll, 8, 0);
+    lv_obj_set_style_pad_bottom(scroll, 12, 0);
+
+    lv_obj_t *group_display = lv_obj_create(scroll);
+    lv_obj_set_size(group_display, content_w, 96);
     lv_obj_add_style(group_display, style_get_card(), 0);
     lv_obj_remove_flag(group_display, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *t1 = lv_label_create(group_display);
-    lv_label_set_text(t1, "EKRAN");
+    lv_label_set_text(t1, "DISPLAY");
     lv_obj_set_pos(t1, 14, 10);
     lv_obj_set_style_text_font(t1, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(t1, color_accent, 0);
@@ -665,16 +793,84 @@ static void create_settings_screen(void)
     lv_slider_set_range(brightness_bar, 10, 100);
     lv_slider_set_value(brightness_bar, g_settings.brightness, LV_ANIM_OFF);
     lv_obj_add_event_cb(brightness_bar, brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    create_settings_row(group_display, "Parlaklık", brightness_bar, 44);
+    create_settings_row(group_display, "Brightness", brightness_bar, 44);
 
-    lv_obj_t *group_alerts = lv_obj_create(screen_settings);
-    lv_obj_set_pos(group_alerts, UI_PAD, UI_HEADER_H + 8 + card_h + 10);
-    lv_obj_set_size(group_alerts, content_w, card_h);
+    lv_obj_t *group_gauge = lv_obj_create(scroll);
+    lv_obj_set_size(group_gauge, content_w, 132);
+    lv_obj_add_style(group_gauge, style_get_card(), 0);
+    lv_obj_remove_flag(group_gauge, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *t_g = lv_label_create(group_gauge);
+    lv_label_set_text(t_g, "GAUGES");
+    lv_obj_set_pos(t_g, 14, 10);
+    lv_obj_set_style_text_font(t_g, UI_FONT_SM, 0);
+    lv_obj_set_style_text_color(t_g, color_accent, 0);
+
+    lv_obj_t *rpm_val_lbl = lv_label_create(group_gauge);
+    lv_label_set_text_fmt(rpm_val_lbl, "%u rpm", g_settings.max_rpm);
+    lv_obj_set_pos(rpm_val_lbl, content_w - 110, 38);
+    lv_obj_set_width(rpm_val_lbl, 96);
+    lv_obj_set_style_text_align(rpm_val_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(rpm_val_lbl, UI_FONT_SM, 0);
+    lv_obj_set_style_text_color(rpm_val_lbl, lv_color_hex(gauge_get_color(GAUGE_RPM)), 0);
+
+    lv_obj_t *rpm_bar = lv_slider_create(group_gauge);
+    lv_obj_set_size(rpm_bar, 180, 10);
+    lv_slider_set_range(rpm_bar, 2000, 9000);
+    lv_slider_set_value(rpm_bar, g_settings.max_rpm, LV_ANIM_OFF);
+    lv_obj_add_event_cb(rpm_bar, max_rpm_changed_cb, LV_EVENT_VALUE_CHANGED, rpm_val_lbl);
+    create_settings_row(group_gauge, "Max RPM", rpm_bar, 44);
+
+    lv_obj_t *spd_val_lbl = lv_label_create(group_gauge);
+    lv_label_set_text_fmt(spd_val_lbl, "%u km/h", g_settings.max_speed);
+    lv_obj_set_pos(spd_val_lbl, content_w - 110, 82);
+    lv_obj_set_width(spd_val_lbl, 96);
+    lv_obj_set_style_text_align(spd_val_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(spd_val_lbl, UI_FONT_SM, 0);
+    lv_obj_set_style_text_color(spd_val_lbl, lv_color_hex(gauge_get_color(GAUGE_SPEED)), 0);
+
+    lv_obj_t *spd_bar = lv_slider_create(group_gauge);
+    lv_obj_set_size(spd_bar, 180, 10);
+    lv_slider_set_range(spd_bar, 60, 320);
+    lv_slider_set_value(spd_bar, g_settings.max_speed, LV_ANIM_OFF);
+    lv_obj_add_event_cb(spd_bar, max_speed_changed_cb, LV_EVENT_VALUE_CHANGED, spd_val_lbl);
+    create_settings_row(group_gauge, "Max speed", spd_bar, 88);
+
+    lv_obj_t *group_order = lv_obj_create(scroll);
+    lv_obj_set_size(group_order, content_w, 348);
+    lv_obj_add_style(group_order, style_get_card(), 0);
+    lv_obj_remove_flag(group_order, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *t_o = lv_label_create(group_order);
+    lv_label_set_text(t_o, "SWIPE ORDER");
+    lv_obj_set_pos(t_o, 14, 10);
+    lv_obj_set_style_text_font(t_o, UI_FONT_SM, 0);
+    lv_obj_set_style_text_color(t_o, color_accent, 0);
+
+    lv_obj_t *hint = lv_label_create(group_order);
+    lv_label_set_text(hint, "Use +/- to reorder");
+    lv_obj_set_pos(hint, 14, 28);
+    lv_obj_set_style_text_font(hint, UI_FONT_SM, 0);
+    lv_obj_set_style_text_color(hint, color_text_dim, 0);
+
+    gauge_order_list = lv_obj_create(group_order);
+    lv_obj_set_pos(gauge_order_list, 8, 48);
+    lv_obj_set_size(gauge_order_list, content_w - 16, 292);
+    lv_obj_set_style_bg_opa(gauge_order_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(gauge_order_list, 0, 0);
+    lv_obj_set_style_pad_all(gauge_order_list, 0, 0);
+    lv_obj_set_style_pad_row(gauge_order_list, 2, 0);
+    lv_obj_set_flex_flow(gauge_order_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_remove_flag(gauge_order_list, LV_OBJ_FLAG_SCROLLABLE);
+    gauge_order_list_built = false;
+
+    lv_obj_t *group_alerts = lv_obj_create(scroll);
+    lv_obj_set_size(group_alerts, content_w, 118);
     lv_obj_add_style(group_alerts, style_get_card(), 0);
     lv_obj_remove_flag(group_alerts, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *t2 = lv_label_create(group_alerts);
-    lv_label_set_text(t2, "UYARILAR");
+    lv_label_set_text(t2, "ALERTS");
     lv_obj_set_pos(t2, 14, 10);
     lv_obj_set_style_text_font(t2, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(t2, color_accent, 0);
@@ -684,23 +880,14 @@ static void create_settings_screen(void)
         lv_obj_add_state(sw, LV_STATE_CHECKED);
     }
     lv_obj_add_event_cb(sw, haptic_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    create_settings_row(group_alerts, "RPM uyarısı", sw, 44);
+    create_settings_row(group_alerts, "Haptic", sw, 44);
 
     lv_obj_t *sw2 = lv_switch_create(group_alerts);
     if (g_settings.sound_enabled) {
         lv_obj_add_state(sw2, LV_STATE_CHECKED);
     }
     lv_obj_add_event_cb(sw2, sound_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    create_settings_row(group_alerts, "Sesli uyarı", sw2, 78);
-
-    lv_obj_t *theme_btn = lv_btn_create(group_display);
-    lv_obj_set_size(theme_btn, 120, 36);
-    lv_obj_add_style(theme_btn, style_get_btn_secondary(), 0);
-    lv_obj_add_event_cb(theme_btn, theme_cycle_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *theme_lbl = lv_label_create(theme_btn);
-    lv_label_set_text(theme_lbl, "Tema");
-    lv_obj_center(theme_lbl);
-    create_settings_row(group_display, "Görünüm", theme_btn, 78);
+    create_settings_row(group_alerts, "Sound alert", sw2, 78);
 
     create_footer_back_btn(screen_settings);
 }
@@ -709,8 +896,8 @@ static void create_connection_screen(void)
 {
     screen_connection = lv_obj_create(NULL);
     ui_subscreen_prepare(screen_connection);
-    create_sub_header(screen_connection, "WiFi / OBD2", LV_SYMBOL_WIFI);
-    wifi_settings_ui_create(screen_connection);
+    create_sub_header(screen_connection, "Bluetooth / OBD2", LV_SYMBOL_BLUETOOTH);
+    bt_settings_ui_create(screen_connection);
     create_footer_back_btn(screen_connection);
 }
 
@@ -720,7 +907,7 @@ static void create_about_screen(void)
 
     screen_about = lv_obj_create(NULL);
     ui_subscreen_prepare(screen_about);
-    create_sub_header(screen_about, "Hakkında", LV_SYMBOL_LIST);
+    create_sub_header(screen_about, "About", LV_SYMBOL_LIST);
 
     lv_obj_t *app_title = lv_label_create(screen_about);
     lv_label_set_text(app_title, APP_NAME);
@@ -743,8 +930,8 @@ static void create_about_screen(void)
     lv_obj_add_style(info_card, style_get_card(), 0);
     lv_obj_remove_flag(info_card, LV_OBJ_FLAG_SCROLLABLE);
 
-    const char *labels[] = {"Donanım", "Ekran", "UI", "Protokol"};
-    const char *values[] = {"ESP32-S3-Touch-LCD", "480x480 ST7701", "LVGL 9", "ISO 15765-4"};
+    const char *labels[] = {"Hardware", "Display", "UI", "Protocol"};
+    const char *values[] = {"ESP32-S3-Touch-LCD", "480x480 ST7701", "LVGL 9", "ELM327 / Bluetooth"};
     for (int i = 0; i < 4; i++) {
         lv_obj_t *lbl = lv_label_create(info_card);
         lv_label_set_text(lbl, labels[i]);

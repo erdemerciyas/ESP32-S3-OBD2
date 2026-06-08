@@ -1,6 +1,6 @@
 # ESP32-S3 OBD2 Araç İzleme Sistemi v1.0.0
 
-Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.1)** kartı ile araç OBD2 verilerini gerçek zamanlı izleyen gösterge paneli. 480×480 RGB ekranda LVGL 9 arayüzü.
+Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.1)** kartı ile araç OBD2 verilerini gerçek zamanlı izleyen gösterge paneli. 480×480 RGB ekranda LVGL 9 arayüzü; ekran metinleri **İngilizce**.
 
 > **Yükleme, donanım pinleri, sorun giderme ve oturum notları:** [`UPLOAD.md`](UPLOAD.md) — flash/build için birincil kaynak.
 
@@ -10,25 +10,25 @@ Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-L
 
 | Alan | Açıklama |
 |------|----------|
-| **PID’ler** | RPM, hız, antifriz, gaz, yakıt, yük, emme, akü, türetilmiş yakıt tüketimi (MAF+RPM), DTC |
-| **Evrensel OBD** | Bağlantıda `0100` / `0120` / `0140` destek bitmap’i; yalnız desteklenen PID’ler poll edilir; desteklenmeyen göstergeler kaydırmadan çıkar |
-| **Gösterge UI** | Tam ekran yay; sola/sağa yalnızca **mevcut** göstergeler; geçersiz değer `--`; alt nokta `n/N` (N = araçtaki desteklenen sayı) |
-| **WiFi HUD** | Sağ üst `LV_SYMBOL_WIFI`: kapalı → AP → TCP → OBD (renk/parlama) — gösterge, menü, bağlantı ekranı |
+| **PID'ler** | RPM, speed, coolant, throttle, fuel, load, intake, battery, derived fuel rate (MAF+RPM), DTC |
+| **Evrensel OBD** | Bağlantıda `0100` / `0120` / `0140` destek bitmap'i; yalnız desteklenen PID'ler poll edilir; desteklenmeyen göstergeler kaydırmadan çıkar |
+| **Gösterge UI** | Tam ekran yay; büyük değer fontu (`font_gauge_96`); sola/sağa yalnızca **mevcut** göstergeler; geçersiz değer `--`; alt nokta `n/N` |
+| **Bluetooth HUD** | Sağ üst BT ikonu: kapalı → bağlanıyor → ELM → OBD (renk/parlama) — gösterge, menü, Connection ekranı |
 | **Açılış** | `splash.c` ~5 sn EXTREME/MONITOR; ardından ana gösterge |
-| **Menü** | Çift dokunma; Bağlantı / Ayarlar / Hakkında; Türkçe metin + Font Awesome ikonları |
-| **Bağlantı** | WiFi ELM327: **manuel tarama** (varsayılan), kayıtlı profil, gateway TCP keşfi, USB-UART (GPIO43/44) |
-| **Bağlantı günlüğü** | `conn_log` — son 20 olay NVS’te; açılışta seri porta dökülür (WiFi/TCP/OBD hata nedeni) |
+| **Menü** | Çift dokunma; **Gauge / Connection / Settings / About**; Font Awesome ikonları |
+| **Bağlantı** | **BLE ELM327** (NimBLE central): Scan, Auto, Forget, Disconnect; kayıtlı adaptör; USB-UART (GPIO43/44) yedek |
+| **Bağlantı günlüğü** | `conn_log` — son 20 olay NVS'te; açılışta seri porta dökülür |
 | **FSM** | `DISCONNECTED` → `LINK_UP` → `ELM_INIT` → `OBD_READY` (`elm327_session`) |
 | **Telemetri** | `telemetry_snapshot_t` — UI ↔ `obd` gevşek bağlı |
-| **NVS** | `schema=3` — ayarlar, manuel WiFi profili (SSID/şifre/IP:port), varsayılan gösterge |
-| **Tema / haptic** | Workshop at Dusk; buzzer (TCA9554 EXIO8) |
+| **NVS** | `schema=5` — BT profili (ad/MAC/addr type), max RPM/speed, gösterge sırası/renkleri, parlaklık, haptic |
+| **Tema** | Dark only (Workshop at Dusk); buzzer (TCA9554 EXIO8) |
 
-**Bluetooth:** ESP32-S3 klasik SPP desteklemez — OBD için WiFi veya USB ELM327.
+**Not:** ESP32-S3 **klasik Bluetooth (SPP) desteklemez** — yalnızca **BLE** ELM327 adaptörleri kullanılabilir. Klasik “OBDII” SPP dongle'ları bu kartta çalışmaz.
 
 ### Evrensel PID akışı
 
 1. OBD hazır olunca `obd_service_discover_supported_pids()` → ECU bitmap veya tablo probe.
-2. `pid_support_should_poll()` ile yalnız desteklenen Mode 01 PID’leri sorgulanır.
+2. `pid_support_should_poll()` ile yalnız desteklenen Mode 01 PID'leri sorgulanır.
 3. 3 ardışık hata → `*_valid` sıfırlanır, PID “desteklenmiyor” işaretlenir.
 4. `gauge_sync_availability()` → kaydırma ve alt noktalar yalnız desteklenen göstergeler.
 
@@ -36,7 +36,7 @@ Kod: `components/obd/pid_support.c`, `obd_service.c`, `components/display/ui/gau
 
 ### Desteklenen araçlar
 
-**OBD-II uyumlu** tüm araçlar hedeflenir (PID seti ECU’ya göre değişir). Referans geliştirme: **Chevrolet Kalos 2005** — [`docs/vehicle-kalos-2005.md`](docs/vehicle-kalos-2005.md).
+**OBD-II uyumlu** tüm araçlar hedeflenir (PID seti ECU'ya göre değişir). Referans geliştirme: **Chevrolet Kalos 2005** — [`docs/vehicle-kalos-2005.md`](docs/vehicle-kalos-2005.md).
 
 ## Donanım
 
@@ -46,7 +46,7 @@ Kod: `components/obd/pid_support.c`, `obd_service.c`, `components/display/ui/gau
 | Ekran | 480×480 ST7701 RGB + 3-wire SPI init |
 | Dokunmatik | CST820, I2C `0x15` |
 | IO genişletici | TCA9554 `0x20` — LCD RST/CS, TP RST, buzzer |
-| OBD | UART TX=43, RX=44 @ 38400 |
+| OBD | BLE ELM327 adaptör (varsayılan) veya UART TX=43, RX=44 @ 38400 |
 
 Ayrıntı: [`UPLOAD.md` — Donanım](UPLOAD.md#donanım).
 
@@ -56,6 +56,7 @@ Ayrıntı: [`UPLOAD.md` — Donanım](UPLOAD.md#donanım).
 
 - **ESP-IDF 5.1+** (doğrulama: **5.3.5**)
 - Python 3.8+, Ninja, USB (CP210x / CH340 / USB-JTAG)
+- **BLE ELM327** adaptör (NUS, FFE0/FFE1 veya FFE2 notify profilleri)
 
 ### Windows
 
@@ -84,64 +85,51 @@ cd esp32-obd2-monitor
 
 | Hareket | Sonuç |
 |---------|--------|
-| Sola / sağa kaydır | Sonraki / önceki **desteklenen** gösterge |
-| Uzun basış (4 sn) | Varsayılan açılış göstergesini NVS’e kaydet |
+| Sola / sağa kaydır | Sonraki / önceki **desteklenen** gösterge (sıra: Settings → Swipe order) |
+| Uzun basış (4 sn) | Varsayılan açılış göstergesini NVS'e kaydet |
 | Alt noktalar + `n/N` | Aktif gösterge (N = bu araçta desteklenen sayı) |
 | Çift dokunma | Menü |
-| Menü / GERİ | Alt sayfalar |
+| Menü / BACK | Alt sayfalar |
 
 Sabitler: `board_config.h` (`UI_SWIPE_THRESHOLD_PX`, `UI_LONG_PRESS_MS`, `UI_ROUND_INSET`).
 
-## WiFi / ELM327
+## Bluetooth / ELM327 (BLE)
 
-Referans: [Car Scanner — ELM327 Wi‑Fi](https://www.carscanner.info/wifi/)
+Varsayılan taşıma: **`CONN_TYPE_BLUETOOTH`**. NimBLE central; GATT profilleri: **NUS**, **FFE0/FFE1**, **FFE2** (notify).
 
 ### Kullanım akışı
 
-| Adım | ESP32 monitor |
+| Adım | ESP32 ekranı |
 |------|----------------|
 | Adaptör OBD soketine takılı, kontak açık | — |
-| **Telefonu adaptör AP’sinden ayırın** (çoğu adaptör tek TCP istemcisi) | Otomatik bağlan = kapalı |
-| Menü → **Bağlantı** → **Tara** | ELM327 adayları listelenir |
-| Listeden **WIFI_OBDII** (veya adaptör SSID) seçin | WiFi → TCP → NVS’e kayıt |
-| Başarılı | `Kayıtlı: WIFI_OBDII  192.168.0.10:35000` |
-| Sonraki açılışlar | Yalnız kayıtlı profil denenir (rastgele tarama yok) |
-| İsteğe bağlı | **Otomatik** düğmesi = tam ELM327 taraması |
+| Menü → **Connection** → **Scan** | BLE ELM327 adayları listelenir |
+| Listeden adaptör seçin | Bağlanır → NVS'e kayıt |
+| Başarılı | `Saved: <name> <MAC>` |
+| Sonraki açılışlar | Kayıtlı adaptör otomatik denenir |
+| **Auto** | Tam BLE taraması + ilk uygun adaptör |
+| **Forget** | NVS profilini siler |
+| **Disconnect** | Aktif BLE oturumunu kapatır |
 
-**Varsayılan:** `wifi_manual_mode=true` — kayıtlı ağ yokken açılışta WiFi’ye bağlanmaz.
+**Varsayılan:** `bt_manual_mode=true` — kayıtlı adaptör yokken açılışta otomatik tarama yapılmaz.
 
-### TCP keşfi sırası
-
-1. NVS’te kayıtlı IP:port  
-2. DHCP **gateway** → `35000` (tam timeout + tekrar)  
-3. Aynı alt ağ taraması (`.1`, `.10`, …)  
-4. `elm327_tcp_profiles[]` yedek listesi  
-
-Çoğu klon adaptör: **192.168.0.10:35000**, çoğu **OPEN** WiFi (şifre yok).
-
-### Bağlantı günlüğü (`conn_log`)
-
-Hata veya kısmi başarı NVS’e yazılır; **reboot sonrası** da okunur.
-
-```powershell
-.\build_flash.ps1 -Action monitor -Port COM3
-```
-
-Açılışta örnek:
-
-```
-W conn_log: ==== Connection log (2 entries) ====
-W conn_log: #0 [t+15s] WiFi katildi: WIFI_OBDII
-W conn_log: #1 [t+28s] TCP yok: ... (gw=192.168.0.10) telefonu ayirin
-W conn_log: ==== end of connection log ====
-```
-
-Kod: `components/system/conn_log.c`, `wifi_manager.c` (`conn_log_add`).
+NimBLE çağrıları UI thread'den **`bt_cmd` worker** kuyruğu üzerinden yapılır (Scan sırasında çökme önlenir).
 
 ### Notlar
 
-- Kontak kapalı: “TCP hazır, kontağı açın” (RPM zorunlu değil).
-- Timeout: `WIFI_CONNECT_TIMEOUT_MS` = **15 s** (`app.h`).
+- Kontak kapalı: “TCP/serial ready, turn ignition on” benzeri durum (RPM zorunlu değil).
+- Timeout: `BT_CONNECT_TIMEOUT_MS` = **15 s** (`app.h`).
+- BLE adres tipi (`public` / `random`) NVS'te saklanır (`bt_addr_type`).
+
+## Ayarlar (Settings)
+
+| Öğe | Açıklama |
+|-----|----------|
+| Brightness | Arka ışık (%0–100) |
+| Max RPM / Max speed | Gösterge ölçeği üst sınırı |
+| Swipe order | Gösterge kaydırma sırası (+/−) |
+| Haptic / Sound | Dokunsal ve ses geri bildirimi |
+
+Tema seçimi kaldırıldı — yalnızca **dark** palet (`styles.c`).
 
 ## Proje yapısı
 
@@ -149,24 +137,26 @@ Kod: `components/system/conn_log.c`, `wifi_manager.c` (`conn_log_add`).
 esp32-obd2-monitor/
 ├── main/main.cpp
 ├── components/
-│   ├── app/                  # Sabitler (poll, WiFi timeout, IP/port)
-│   ├── connectivity/         # FSM, wifi/usb, elm327_session
+│   ├── app/                  # Sabitler (poll, timeout, gauge count)
+│   ├── connectivity/         # FSM, bt_manager, elm327_session
+│   │   ├── bt_manager.c      # NimBLE central, bt_cmd worker
+│   │   └── bt_elm327_profiles.h
 │   ├── display/
-│   │   ├── fonts/            # LVGL font .c (Türkçe + ikonlar; bkz. fonts/README.md)
+│   │   ├── fonts/            # LVGL font .c + gen_fonts.ps1 (fa-brands BT ikonu)
 │   │   ├── lvgl_port/
 │   │   └── ui/
 │   │       ├── dashboard.c, gauge.c, splash.c
-│   │       ├── wifi_settings_ui.c, ui_icons.c, haptic.c
+│   │       ├── bt_settings_ui.c, ui_icons.c, haptic.c
 │   │       └── styles.c
 │   ├── obd/
-│   │   ├── obd_service.c     # Poll, keşif, valid bayrakları
-│   │   ├── pid_table.c     # PID ↔ gösterge eşlemesi
-│   │   ├── pid_support.c   # 0100/0120/0140 bitmap
-│   │   └── obd_parser.c
+│   │   ├── obd_service.c
+│   │   ├── pid_table.c, pid_support.c
+│   │   └── vehicle_profile.h
 │   ├── telemetry/
-│   └── system/               # NVS settings, conn_log (bağlantı tanılama)
-├── test/                     # Unity: test_obd_parser, test_pid_support
+│   └── system/               # NVS settings (schema v5), conn_log
+├── test/
 ├── docs/
+├── sdkconfig.defaults        # NimBLE, LVGL 128 KB heap, OCT PSRAM
 ├── build_flash.ps1 / .sh
 ├── UPLOAD.md
 └── README.md
@@ -176,7 +166,8 @@ esp32-obd2-monitor/
 
 | Görev | Öncelik | Stack | Not |
 |-------|---------|-------|-----|
-| `display_init` | 5 | 16 KB | LVGL + splash + dashboard |
+| `display_init` | 5 | **40 KB** | LVGL + splash + dashboard |
+| `bt_cmd` | 5 | **20 KB** | NimBLE scan/connect/disconnect kuyruğu |
 | `conn_reconnect` | 5 | 12 KB | Otomatik yeniden bağlanma |
 | `obd_fast` | 6 | 4 KB | 40 ms — desteklenen hızlı PID |
 | `obd_slow` | 4 | 4 KB | 2 s — desteklenen yavaş PID |
@@ -184,13 +175,19 @@ esp32-obd2-monitor/
 | `gauge_update` | 4 | 8 KB | 25 Hz UI |
 | `lvgl_handler` | 5 | 8 KB | core 1 |
 
-Sabitler: `app.h` — `OBD2_FAST_POLL_MS`, `GAUGE_UPDATE_RATE_HZ`, `OBD2_DEFAULT_ADAPTER_*`.
+Sabitler: `app.h` — `OBD2_FAST_POLL_MS`, `GAUGE_UPDATE_RATE_HZ`, `BT_CONNECT_TIMEOUT_MS`.
 
 ## Yapılandırma
 
-`idf.py menuconfig` → **OBD2 Monitor Settings** (isteğe bağlı SSID/IP override).
+`idf.py menuconfig` → **Component config → Bluetooth → NimBLE** (çoğu ayar `sdkconfig.defaults` içinde).
 
-NVS: bağlantı tipi, WiFi profili, varsayılan gösterge, tema, parlaklık, haptic.
+Önemli varsayılanlar:
+
+- `CONFIG_LV_MEM_SIZE_KILOBYTES=128` — dashboard + settings heap (64 KB siyah ekrana yol açabilir)
+- `CONFIG_BT_NIMBLE_ENABLED=y`, central role
+- `CONFIG_SPIRAM_MODE_OCT=y`
+
+NVS: BT profili, max RPM/speed, gauge order/colors, parlaklık, haptic, varsayılan gösterge.
 
 ## Sorun giderme
 
@@ -198,12 +195,12 @@ Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 
 | Belirti | İlk bakılacak |
 |---------|----------------|
-| Siyah ekran | TCA9554, PSRAM, ST7701 — UPLOAD.md |
-| Boş / eksik metin | Font charset (`fonts/gen_fonts.ps1`, `0x20-0x7E,0xA0-0x17F`) |
-| WiFi listede var, bağlanmıyor | Telefonu AP’den çıkar; `conn_log` dump (monitor); OPEN; 15 s timeout |
-| WiFi var, TCP yok | Telefon adaptörde mi? Kontak açık mı? `conn_log` → gateway satırı |
+| Siyah ekran | LVGL heap 128 KB; lazy settings UI; `display_init` 40 KB stack — UPLOAD.md |
+| Scan'de reboot | Eski firmware (NimBLE UI thread); güncel `bt_cmd` worker |
+| BT listede var, bağlanmıyor | Adaptör BLE mi? (klasik SPP değil); `conn_log`; 15 s timeout |
 | Tüm göstergeler `--` | Kontak; PID keşfi log; ELM327 protokol |
-| Kaydırma 10 boş sayfa | Güncel firmware (evrensel PID filtresi) |
+| Kaydırma boş sayfalar | Evrensel PID filtresi; gauge order ayarları |
+| Eksik ikon / metin | `gen_fonts.ps1` + `fa-brands-400.ttf` (Bluetooth U+F293) |
 
 ## Geliştirme
 
@@ -211,9 +208,9 @@ Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 |-------|----------|
 | Yeni PID + gösterge | `pid_table.c`, `apply_pid` (`obd_service.c`), `gauge_configs[]` |
 | Destek bitmap | `pid_support.c` |
-| ELM327 / WiFi | `elm327_session.c`, `wifi_manager.c`, `elm327_wifi_profiles.h`, `conn_log.c` |
-| UI / ikon | `ui_icons.c`, `dashboard.c`, `board_config.h` |
-| Font üretimi | `components/display/fonts/README.md`, `gen_fonts.ps1` |
+| BLE / ELM327 | `bt_manager.c`, `bt_elm327_profiles.h`, `elm327_session.c`, `conn_log.c` |
+| UI / ikon | `ui_icons.c`, `dashboard.c`, `bt_settings_ui.c`, `board_config.h` |
+| Font üretimi | `components/display/fonts/gen_fonts.ps1`, `font_gauge_96.c` |
 | Testler | `test/test_obd_parser.c`, `test/test_pid_support.c` |
 
 ## Lisans

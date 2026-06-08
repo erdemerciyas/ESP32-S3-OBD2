@@ -15,6 +15,7 @@ dependencies.lock
 sdkconfig
 sdkconfig.old
 sdkconfig.*
+!sdkconfig.defaults
 
 # Python / virtualenv
 __pycache__/

@@ -87,7 +87,7 @@ void splash_run_boot_animation(lv_obj_t *next_screen)
     lv_obj_set_style_text_letter_space(subtitle, 6, 0);
 
     lv_obj_t *status = lv_label_create(scr);
-    lv_label_set_text(status, "BAŞLATILIYOR");
+    lv_label_set_text(status, "INITIALIZING");
     lv_obj_align(status, LV_ALIGN_BOTTOM_MID, 0, -72);
     lv_obj_set_style_text_font(status, UI_FONT_MD, 0);
     lv_obj_set_style_text_color(status, color_primary, 0);

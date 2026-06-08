@@ -8,12 +8,56 @@
 
 static const char *TAG = "settings";
 static const char *NVS_NAMESPACE = "obd2_settings";
-#define SETTINGS_SCHEMA_VERSION 3
+#define SETTINGS_SCHEMA_VERSION 5
+
+static const uint32_t k_default_gauge_colors[APP_GAUGE_COUNT] = {
+    0xF08A1C, 0xFFB44A, 0xB14A2A, 0x4AD6C2, 0xFFB44A,
+    0x4AD6C2, 0xF08A1C, 0xF08A1C, 0x4AD6C2, 0xB14A2A,
+};
+
+void settings_init_gauge_defaults(app_settings_t *settings)
+{
+    if (settings == NULL) {
+        return;
+    }
+
+    if (settings->max_rpm < 2000 || settings->max_rpm > 9000) {
+        settings->max_rpm = 6500;
+    }
+    if (settings->max_speed < 40 || settings->max_speed > 320) {
+        settings->max_speed = 180;
+    }
+
+    bool order_valid = true;
+    bool seen[APP_GAUGE_COUNT] = {false};
+    for (int i = 0; i < APP_GAUGE_COUNT; i++) {
+        if (settings->gauge_order[i] >= APP_GAUGE_COUNT) {
+            order_valid = false;
+            break;
+        }
+        if (seen[settings->gauge_order[i]]) {
+            order_valid = false;
+            break;
+        }
+        seen[settings->gauge_order[i]] = true;
+    }
+    if (!order_valid) {
+        for (int i = 0; i < APP_GAUGE_COUNT; i++) {
+            settings->gauge_order[i] = (uint8_t)i;
+        }
+    }
+
+    for (int i = 0; i < APP_GAUGE_COUNT; i++) {
+        if (settings->gauge_colors[i] == 0) {
+            settings->gauge_colors[i] = k_default_gauge_colors[i];
+        }
+    }
+}
 
 static void settings_apply_defaults(app_settings_t *settings)
 {
     if (settings->preferred_connection == CONN_TYPE_NONE) {
-        settings->preferred_connection = CONN_TYPE_WIFI;
+        settings->preferred_connection = CONN_TYPE_BLUETOOTH;
     }
 
     if (settings->obd_adapter_port == 0) {
@@ -34,10 +78,13 @@ static void settings_apply_defaults(app_settings_t *settings)
         settings->brightness = 70;
     }
 
-    /* Must stay in sync with gauge_type_t / GAUGE_MAX */
-    if (settings->default_gauge >= 10) {
+    settings->theme = THEME_DARK;
+
+    if (settings->default_gauge >= APP_GAUGE_COUNT) {
         settings->default_gauge = 0;
     }
+
+    settings_init_gauge_defaults(settings);
 }
 
 esp_err_t settings_load(app_settings_t *settings)
@@ -112,7 +159,6 @@ esp_err_t settings_load(app_settings_t *settings)
     if (read_err == ESP_OK) {
         settings->wifi_manual_mode = (manual != 0);
     } else if (read_err == ESP_ERR_NVS_NOT_FOUND) {
-        /* First boot: only connect after user picks a network from scan */
         settings->wifi_manual_mode = true;
     }
 
@@ -126,6 +172,53 @@ esp_err_t settings_load(app_settings_t *settings)
         ESP_LOGW(TAG, "Failed to read def_gauge: %s", esp_err_to_name(read_err));
     }
 
+    len = sizeof(settings->bt_device_name);
+    read_err = nvs_get_str(nvs, "bt_name", settings->bt_device_name, &len);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read bt_name: %s", esp_err_to_name(read_err));
+    }
+
+    len = sizeof(settings->bt_device_addr);
+    read_err = nvs_get_str(nvs, "bt_addr", settings->bt_device_addr, &len);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read bt_addr: %s", esp_err_to_name(read_err));
+    }
+
+    read_err = nvs_get_u8(nvs, "bt_addr_type", &settings->bt_addr_type);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read bt_addr_type: %s", esp_err_to_name(read_err));
+    }
+
+    uint8_t bt_manual = 0;
+    read_err = nvs_get_u8(nvs, "bt_manual", &bt_manual);
+    if (read_err == ESP_OK) {
+        settings->bt_manual_mode = (bt_manual != 0);
+    } else if (read_err == ESP_ERR_NVS_NOT_FOUND) {
+        settings->bt_manual_mode = true;
+    }
+
+    read_err = nvs_get_u16(nvs, "max_rpm", &settings->max_rpm);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read max_rpm: %s", esp_err_to_name(read_err));
+    }
+
+    read_err = nvs_get_u16(nvs, "max_speed", &settings->max_speed);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read max_speed: %s", esp_err_to_name(read_err));
+    }
+
+    len = sizeof(settings->gauge_colors);
+    read_err = nvs_get_blob(nvs, "gauge_clr", settings->gauge_colors, &len);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read gauge_clr: %s", esp_err_to_name(read_err));
+    }
+
+    len = sizeof(settings->gauge_order);
+    read_err = nvs_get_blob(nvs, "gauge_ord", settings->gauge_order, &len);
+    if (read_err != ESP_OK && read_err != ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGW(TAG, "Failed to read gauge_ord: %s", esp_err_to_name(read_err));
+    }
+
     uint8_t schema = 0;
     bool persist_migration = false;
     read_err = nvs_get_u8(nvs, "schema", &schema);
@@ -135,6 +228,23 @@ esp_err_t settings_load(app_settings_t *settings)
             settings->wifi_manual_mode = true;
             persist_migration = true;
             ESP_LOGI(TAG, "Migrated saved SSID to manual-only WiFi mode");
+        }
+        if (schema < 4) {
+            settings->preferred_connection = CONN_TYPE_BLUETOOTH;
+            settings->bt_manual_mode = true;
+            persist_migration = true;
+            ESP_LOGI(TAG, "Migrated default transport to Bluetooth");
+        }
+        if (schema < 5) {
+            settings->theme = THEME_DARK;
+            settings->max_rpm = 6500;
+            settings->max_speed = 180;
+            for (int i = 0; i < APP_GAUGE_COUNT; i++) {
+                settings->gauge_colors[i] = k_default_gauge_colors[i];
+                settings->gauge_order[i] = (uint8_t)i;
+            }
+            persist_migration = true;
+            ESP_LOGI(TAG, "Migrated gauge limits/order/colors and dark-only theme");
         }
     }
 
@@ -146,13 +256,13 @@ esp_err_t settings_load(app_settings_t *settings)
         settings_save(settings);
     }
 
-    ESP_LOGI(TAG, "Settings loaded (conn=%d, ip=%s:%u, ssid=%s, manual=%d, gauge=%u)",
+    ESP_LOGI(TAG, "Settings loaded (conn=%d, bt=%s, manual_bt=%d, gauge=%u, rpm=%u, km=%u)",
              settings->preferred_connection,
-             settings->obd_adapter_ip,
-             settings->obd_adapter_port,
-             settings->wifi_ssid[0] ? settings->wifi_ssid : "(auto-scan)",
-             settings->wifi_manual_mode,
-             settings->default_gauge);
+             settings->bt_device_addr[0] ? settings->bt_device_addr : "(tara)",
+             settings->bt_manual_mode,
+             settings->default_gauge,
+             settings->max_rpm,
+             settings->max_speed);
     return ESP_OK;
 }
 
@@ -176,13 +286,21 @@ esp_err_t settings_save(const app_settings_t *settings)
     nvs_set_str(nvs, "obd_ip", settings->obd_adapter_ip);
     nvs_set_u16(nvs, "obd_port", settings->obd_adapter_port);
     nvs_set_u8(nvs, "conn_type", (uint8_t)settings->preferred_connection);
-    nvs_set_u8(nvs, "theme", (uint8_t)settings->theme);
+    nvs_set_u8(nvs, "theme", THEME_DARK);
     nvs_set_u8(nvs, "haptic", settings->haptic_enabled ? 1 : 0);
     nvs_set_u8(nvs, "sound", settings->sound_enabled ? 1 : 0);
     nvs_set_u8(nvs, "bright", settings->brightness);
     nvs_set_u8(nvs, "wifi_manual", settings->wifi_manual_mode ? 1 : 0);
     nvs_set_u8(nvs, "wifi_auth", settings->wifi_authmode);
     nvs_set_u8(nvs, "def_gauge", settings->default_gauge);
+    nvs_set_str(nvs, "bt_name", settings->bt_device_name);
+    nvs_set_str(nvs, "bt_addr", settings->bt_device_addr);
+    nvs_set_u8(nvs, "bt_addr_type", settings->bt_addr_type);
+    nvs_set_u8(nvs, "bt_manual", settings->bt_manual_mode ? 1 : 0);
+    nvs_set_u16(nvs, "max_rpm", settings->max_rpm);
+    nvs_set_u16(nvs, "max_speed", settings->max_speed);
+    nvs_set_blob(nvs, "gauge_clr", settings->gauge_colors, sizeof(settings->gauge_colors));
+    nvs_set_blob(nvs, "gauge_ord", settings->gauge_order, sizeof(settings->gauge_order));
     nvs_set_u8(nvs, "schema", SETTINGS_SCHEMA_VERSION);
 
     err = nvs_commit(nvs);

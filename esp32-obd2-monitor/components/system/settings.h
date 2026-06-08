@@ -11,6 +11,7 @@ extern "C" {
 esp_err_t settings_load(app_settings_t *settings);
 esp_err_t settings_save(const app_settings_t *settings);
 void settings_reset(void);
+void settings_init_gauge_defaults(app_settings_t *settings);
 
 #ifdef __cplusplus
 }

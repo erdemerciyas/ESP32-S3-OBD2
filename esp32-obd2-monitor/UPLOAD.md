@@ -4,7 +4,7 @@ Bu dosya, projeyi **Waveshare ESP32-S3-Touch-LCD-2.1** kartına yüklerken yapı
 
 **Resmi dokümantasyon:** [Waveshare ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.1)
 
-**Son başarılı yükleme:** COM3, hedef `esp32s3`, ESP-IDF v5.3.5 (Haziran 2026)
+**Son başarılı yükleme:** COM3, hedef `esp32s3`, ESP-IDF v5.3.5 (Haziran 2026) — BLE ELM327, firmware ~**1,6 MB**
 
 ---
 
@@ -103,6 +103,8 @@ IDF yüklü değilse script `C:\Espressif\frameworks\esp-idf-v5.3.5\export.ps1` 
 | Dokunmatik | Yerel `cst820_touch.c` + `espressif/esp_lcd_touch` |
 | `esp_io_expander` | **1.0.1** (legacy I2C uyumu; v2 yeni I2C sürücüsü kullanır) |
 | Manifest | `main/idf_component.yml` |
+| Bluetooth | **NimBLE** central (`CONFIG_BT_NIMBLE_ENABLED=y`) — BLE ELM327 |
+| LVGL heap | **128 KB** (`CONFIG_LV_MEM_SIZE_KILOBYTES=128`) — `sdkconfig.defaults` |
 
 İlk kurulumda veya hedef değişince:
 
@@ -116,7 +118,7 @@ idf.py build
 
 ## Partition tablosu
 
-Firmware ~**1,3 MB**; varsayılan 1 MB factory partition yetersizdi.
+Firmware ~**1,6 MB** (NimBLE + büyük gauge fontu); varsayılan 1 MB factory partition yetersizdi.
 
 - Dosya: `partitions.csv` (factory **2 MB** @ `0x10000`)
 - `sdkconfig.defaults`: `CONFIG_PARTITION_TABLE_CUSTOM=y`
@@ -140,8 +142,10 @@ Partition değişince tam yeniden yapılandırma gerekir (`sdkconfig` silinip `s
 | 5 | LVGL render döngüsü yoktu | `lvgl_handler_task` → `lv_timer_handler()` |
 | 6 | `lv_display_flush_ready()` eksikti | Partial flush + `esp_lcd_panel_draw_bitmap()` |
 | 7 | PSRAM QUAD modda | `CONFIG_SPIRAM_MODE_OCT=y` (OPI PSRAM) |
-| 8 | `main` task stack overflow (~3.5 KB) | `display_init` → ayrı task, **16 KB** stack; `CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288` |
+| 8 | `main` task stack overflow (~3.5 KB) | `display_init` → ayrı task, **40 KB** stack; `CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288` |
 | 9 | Buzzer sürekli ötüyordu | EXIO8 başlangıçta LOW (`0x7F` reset + `BOARD_EXIO_BUZZER`) |
+| 10 | Settings açılınca siyah ekran | `CONFIG_LV_MEM_SIZE_KILOBYTES=128`; gauge order listesi lazy-build (`dashboard.c`) |
+| 11 | BT Scan UI thread'den çökme | `bt_cmd` worker task (20 KB) — NimBLE scan/connect kuyruğu |
 
 ### Başarılı boot log (referans)
 
@@ -164,7 +168,7 @@ E tca9554: write_output_reg failed   → v2 expander + legacy I2C
 
 ```
 app_main
-  └─ display_init_task (16 KB stack)
+  └─ display_init_task (40 KB stack)
        └─ display_init()
             ├─ lvgl_init()
             │    ├─ I2C init (GPIO7/15)
@@ -189,10 +193,11 @@ app_main
 | Kaydırma (≥50 px) | Gösterge önceki / sonraki (`dashboard_navigate_gauge_*`) |
 | Alt nokta satırı | Aktif gösterge + `n/10` (kaydırma ile senkron) |
 | Çift dokunma (~320 ms) | Menü ekranı |
-| Menü kartları | Gösterge / Bağlantı / Ayarlar / Hakkında |
-| GERİ | Ana gösterge ekranı |
+| Menü kartları | Gauge / Connection / Settings / About (English UI) |
+| BACK | Ana gösterge ekranı |
+| Settings | Brightness, max RPM/speed, swipe order (+/−), haptic, sound |
 
-Tema: **Workshop at Dusk** (`ui-demo.html` ile uyumlu amber/krem palet — `styles.c`).
+Tema: **Dark only** — Workshop at Dusk (`styles.c`); çoklu tema kaldırıldı.
 
 Layout sabitleri: `board_config.h` → `UI_SCREEN_W/H`, `UI_SWIPE_THRESHOLD_PX`, `UI_DOUBLE_TAP_MS`.
 
@@ -200,8 +205,11 @@ Layout sabitleri: `board_config.h` → `UI_SCREEN_W/H`, `UI_SWIPE_THRESHOLD_PX`,
 |-------|-----|
 | `components/display/ui/dashboard.c` | 5 ekran, touch/swipe/menu olayları |
 | `components/display/ui/gauge.c` | Tam ekran yay + indicator row + geçersiz `--` |
-| `components/connectivity/connectivity.c` | Bağlantı FSM + `connectivity_get_state()` |
+| `components/connectivity/connectivity.c` | Bağlantı FSM + BT/WiFi/USB |
+| `components/connectivity/bt_manager.c` | NimBLE central, `bt_cmd` worker, NVS reconnect |
+| `components/connectivity/bt_elm327_profiles.h` | NUS + FFE0/FFE1/FFE2 GATT profilleri |
 | `components/connectivity/elm327_session.c` | Paylaşılan AT init / OBD probe |
+| `components/display/ui/bt_settings_ui.c` | Connection ekranı: Scan / Auto / Forget / Disconnect |
 | `components/telemetry/telemetry.c` | UI snapshot (obd + bağlantı) |
 | `components/display/ui/styles.c` | Renk paleti ve LVGL stilleri |
 
@@ -251,7 +259,7 @@ OBD monitor kapsamı dışında; ileride eklenebilir:
 3. **`sdkconfig` eski kalabilir** — `sdkconfig.defaults` değişince `idf.py reconfigure` veya `sdkconfig` sil.
 4. **PSRAM QUAD vs OCT** — bu kart OCT; QUAD ile boot olur ama LCD/PSRAM buffer bozulabilir.
 5. **Buzzer `0xFF`** — TCA9554 tüm pinleri HIGH yaparsa buzzer açık kalır.
-6. **ESP32-S3 Classic BT / SPP yok** — OBD için WiFi veya UART kullan.
+6. **ESP32-S3 Classic BT / SPP yok** — OBD için **BLE ELM327**, USB-UART veya (kodda kalan) WiFi kullan; klasik SPP dongle çalışmaz.
 7. **I2C paylaşımlı** — touch, expander, IMU, RTC aynı bus; adres çakışmasına dikkat.
 
 ---
@@ -283,10 +291,11 @@ C header’lara `extern "C"` eklendi (`app.h`, `settings.h`, `display.h`, `obd_s
 
 `main.cpp` görevleri: `obd_polling_task`, `obd_diagnostic_task`, `gauge_update_task` → `display_update_gauges()`.
 
-### 5. Bluetooth (ESP32-S3 sınırı)
+### 5. Bluetooth BLE (NimBLE)
 
-**ESP32-S3 klasik Bluetooth (SPP) desteklemez** — sadece BLE.  
-`bt_manager.c` içinde `#if CONFIG_BT_CLASSIC_ENABLED` yoksa **stub** (WiFi/USB kullanın).
+**ESP32-S3 klasik Bluetooth (SPP) desteklemez** — yalnızca **BLE central** (NimBLE).  
+`bt_manager.c`: aktif tarama, GATT keşfi (NUS / FFE0–FFE2), kayıtlı adaptör reconnect, `bt_addr_type` NVS.  
+UI thread'den NimBLE çağrılmaz — **`bt_cmd`** FreeRTOS kuyruğu (20 KB stack).
 
 ### 7. Ekran sürücüsü (Waveshare 2.1)
 
@@ -294,7 +303,8 @@ C header’lara `extern "C"` eklendi (`app.h`, `settings.h`, `display.h`, `obd_s
 - ST7701: 3-wire SPI (GPIO1/2) + RGB (18 MHz PCLK)
 - LVGL: partial flush + PSRAM draw buffer
 - Arka ışık: LEDC PWM GPIO6
-- `display_init` ayrı task'ta (16 KB stack) — stack overflow önlenir
+- `display_init` ayrı task'ta (**40 KB** stack) — stack overflow önlenir
+- LVGL heap **128 KB** — Settings + büyük gauge fontu için zorunlu
 - Pin tanımları: `components/display/lvgl_port/board_config.h`
 
 ### 8. Dokunmatik (CST820)
@@ -331,11 +341,12 @@ CONFIG_FREERTOS_HZ=1000
 
 | Yöntem | ESP32-S3 |
 |--------|----------|
-| WiFi (ELM327) | Desteklenir |
+| **BLE ELM327** (NimBLE) | **Varsayılan** — Scan / Auto / kayıtlı profil |
 | USB-UART (GPIO43/44) | Desteklenir |
-| Bluetooth SPP | **Desteklenmez** (donanım); menüde seçilirse bağlanmaz |
+| WiFi (ELM327) | Kodda kaldı; UI önceliği BT |
+| Bluetooth Classic SPP | **Desteklenmez** (donanım) |
 
-Varsayılan bağlantı tipi NVS’te (`settings`); ilk açılışta `connectivity_start(preferred_connection)` çağrılır.
+Varsayılan: `preferred_connection == NONE` → **`CONN_TYPE_BLUETOOTH`**. NVS schema **v5** (`settings.c`).
 
 ---
 
@@ -361,13 +372,22 @@ Python env + `export.ps1` + `IDF_TOOLS_PATH=C:\Espressif`.
 
 Sürücü (CP210x / CH340 / USB-JTAG) ve kablo.
 
-### Ekran boş / reboot döngüsü
+### Ekran boş / reboot döngüsü / siyah ekran
 
 - Seri monitörde `tca9554: TCA9554 IO expander ready at 0x20` görünmeli
-- `stack overflow in task main` → `display_init` ayrı task'ta olmalı (güncel firmware)
+- `stack overflow in task main` veya `display_init` → güncel firmware **40 KB** display task stack
+- **LVGL heap:** `CONFIG_LV_MEM_SIZE_KILOBYTES=128` (`sdkconfig.defaults`); 64 KB Settings sonrası siyah ekran yapabilir
+- Settings ekranı: gauge order satırları yalnız ekran açılınca oluşturulur (lazy load)
 - PSRAM: `CONFIG_SPIRAM_MODE_OCT=y` (QUAD değil OCT)
 - Backlight: LEDC GPIO6 — monitörde `lvgl_driver: LVGL initialized`
+- Splash sonrası `lv_scr_load(dashboard)` — güncel `display.c`
 - **CH422G kullanmayın** — bu kart TCA9554 kullanır ([Waveshare docs](https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.1))
+
+### Bluetooth Scan bağlantı kopması / reboot
+
+- NimBLE UI thread'den çağrılmamalı — güncel `bt_cmd` worker kullanın
+- Adaptör **BLE** olmalı; klasik “OBDII” SPP dongle ESP32-S3 ile uyumsuz
+- `conn_log` dump: monitor açılışında son 20 olay
 
 ### Dokunmatik çalışmıyor
 
@@ -387,9 +407,11 @@ Sürücü (CP210x / CH340 / USB-JTAG) ve kablo.
 - EXIO8 (TCA9554 pin 7) boot'ta LOW olmalı
 - `tca9554_expander.c` → `0x7F`, `board_config.h` → `BOARD_EXIO_BUZZER`
 
-### Klasik BT linker hatası
+### NimBLE derleme / bağlantı
 
-ESP32-S3’te normal; `bt_manager.c` stub dalında derlenmeli. `CONFIG_BT_CLASSIC_ENABLED` S3’te etkin değildir.
+- `sdkconfig.defaults`: `CONFIG_BT_NIMBLE_ENABLED=y`, `CONFIG_BT_BLUEDROID_ENABLED=n`
+- GATT: `bt_elm327_profiles.h` — NUS + FFE0/FFE1 + FFE2 notify
+- Kayıtlı MAC + `bt_addr_type` NVS'te; Forget ile silinir
 
 ---
 
@@ -414,7 +436,7 @@ DISCONNECTED → LINK_UP → ELM_INIT → OBD_READY
                   ↘ ERROR
 ```
 
-- **LINK_UP:** WiFi AP + TCP veya USB UART açık, ELM327 `ATI` probe OK
+- **LINK_UP:** BLE GATT serial, WiFi TCP veya USB UART açık, ELM327 `ATI` probe OK
 - **OBD_READY:** `elm327_session` init + `010C` RPM probe OK
 - UI pill rengi: kırmızı / amber / yeşil (`dashboard.c` HUD)
 - Kopunca `obd_service_on_disconnect()` tüm `*_valid` bayraklarını temizler
@@ -433,12 +455,9 @@ idf.py test
 
 ## Git / commit notu
 
-Bu oturumda yapılan değişiklikler henüz commit edilmemiş olabilir. Commit öncesi:
+Proje kökü: `alternative/` (monorepo). Yalnız `esp32-obd2-monitor/` commit edilir; `_ref/`, `esp-ard/`, `esp-obd/` dahil edilmez.
 
-```powershell
-git status
-git diff esp32-obd2-monitor
-```
+`sdkconfig.defaults` repoda tutulur (`.gitignore` istisnası: `!sdkconfig.defaults`).
 
 ---
 
@@ -448,10 +467,11 @@ git diff esp32-obd2-monitor
 2. IDF ortamı yüklendi (`export.ps1` veya `build_flash.ps1` otomatik dener)
 3. `cd esp32-obd2-monitor`
 4. `idf.py -p COM3 flash` veya `.\build_flash.ps1 -Action all -Port COM3`
-5. Kart reset olur; ekranda amber gösterge + üst WiFi/BT/USB pill’leri görünmeli, buzzer susmalı
-6. **Kaydır** → gösterge değişir; **çift dokun** → menü; **GERİ** → ana ekran
-7. Seri log: `Application started successfully` ve `Dashboard ready — swipe gauges, double-tap menu`
+5. Kart reset olur; ekranda amber gösterge + üst **BT** HUD ikonu görünmeli, buzzer susmalı
+6. **Kaydır** → gösterge değişir; **çift dokun** → menü; **BACK** → ana ekran
+7. Menü → **Connection** → **Scan** → BLE adaptör seç
+8. Seri log: `Application started successfully` ve `Dashboard ready — swipe gauges, double-tap menu`
 
 ---
 
-*Son güncelleme: Haziran 2026 — display bring-up (TCA9554/ST7701/CST820), tam ekran UI, swipe/çift dokunma, `build_flash` scriptleri.*
+*Son güncelleme: Haziran 2026 — BLE ELM327 (NimBLE), English UI, Settings (max RPM/speed, swipe order), LVGL 128 KB heap, siyah ekran düzeltmeleri, `font_gauge_96`.*
