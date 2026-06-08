@@ -8,6 +8,7 @@
 static const char *const bt_elm327_name_hints[] = {
     "OBDII",
     "OBD2",
+    "OBDBLE",
     "OBD",
     "ELM327",
     "ELM",

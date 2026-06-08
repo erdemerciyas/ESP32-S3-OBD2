@@ -84,6 +84,7 @@ static SemaphoreHandle_t scan_complete_sem;
 static bt_device_info_t scan_buf[BT_SCAN_MAX_RESULTS];
 static int scan_count;
 static bool scan_done;
+static volatile bool scan_active;
 
 static bool bt_connect_auto_internal(void);
 static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display_name);
@@ -600,6 +601,7 @@ static void bt_scan_upsert_device(const struct ble_gap_disc_desc *d)
     bt_addr_to_str(&d->addr, addr_str, sizeof(addr_str));
 
     int idx = bt_scan_find_index(addr_str);
+    const bool is_new = (idx < 0);
     if (idx < 0) {
         if (scan_count >= BT_SCAN_MAX_RESULTS) {
             return;
@@ -622,6 +624,12 @@ static void bt_scan_upsert_device(const struct ble_gap_disc_desc *d)
     }
 
     scan_buf[idx].is_obd_hint = bt_name_looks_like_elm327(scan_buf[idx].name);
+
+    if (is_new) {
+        ESP_LOGI(TAG, "BLE found: %s (%s) RSSI=%d%s",
+                 scan_buf[idx].name, addr_str, d->rssi,
+                 scan_buf[idx].is_obd_hint ? " [OBD]" : "");
+    }
 }
 
 static int bt_scan_cmp_devices(const void *a, const void *b)
@@ -648,11 +656,18 @@ static int bt_gap_event(struct ble_gap_event *event, void *arg)
 
     switch (event->type) {
     case BLE_GAP_EVENT_DISC: {
+        if (!scan_active) {
+            return 0;
+        }
         bt_scan_upsert_device(&event->disc);
         return 0;
     }
 
     case BLE_GAP_EVENT_DISC_COMPLETE:
+        if (!scan_active) {
+            return 0;
+        }
+        scan_active = false;
         scan_done = true;
         if (scan_complete_sem != NULL) {
             xSemaphoreGive(scan_complete_sem);
@@ -779,8 +794,15 @@ static int bt_run_scan(int duration_ms)
         return BLE_HS_ENOTSUP;
     }
 
+    scan_active = false;
     bt_abort_pending_ops();
-    vTaskDelay(pdMS_TO_TICKS(150));
+
+    /* Wait for any in-flight discovery cancel before starting a new scan. */
+    if (scan_complete_sem != NULL) {
+        xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(800));
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     op_abort = false;
     connect_failed = false;
 
@@ -794,13 +816,15 @@ static int bt_run_scan(int duration_ms)
 
     struct ble_gap_disc_params params;
     memset(&params, 0, sizeof(params));
-    params.passive = 1;
+    params.passive = 0;
     params.itvl = 0x0050;
     params.window = 0x0030;
     params.filter_duplicates = 0;
 
+    scan_active = true;
     int rc = ble_gap_disc(own_addr_type, duration_ms, &params, bt_gap_event, NULL);
     if (rc != 0) {
+        scan_active = false;
         ESP_LOGE(TAG, "ble_gap_disc failed: %d", rc);
         return rc;
     }
@@ -811,6 +835,7 @@ static int bt_run_scan(int duration_ms)
     }
 
     if (!scan_done) {
+        scan_active = false;
         ble_gap_disc_cancel();
         if (scan_complete_sem != NULL) {
             xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(500));
