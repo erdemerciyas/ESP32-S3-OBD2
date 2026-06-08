@@ -38,7 +38,7 @@ static bt_fail_stage_t last_fail = BT_FAIL_NONE;
 extern void ble_store_config_init(void);
 
 #define BT_RX_BUF_SIZE 512
-#define BT_SCAN_DEFAULT_MS 10000
+#define BT_SCAN_DEFAULT_MS 15000
 #define BT_AUTO_CONNECT_MAX_ATTEMPTS 12
 #define BT_MAX_GATT_SVCS 16
 #define BT_MAX_GATT_CHRS 24
@@ -50,6 +50,7 @@ typedef enum {
     BT_CMD_CONNECT,
     BT_CMD_DISCONNECT,
     BT_CMD_AUTO_CONNECT,
+    BT_CMD_PREPARE,
 } bt_cmd_id_t;
 
 typedef struct {
@@ -613,6 +614,8 @@ static void bt_scan_upsert_device(const struct ble_gap_disc_desc *d)
         snprintf(scan_buf[idx].name, sizeof(scan_buf[idx].name), "BLE %s", addr_str);
     }
 
+    scan_buf[idx].addr_type = d->addr.type;
+
     if (d->rssi > scan_buf[idx].rssi) {
         scan_buf[idx].rssi = d->rssi;
     }
@@ -817,8 +820,9 @@ static int bt_run_scan(int duration_ms)
     struct ble_gap_disc_params params;
     memset(&params, 0, sizeof(params));
     params.passive = 0;
-    params.itvl = 0x0050;
-    params.window = 0x0030;
+    /* 100% duty cycle active scan — improves discovery of slow OBD BLE adapters */
+    params.itvl = 0x0010;
+    params.window = 0x0010;
     params.filter_duplicates = 0;
 
     scan_active = true;
@@ -885,6 +889,10 @@ static void bt_cmd_worker(void *arg)
         case BT_CMD_AUTO_CONNECT:
             msg.ok = bt_connect_auto_internal();
             break;
+        case BT_CMD_PREPARE:
+            bt_abort_pending_ops();
+            msg.ok = true;
+            break;
         default:
             msg.ok = false;
             break;
@@ -918,7 +926,7 @@ static void bt_start_cmd_worker(void)
     cmd_worker_started = true;
 }
 
-static bool bt_submit_cmd(bt_cmd_msg_t *msg, TickType_t wait_ticks)
+static bool bt_submit_cmd_ex(bt_cmd_msg_t *msg, TickType_t wait_ticks, bool to_front)
 {
     bt_start_cmd_worker();
     if (!cmd_worker_started || bt_cmd_q == NULL) {
@@ -930,7 +938,10 @@ static bool bt_submit_cmd(bt_cmd_msg_t *msg, TickType_t wait_ticks)
         return false;
     }
 
-    if (xQueueSend(bt_cmd_q, msg, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    BaseType_t queued = to_front
+        ? xQueueSendToFront(bt_cmd_q, msg, pdMS_TO_TICKS(2000))
+        : xQueueSend(bt_cmd_q, msg, pdMS_TO_TICKS(2000));
+    if (queued != pdTRUE) {
         vSemaphoreDelete(msg->done);
         msg->done = NULL;
         return false;
@@ -940,6 +951,11 @@ static bool bt_submit_cmd(bt_cmd_msg_t *msg, TickType_t wait_ticks)
     vSemaphoreDelete(msg->done);
     msg->done = NULL;
     return ok;
+}
+
+static bool bt_submit_cmd(bt_cmd_msg_t *msg, TickType_t wait_ticks)
+{
+    return bt_submit_cmd_ex(msg, wait_ticks, false);
 }
 
 static bool bt_finish_gatt_setup(void)
@@ -977,7 +993,8 @@ static bool bt_finish_gatt_setup(void)
     return true;
 }
 
-static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display_name)
+static bool bt_connect_addr_with_type(const ble_addr_t *addr, const char *display_name,
+                                      uint8_t addr_type)
 {
     if (!bt_ensure_stack() || addr == NULL) {
         return false;
@@ -997,6 +1014,9 @@ static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display
         vTaskDelay(pdMS_TO_TICKS(300));
     }
 
+    ble_addr_t peer = *addr;
+    peer.type = addr_type;
+
     struct ble_gap_conn_params params = {
         .scan_itvl = 0x0010,
         .scan_window = 0x0010,
@@ -1008,10 +1028,9 @@ static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display
         .max_ce_len = 0,
     };
 
-    int rc = ble_gap_connect(own_addr_type, addr, 30000, &params, bt_gap_event, NULL);
+    int rc = ble_gap_connect(own_addr_type, &peer, 30000, &params, bt_gap_event, NULL);
     if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_connect failed: %d", rc);
-        last_fail = BT_FAIL_CONNECT;
+        ESP_LOGE(TAG, "ble_gap_connect failed (type=%u): %d", addr_type, rc);
         return false;
     }
 
@@ -1021,8 +1040,13 @@ static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
+    if (op_abort) {
+        ble_gap_conn_cancel();
+        vTaskDelay(pdMS_TO_TICKS(100));
+        return false;
+    }
+
     if (connect_failed || conn_handle == BLE_HS_CONN_HANDLE_NONE) {
-        last_fail = BT_FAIL_CONNECT;
         return false;
     }
 
@@ -1032,10 +1056,36 @@ static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display
     }
 
     char addr_str[BT_ADDR_STR_LEN];
-    bt_addr_to_str(addr, addr_str, sizeof(addr_str));
-    bt_save_device(display_name != NULL ? display_name : addr_str, addr_str, addr->type);
+    bt_addr_to_str(&peer, addr_str, sizeof(addr_str));
+    bt_save_device(display_name != NULL ? display_name : addr_str, addr_str, peer.type);
     last_fail = BT_FAIL_NONE;
     return true;
+}
+
+static bool bt_connect_addr_internal(const ble_addr_t *addr, const char *display_name)
+{
+    static const uint8_t addr_types[] = {
+        BLE_ADDR_PUBLIC,
+        BLE_ADDR_RANDOM,
+    };
+
+    uint8_t preferred = addr != NULL ? addr->type : BLE_ADDR_PUBLIC;
+    for (size_t pass = 0; pass < sizeof(addr_types) / sizeof(addr_types[0]); pass++) {
+        uint8_t try_type = (pass == 0) ? preferred : addr_types[pass];
+        if (pass > 0 && try_type == preferred) {
+            continue;
+        }
+        ESP_LOGI(TAG, "BLE connect attempt (addr_type=%u)", try_type);
+        if (bt_connect_addr_with_type(addr, display_name, try_type)) {
+            return true;
+        }
+        if (op_abort) {
+            break;
+        }
+    }
+
+    last_fail = BT_FAIL_CONNECT;
+    return false;
 }
 
 bool bt_init_stack(void)
@@ -1046,7 +1096,16 @@ bool bt_init_stack(void)
 
 void bt_prepare_for_operation(void)
 {
-    bt_abort_pending_ops();
+    if (bt_cmd_task_h != NULL && xTaskGetCurrentTaskHandle() == bt_cmd_task_h) {
+        bt_abort_pending_ops();
+        return;
+    }
+
+    op_abort = true;
+    bt_cmd_msg_t msg = {
+        .id = BT_CMD_PREPARE,
+    };
+    bt_submit_cmd_ex(&msg, pdMS_TO_TICKS(5000), true);
 }
 
 void bt_shutdown_stack(void)

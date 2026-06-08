@@ -1,0 +1,1 @@
+UserSideException: could not open port 'COM3': PermissionError(13, 'Eriþim engellendi.', None, 5)

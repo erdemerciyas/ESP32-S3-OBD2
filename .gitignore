@@ -40,6 +40,12 @@ Thumbs.db
 # Log files
 *.log
 
+# PlatformIO (esp-ard, esp-obd)
+.pio/
+
+# Reference vendored repos (sources only, not nested .git)
+**/_ref/**/.git/
+
 # Build helper scratch
 .cache/
 .eslintcache

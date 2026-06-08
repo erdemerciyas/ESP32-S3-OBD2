@@ -1,0 +1,53 @@
+[+] COM3 opened
+[*] Reading logs (35 sec)...
+.[WiFi] Tarama...[WiFi] Tarama hatasi[WiFi] Otomatik tarama...[WiFi] Tarama...[WiFi] Tarama hatasi[WiFi] Otomatik tarama...[WiFi] Tarama...[WiFi] Tarama hatasi[WiFi] Tarama...[WiFi] Tarama hatasi[WiFi] Otomatik tarama...[WiFi] Tarama...[WiFi] Tarama hatasiESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xb (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4037be92
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x1188
+load:0x403c8700,len:0x4
+load:0x403c8704,len:0xbf0
+load:0x403cb700,len:0x30e4
+entry 0x403c88ac
+[LOG] Onceki oturum son satirlar:
+  | [WiFi] Tarama hatasi
+  | [WiFi] Otomatik tarama...
+  | [WiFi] Tarama...
+  | [WiFi] Tarama hatasi
+  | [WiFi] Otomatik tarama...
+  | [WiFi] Tarama...
+  | [WiFi] Tarama hatasi
+  | [WiFi] Otomatik tarama...
+  | [WiFi] Tarama...
+  | [WiFi] Tarama hatasi
+  | [WiFi] Otomatik tarama...
+  | [WiFi] Tarama...
+  | [WiFi] Tarama hatasi
+  | [WiFi] Otomatik tarama...
+  | [WiFi] Tarama...
+  | [WiFi] Tarama hatasi
+======== SESSION #44 ========
+=== ESP32-S3 OBD Dashboard ===[Display] Initializing board...[I][Panel][esp_panel_board.cpp:0066](init): Initializing board (Waveshare:ESP32_S3_TOUCH_LCD_2_1)
+[I][Panel][esp_panel_board.cpp:0235](init): Board initialize success
+[I][Panel][esp_panel_board.cpp:0253](begin): Beginning board (Waveshare:ESP32_S3_TOUCH_LCD_2_1)
+[I][Expander][esp_io_expander_tca9554.c:0060](esp_io_expander_new_i2c_tca9554): version: 1.0.1
+[I][Panel][esp_lcd_st7701.c:0026](esp_lcd_new_panel_st7701): version: 1.1.1
+[W][Panel][esp_lcd_st7701_rgb.c:0264](panel_st7701_send_init_cmds): The 36h command has been used and will be overwritten by external initialization sequence
+[W][Panel][esp_lcd_st7701_rgb.c:0264](panel_st7701_send_init_cmds): The 3Ah command has been used and will be overwritten by external initialization sequence
+[I][Panel][esp_lcd_touch_cst816s.c:0045](esp_lcd_touch_new_i2c_cst816s): version: 1.0.3
+[I][Panel][esp_lcd_touch_cst816s.c:0186](read_id): IC id: 183
+[I][Panel][esp_panel_board.cpp:0463](begin): Board begin success
+[Display] Initializing LVGL port...[I][LvPort][lvgl_v8_port.cpp:0790](lvgl_port_init): Initializing LVGL display driver
+[Display] Ready[NVS] obd_dash: 1 kayitli WiFi
+[NVS] Son kullanilan: WIFI_OBDII
+[NVS] [0] SSID=WIFI_OBDII acik (sifresiz) IP=192.168.0.11 GW=192.168.0.10
+[NVS] elm_host=192.168.0.10
+[NVS] elm_lock=yok[WiFi] Kayitli aglar deneniyor...[WiFi] Kayitli ag once dogrudan: WIFI_OBDII[WiFi] Baglaniyor: [WIFI_OBDII]
+[WiFi] Statik IP 192.168.0.11 GW 192.168.0.10Cift dokun: WiFi | Uzun dokun: Arac (VIN/DTC)[LOG] Kalici log aktif ??? komutlar: log dump | log stat | log clear[NVS] obd_dash: 1 kayitli WiFi
+[NVS] Son kullanilan: WIFI_OBDII
+[NVS] [0] SSID=WIFI_OBDII acik (sifresiz) IP=192.168.0.11 GW=192.168.0.10
+[NVS] elm_host=192.168.0.10
+
+[+] Logs saved: device_boot.log (49 lines)

@@ -1,0 +1,5 @@
+.pio
+.vscode/.browse*
+*.o
+*.a
+.DS_Store

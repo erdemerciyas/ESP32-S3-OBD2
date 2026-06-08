@@ -212,7 +212,7 @@ static void bt_ui_populate_device_list(const bt_device_info_t *devices, int coun
 
     if (count == 0) {
         lv_obj_t *empty = lv_label_create(device_list);
-        lv_label_set_text(empty, "No BLE devices found");
+        lv_label_set_text(empty, "No BLE devices found\n(Use OBDBLE, not OBDII)");
         lv_obj_set_style_text_color(empty, color_text_dim, 0);
         lv_obj_set_style_text_font(empty, UI_FONT_MD, 0);
         return;
@@ -270,8 +270,8 @@ static void bt_ui_job_finished_cb(void *user_data)
         case BT_UI_JOB_SCAN:
             bt_ui_populate_device_list(job->devices, job->device_count);
             bt_ui_set_message(job->device_count > 0 ?
-                              "All BLE devices — tap to connect" :
-                              "Scan complete — no BLE devices");
+                              "BLE devices — tap to connect" :
+                              "No BLE found — use OBDBLE adapter");
             break;
         case BT_UI_JOB_AUTO:
             if (job->result == ESP_OK) {
@@ -420,7 +420,7 @@ static void bt_ui_scan_btn_cb(lv_event_t *e)
     }
 
     job->kind = BT_UI_JOB_SCAN;
-    bt_ui_set_message("Scanning all BLE devices...");
+    bt_ui_set_message("Scanning BLE (15s)...");
     bt_ui_start_job(job, false);
 }
 
@@ -506,7 +506,7 @@ void bt_settings_ui_create(lv_obj_t *screen)
     lv_obj_set_style_text_font(status_msg_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_msg_lbl, color_accent, 0);
     lv_label_set_long_mode(status_msg_lbl, LV_LABEL_LONG_DOT);
-    lv_label_set_text(status_msg_lbl, "Scan -> select OBDII adapter");
+    lv_label_set_text(status_msg_lbl, "Scan -> select OBDBLE adapter");
 
     scan_btn = lv_btn_create(screen);
     lv_obj_set_size(scan_btn, btn_w, 34);

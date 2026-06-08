@@ -730,6 +730,14 @@ esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found
 
     connectivity_set_user_busy(true);
 
+    connectivity_lock();
+
+    connectivity_stop();
+
+    connectivity_unlock();
+
+
+
     if (!bt_init_stack()) {
 
         connectivity_set_user_busy(false);
