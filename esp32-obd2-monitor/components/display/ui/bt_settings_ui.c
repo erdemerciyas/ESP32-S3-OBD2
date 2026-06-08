@@ -9,6 +9,8 @@
 #include "ui_fonts.h"
 #include "ui_icons.h"
 #include "app.h"
+#include "conn_log.h"
+#include <string.h>
 #include "haptic.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -27,7 +29,8 @@
 #define BT_UI_LIST_TOP   (BT_UI_BTN_ROW2_Y + 44)
 #define BT_UI_LIST_H     (UI_SCREEN_H - BT_UI_LIST_TOP - BT_UI_FOOTER_H - 8)
 #define BT_UI_DEVICE_ROW_H 52
-#define BT_UI_JOB_STACK  16384
+#define BT_UI_JOB_STACK      12288
+#define BT_UI_LIST_MAX_ROWS  32
 
 static const char *TAG = "bt_ui";
 
@@ -45,6 +48,7 @@ static bt_device_info_t scan_results[BT_SCAN_MAX_RESULTS];
 static int scan_result_count;
 static volatile bool worker_busy;
 static lv_timer_t *progress_timer;
+static lv_timer_t *deferred_scan_timer;
 
 typedef enum {
     BT_UI_JOB_SCAN = 0,
@@ -59,11 +63,11 @@ typedef struct {
     char addr[BT_ADDR_STR_LEN];
     char name[BT_DEVICE_NAME_MAX];
     uint8_t addr_type;
-    bt_device_info_t devices[BT_SCAN_MAX_RESULTS];
     int device_count;
     esp_err_t result;
-    bool caps_stack;
 } bt_ui_job_t;
+
+static bt_device_info_t g_bt_scan_work_buf[BT_SCAN_MAX_RESULTS];
 
 static lv_obj_t *bt_ui_btn_content(lv_obj_t *btn, const char *icon_sym, const char *text,
                                    lv_color_t text_color)
@@ -200,6 +204,7 @@ static void bt_ui_set_buttons_enabled(bool enabled)
 }
 
 static void bt_ui_device_click_cb(lv_event_t *e);
+static void bt_ui_trigger_scan(const char *status_msg);
 
 static void bt_ui_populate_device_list(const bt_device_info_t *devices, int count)
 {
@@ -212,13 +217,18 @@ static void bt_ui_populate_device_list(const bt_device_info_t *devices, int coun
 
     if (count == 0) {
         lv_obj_t *empty = lv_label_create(device_list);
-        lv_label_set_text(empty, "No BLE devices found\n(Use OBDBLE, not OBDII)");
+        lv_label_set_text(empty, "No Bluetooth devices found");
         lv_obj_set_style_text_color(empty, color_text_dim, 0);
         lv_obj_set_style_text_font(empty, UI_FONT_MD, 0);
         return;
     }
 
-    for (int i = 0; i < count; i++) {
+    int show = count;
+    if (show > BT_UI_LIST_MAX_ROWS) {
+        show = BT_UI_LIST_MAX_ROWS;
+    }
+
+    for (int i = 0; i < show; i++) {
         lv_obj_t *btn = lv_btn_create(device_list);
         lv_obj_set_width(btn, lv_pct(100));
         lv_obj_set_height(btn, BT_UI_DEVICE_ROW_H);
@@ -244,11 +254,15 @@ static void bt_ui_populate_device_list(const bt_device_info_t *devices, int coun
         lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE);
 
         ui_icon_create(row, LV_SYMBOL_BLUETOOTH, UI_FONT_ICON);
-        char line[80];
-        snprintf(line, sizeof(line), "%s   %s   %d dBm",
-                 devices[i].name[0] ? devices[i].name : "-",
-                 devices[i].addr,
-                 devices[i].rssi);
+        char line[96];
+        const char *label = devices[i].name[0] ? devices[i].name : "Unknown";
+        if (devices[i].is_obd_hint) {
+            snprintf(line, sizeof(line), "[OBD] %s  %s  %d dBm",
+                     label, devices[i].addr, devices[i].rssi);
+        } else {
+            snprintf(line, sizeof(line), "%s  %s  %d dBm",
+                     label, devices[i].addr, devices[i].rssi);
+        }
         lv_obj_t *lbl = lv_label_create(row);
         lv_label_set_text(lbl, line);
         lv_obj_set_style_text_font(lbl, UI_FONT_SM, 0);
@@ -267,12 +281,41 @@ static void bt_ui_job_finished_cb(void *user_data)
     }
 
     switch (job->kind) {
-        case BT_UI_JOB_SCAN:
-            bt_ui_populate_device_list(job->devices, job->device_count);
-            bt_ui_set_message(job->device_count > 0 ?
-                              "BLE devices — tap to connect" :
-                              "No BLE found — use OBDBLE adapter");
+        case BT_UI_JOB_SCAN: {
+            bt_ui_populate_device_list(g_bt_scan_work_buf, job->device_count);
+            char scan_msg[72];
+            if (job->device_count > 0) {
+                if (job->device_count > BT_UI_LIST_MAX_ROWS) {
+                    snprintf(scan_msg, sizeof(scan_msg),
+                             "%d found, showing strongest %d — tap to connect",
+                             job->device_count, BT_UI_LIST_MAX_ROWS);
+                } else {
+                    snprintf(scan_msg, sizeof(scan_msg),
+                             "%d BLE device(s) — tap to connect",
+                             job->device_count);
+                }
+            } else {
+                const char *err = bt_get_last_error();
+                if (err != NULL) {
+                    snprintf(scan_msg, sizeof(scan_msg), "Scan failed: %s", err);
+                } else if (!bt_stack_is_ready()) {
+                    snprintf(scan_msg, sizeof(scan_msg), "BLE stack not ready — retry Scan");
+                } else {
+                    snprintf(scan_msg, sizeof(scan_msg), "No BLE devices nearby");
+                }
+                const int log_n = conn_log_count();
+                if (log_n > 0) {
+                    uint32_t up_s = 0;
+                    uint32_t seq = 0;
+                    const char *last = conn_log_entry(log_n - 1, &up_s, &seq);
+                    if (last != NULL && strstr(last, "BLE scan") != NULL) {
+                        snprintf(scan_msg, sizeof(scan_msg), "%s", last);
+                    }
+                }
+            }
+            bt_ui_set_message(scan_msg);
             break;
+        }
         case BT_UI_JOB_AUTO:
             if (job->result == ESP_OK) {
                 bt_ui_set_message(connectivity_get_state() == CONN_STATE_OBD_READY ?
@@ -315,8 +358,12 @@ static void bt_ui_worker_task(void *arg)
 
     switch (job->kind) {
         case BT_UI_JOB_SCAN:
-            connectivity_bt_scan(job->devices, BT_SCAN_MAX_RESULTS, &job->device_count);
-            job->result = (job->device_count > 0) ? ESP_OK : ESP_ERR_NOT_FOUND;
+            job->device_count = 0;
+            job->result = connectivity_bt_scan(g_bt_scan_work_buf, BT_SCAN_MAX_RESULTS,
+                                               &job->device_count);
+            if (job->result == ESP_OK || job->device_count > 0) {
+                job->result = ESP_OK;
+            }
             break;
         case BT_UI_JOB_AUTO:
             job->result = connectivity_bt_enable_auto_mode();
@@ -336,11 +383,7 @@ static void bt_ui_worker_task(void *arg)
     }
 
     lv_async_call(bt_ui_job_finished_cb, job);
-    if (job->caps_stack) {
-        vTaskDeleteWithCaps(NULL);
-    } else {
-        vTaskDelete(NULL);
-    }
+    vTaskDelete(NULL);
 }
 
 static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
@@ -354,15 +397,8 @@ static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
     worker_busy = true;
     bt_ui_set_buttons_enabled(false);
 
-    job->caps_stack = false;
-    BaseType_t created = xTaskCreateWithCaps(
-        bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, job, 5, NULL,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (created == pdPASS) {
-        job->caps_stack = true;
-    } else {
-        created = xTaskCreate(bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, job, 5, NULL);
-    }
+    /* Internal RAM stack only — PSRAM stack + BLE wait can crash/cache-fault */
+    BaseType_t created = xTaskCreate(bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, job, 5, NULL);
     if (created != pdPASS) {
         ESP_LOGE(TAG, "Failed to start BT UI worker task");
         worker_busy = false;
@@ -407,21 +443,55 @@ static void bt_ui_device_click_cb(lv_event_t *e)
     bt_ui_start_job(job, true);
 }
 
-static void bt_ui_scan_btn_cb(lv_event_t *e)
+static void bt_ui_deferred_scan_cb(lv_timer_t *t)
 {
-    (void)e;
+    (void)t;
+    if (deferred_scan_timer != NULL) {
+        lv_timer_pause(deferred_scan_timer);
+    }
+    if (!bt_rf_allowed()) {
+        bt_ui_set_message("UI not ready — tap Scan");
+        return;
+    }
+    bt_ui_trigger_scan("Scanning all nearby BLE devices...");
+}
+
+void bt_settings_ui_on_screen_shown(void)
+{
+    if (device_list == NULL || worker_busy) {
+        return;
+    }
+
+    if (deferred_scan_timer == NULL) {
+        deferred_scan_timer = lv_timer_create(bt_ui_deferred_scan_cb, 1200, NULL);
+        lv_timer_set_repeat_count(deferred_scan_timer, 1);
+    } else {
+        lv_timer_reset(deferred_scan_timer);
+        lv_timer_resume(deferred_scan_timer);
+    }
+}
+
+static void bt_ui_trigger_scan(const char *status_msg)
+{
     if (worker_busy) {
         return;
     }
 
     bt_ui_job_t *job = calloc(1, sizeof(bt_ui_job_t));
     if (job == NULL) {
+        bt_ui_set_message("Out of memory");
         return;
     }
 
     job->kind = BT_UI_JOB_SCAN;
-    bt_ui_set_message("Scanning BLE (15s)...");
+    bt_ui_set_message(status_msg != NULL ? status_msg : "Scanning all nearby BLE (20s)...");
     bt_ui_start_job(job, false);
+}
+
+static void bt_ui_scan_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    bt_ui_trigger_scan("Scanning all nearby BLE (20s)...");
 }
 
 static void bt_ui_auto_btn_cb(lv_event_t *e)
@@ -506,7 +576,7 @@ void bt_settings_ui_create(lv_obj_t *screen)
     lv_obj_set_style_text_font(status_msg_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_msg_lbl, color_accent, 0);
     lv_label_set_long_mode(status_msg_lbl, LV_LABEL_LONG_DOT);
-    lv_label_set_text(status_msg_lbl, "Scan -> select OBDBLE adapter");
+    lv_label_set_text(status_msg_lbl, "Lists every nearby BLE device (scroll down)");
 
     scan_btn = lv_btn_create(screen);
     lv_obj_set_size(scan_btn, btn_w, 34);

@@ -395,6 +395,7 @@ void dashboard_show_screen(dashboard_screen_t screen)
 
     if (screen == DASHBOARD_CONNECTION) {
         bt_settings_ui_refresh();
+        bt_settings_ui_on_screen_shown();
     }
 
     if (screen == DASHBOARD_SETTINGS && !gauge_order_list_built && gauge_order_list != NULL) {

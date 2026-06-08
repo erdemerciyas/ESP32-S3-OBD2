@@ -14,6 +14,7 @@
 #include "conn_log.h"
 #include "display.h"
 #include "connectivity.h"
+#include "bt_manager.h"
 #include "obd_service.h"
 #include "dashboard.h"
 #include "gauge.h"
@@ -135,12 +136,12 @@ static bool display_task_uses_caps;
 static void connectivity_boot_task(void *arg)
 {
     (void)arg;
-    /* Let splash/UI settle before starting RF scan (reduces ISR contention at boot) */
-    vTaskDelay(pdMS_TO_TICKS(3000));
+    /* Wait for BLE warmup + splash to finish */
+    vTaskDelay(pdMS_TO_TICKS(6000));
 
     esp_err_t conn_err = connectivity_start(g_settings.preferred_connection);
     if (conn_err != ESP_OK) {
-        ESP_LOGW(TAG, "Initial connectivity failed, background reconnect active");
+        ESP_LOGW(TAG, "Initial connectivity skipped/failed (manual mode or no adapter)");
     }
     vTaskDelete(NULL);
 }
@@ -173,6 +174,19 @@ extern "C" void app_main(void)
     conn_log_init();
     conn_log_dump();
 
+    /* NimBLE NPL mutex alloc needs internal RAM; after LVGL only ~67KB remains and
+     * nimble_port_init() asserts. Bring up BLE before display (~126KB free). */
+    bt_set_rf_allowed(true);
+    ESP_LOGI(TAG, "Early BLE init (int_free=%u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    if (!bt_init_stack() || !bt_warmup_stack()) {
+        const char *err = bt_get_last_error();
+        ESP_LOGW(TAG, "Early BLE init failed: %s", err != NULL ? err : "unknown");
+    } else {
+        ESP_LOGI(TAG, "BLE stack ready (int_free=%u)",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    }
+
     /* Display init uses a lot of stack (LVGL + dashboard UI) — prefer PSRAM stack */
     display_ready_sem = xSemaphoreCreateBinary();
     display_task_uses_caps = false;
@@ -192,8 +206,8 @@ extern "C" void app_main(void)
     }
     if (disp_ok != pdPASS) {
         ESP_LOGE(TAG, "display_init task create failed — cannot start UI");
-    } else {
-        xSemaphoreTake(display_ready_sem, portMAX_DELAY);
+    } else if (xSemaphoreTake(display_ready_sem, pdMS_TO_TICKS(90000)) != pdTRUE) {
+        ESP_LOGE(TAG, "display_init timed out — UI may be unavailable");
     }
     vSemaphoreDelete(display_ready_sem);
     display_ready_sem = NULL;

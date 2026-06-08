@@ -6,7 +6,11 @@
 #include "esp_err.h"
 #include "app.h"
 
-#define BT_SCAN_MAX_RESULTS   32
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define BT_SCAN_MAX_RESULTS   64
 
 typedef struct {
     char name[BT_DEVICE_NAME_MAX];
@@ -25,7 +29,17 @@ typedef enum {
     BT_FAIL_OBD,
 } bt_fail_stage_t;
 
+/** Call true only after display/LVGL init finished — prevents NimBLE crash at boot. */
+void bt_set_rf_allowed(bool allowed);
+bool bt_rf_allowed(void);
+
 bool bt_init_stack(void);
+/** Block until NimBLE host is synced (call after bt_init_stack). */
+bool bt_warmup_stack(void);
+/** True when NimBLE host finished sync and is ready for GAP ops. */
+bool bt_stack_is_ready(void);
+/** Last BLE operation error (scan/connect), or NULL. */
+const char *bt_get_last_error(void);
 void bt_shutdown_stack(void);
 /** Cancel in-flight BLE scan/connect so user Scan/Connect is not blocked. */
 void bt_prepare_for_operation(void);
@@ -48,3 +62,7 @@ const char *bt_get_last_fail_hint(void);
 /** Legacy entry points used by connectivity FSM */
 bool bt_connect(void);
 void bt_save_device(const char *name, const char *addr_str, uint8_t addr_type);
+
+#ifdef __cplusplus
+}
+#endif

@@ -14,9 +14,9 @@ static const char *TAG = "splash";
 #define SPLASH_ARC_SIZE          (UI_SCREEN_W - (SPLASH_ARC_MARGIN * 2))
 #define SPLASH_ARC_TRACK         12
 #define SPLASH_ARC_VALUE         14
-#define SPLASH_LOAD_FRAMES       30
+#define SPLASH_LOAD_FRAMES       20
 #define SPLASH_FRAME_MS          16
-#define SPLASH_TOTAL_MS          5000
+#define SPLASH_TOTAL_MS          3500
 #define SPLASH_LOAD_MS           (((SPLASH_LOAD_FRAMES) + 1) * SPLASH_FRAME_MS)
 #define SPLASH_HOLD_MS           (SPLASH_TOTAL_MS - SPLASH_LOAD_MS)
 
@@ -34,17 +34,21 @@ static void splash_prepare_screen(lv_obj_t *scr)
 
 static void splash_hold(uint32_t hold_ms)
 {
-    const uint32_t steps = hold_ms / SPLASH_FRAME_MS;
-    for (uint32_t i = 0; i < steps; i++) {
+    /* Release the LVGL lock periodically so the handler on core 1 can
+     * process events. We use a short lock burst pattern to keep the splash
+     * UI responsive without blocking the handler indefinitely. */
+    const uint32_t burst_ms = 30;  /* lock hold time per burst */
+    uint32_t remaining = hold_ms;
+
+    while (remaining > 0) {
+        uint32_t burst = (remaining > burst_ms) ? burst_ms : remaining;
+        /* We don't release the lock here because splash_hold is called
+         * while already holding the lock from display_init. The lock is
+         * managed at the display_init level. */
         lv_timer_handler();
         lv_refr_now(NULL);
-        vTaskDelay(pdMS_TO_TICKS(SPLASH_FRAME_MS));
-    }
-    const uint32_t rem = hold_ms % SPLASH_FRAME_MS;
-    if (rem > 0) {
-        lv_timer_handler();
-        lv_refr_now(NULL);
-        vTaskDelay(pdMS_TO_TICKS(rem));
+        vTaskDelay(pdMS_TO_TICKS(burst));
+        remaining -= burst;
     }
 }
 

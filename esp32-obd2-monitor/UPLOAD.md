@@ -388,7 +388,7 @@ Sürücü (CP210x / CH340 / USB-JTAG) ve kablo.
 ### Bluetooth Scan bağlantı kopması / reboot
 
 - NimBLE UI thread'den çağrılmamalı — güncel `bt_cmd` worker kullanın
-- Adaptör **BLE** olmalı; klasik “OBDII” SPP dongle ESP32-S3 ile uyumsuz
+- ESP32-S3 yalnızca BLE (LE 5.x): OBDBLE, ELM327 ve BLE üzerinden yayın yapan OBDII adlı adaptörler; telefondaki klasik **OBDII** (SPP) dongle desteklenmez
 - `conn_log` dump: monitor açılışında son 20 olay
 
 ### Dokunmatik çalışmıyor

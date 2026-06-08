@@ -3,6 +3,7 @@
 #include "elm327_session.h"
 #include "app.h"
 #include "settings.h"
+#include "conn_log.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,6 +21,17 @@ static bool serial_ready;
 static volatile bool connect_failed;
 static volatile bool op_abort;
 static bt_fail_stage_t last_fail = BT_FAIL_NONE;
+static volatile bool bt_rf_allowed_flag;
+
+void bt_set_rf_allowed(bool allowed)
+{
+    bt_rf_allowed_flag = allowed;
+}
+
+bool bt_rf_allowed(void)
+{
+    return bt_rf_allowed_flag;
+}
 
 #if CONFIG_BT_NIMBLE_ENABLED
 
@@ -34,16 +46,20 @@ static bt_fail_stage_t last_fail = BT_FAIL_NONE;
 #include "freertos/queue.h"
 #include "host/ble_store.h"
 #include "esp_bt.h"
+#include "esp_coexist.h"
 
 extern void ble_store_config_init(void);
 
 #define BT_RX_BUF_SIZE 512
-#define BT_SCAN_DEFAULT_MS 15000
+#define BT_SCAN_DEFAULT_MS 20000
+#define BT_SCAN_PASS_MIN_MS 4000
 #define BT_AUTO_CONNECT_MAX_ATTEMPTS 12
 #define BT_MAX_GATT_SVCS 16
 #define BT_MAX_GATT_CHRS 24
-#define BT_CMD_TASK_STACK  20480
-#define BT_CMD_QUEUE_LEN   4
+#define BT_CMD_TASK_STACK  16384
+#define BT_CMD_QUEUE_LEN   6
+#define BT_STACK_SYNC_MS   20000
+#define BT_STACK_INIT_RETRIES 3
 
 typedef enum {
     BT_CMD_SCAN = 1,
@@ -51,6 +67,7 @@ typedef enum {
     BT_CMD_DISCONNECT,
     BT_CMD_AUTO_CONNECT,
     BT_CMD_PREPARE,
+    BT_CMD_WARMUP,
 } bt_cmd_id_t;
 
 typedef struct {
@@ -66,6 +83,9 @@ static bool stack_started;
 static bool port_inited;
 static volatile bool host_synced;
 static bool cmd_worker_started;
+static volatile bool bt_cmd_last_ok;
+static volatile bool bt_cmd_last_completed;
+static char bt_last_error[64];
 static QueueHandle_t bt_cmd_q;
 static TaskHandle_t bt_cmd_task_h;
 static uint8_t own_addr_type = BLE_OWN_ADDR_PUBLIC;
@@ -319,7 +339,6 @@ static bool bt_gatt_wait_op(int rc, int timeout_ms)
 static void bt_abort_pending_ops(void)
 {
     op_abort = true;
-    connect_failed = true;
 
     if (!stack_started) {
         return;
@@ -582,18 +601,48 @@ static int bt_scan_find_index(const char *addr_str)
     return -1;
 }
 
+static void bt_scan_copy_adv_name(bt_device_info_t *entry, const uint8_t *data, uint8_t len)
+{
+    if (data == NULL || len == 0) {
+        return;
+    }
+
+    size_t copy = len;
+    if (copy >= sizeof(entry->name)) {
+        copy = sizeof(entry->name) - 1;
+    }
+    memcpy(entry->name, data, copy);
+    entry->name[copy] = '\0';
+}
+
+static bool bt_scan_name_is_placeholder(const char *name)
+{
+    return name != NULL && strncmp(name, "BLE ", 4) == 0;
+}
+
 static void bt_scan_apply_name(bt_device_info_t *entry, const struct ble_hs_adv_fields *fields)
 {
     if (fields == NULL || fields->name == NULL || fields->name_len == 0) {
         return;
     }
 
-    size_t copy = fields->name_len;
-    if (copy >= sizeof(entry->name)) {
-        copy = sizeof(entry->name) - 1;
+    const bool cur_placeholder = bt_scan_name_is_placeholder(entry->name);
+    if (!cur_placeholder && fields->name_len <= strlen(entry->name)) {
+        return;
     }
-    memcpy(entry->name, fields->name, copy);
-    entry->name[copy] = '\0';
+
+    bt_scan_copy_adv_name(entry, fields->name, fields->name_len);
+}
+
+static int bt_scan_find_weakest_index(void)
+{
+    int weakest = 0;
+    for (int i = 1; i < scan_count; i++) {
+        if (scan_buf[i].rssi < scan_buf[weakest].rssi) {
+            weakest = i;
+        }
+    }
+    return weakest;
 }
 
 static void bt_scan_upsert_device(const struct ble_gap_disc_desc *d)
@@ -602,21 +651,27 @@ static void bt_scan_upsert_device(const struct ble_gap_disc_desc *d)
     bt_addr_to_str(&d->addr, addr_str, sizeof(addr_str));
 
     int idx = bt_scan_find_index(addr_str);
-    const bool is_new = (idx < 0);
+    bool is_new = (idx < 0);
     if (idx < 0) {
         if (scan_count >= BT_SCAN_MAX_RESULTS) {
-            return;
+            idx = bt_scan_find_weakest_index();
+            if (d->rssi <= scan_buf[idx].rssi) {
+                return;
+            }
+            is_new = true;
+        } else {
+            idx = scan_count++;
         }
-        idx = scan_count++;
         memset(&scan_buf[idx], 0, sizeof(scan_buf[idx]));
         strncpy(scan_buf[idx].addr, addr_str, sizeof(scan_buf[idx].addr) - 1);
         scan_buf[idx].addr_type = d->addr.type;
+        scan_buf[idx].rssi = d->rssi;
         snprintf(scan_buf[idx].name, sizeof(scan_buf[idx].name), "BLE %s", addr_str);
     }
 
     scan_buf[idx].addr_type = d->addr.type;
 
-    if (d->rssi > scan_buf[idx].rssi) {
+    if (is_new || d->rssi > scan_buf[idx].rssi) {
         scan_buf[idx].rssi = d->rssi;
     }
 
@@ -628,14 +683,21 @@ static void bt_scan_upsert_device(const struct ble_gap_disc_desc *d)
 
     scan_buf[idx].is_obd_hint = bt_name_looks_like_elm327(scan_buf[idx].name);
 
-    if (is_new) {
-        ESP_LOGI(TAG, "BLE found: %s (%s) RSSI=%d%s",
-                 scan_buf[idx].name, addr_str, d->rssi,
+    if (is_new || !bt_scan_name_is_placeholder(scan_buf[idx].name)) {
+        ESP_LOGD(TAG, "BLE adv: %s (%s) RSSI=%d type=%u%s",
+                 scan_buf[idx].name, addr_str, d->rssi, d->addr.type,
                  scan_buf[idx].is_obd_hint ? " [OBD]" : "");
     }
 }
 
-static int bt_scan_cmp_devices(const void *a, const void *b)
+static int bt_scan_cmp_by_rssi(const void *a, const void *b)
+{
+    const bt_device_info_t *da = (const bt_device_info_t *)a;
+    const bt_device_info_t *db = (const bt_device_info_t *)b;
+    return (int)db->rssi - (int)da->rssi;
+}
+
+static int bt_scan_cmp_obd_first(const void *a, const void *b)
 {
     const bt_device_info_t *da = (const bt_device_info_t *)a;
     const bt_device_info_t *db = (const bt_device_info_t *)b;
@@ -646,10 +708,11 @@ static int bt_scan_cmp_devices(const void *a, const void *b)
     return (int)db->rssi - (int)da->rssi;
 }
 
-static void bt_scan_sort_results(void)
+static void bt_scan_sort_results(bool obd_first)
 {
     if (scan_count > 1) {
-        qsort(scan_buf, (size_t)scan_count, sizeof(scan_buf[0]), bt_scan_cmp_devices);
+        qsort(scan_buf, (size_t)scan_count, sizeof(scan_buf[0]),
+              obd_first ? bt_scan_cmp_obd_first : bt_scan_cmp_by_rssi);
     }
 }
 
@@ -699,12 +762,20 @@ static int bt_gap_event(struct ble_gap_event *event, void *arg)
         notify_enabled = false;
         return 0;
 
-    case BLE_GAP_EVENT_NOTIFY_RX:
-        if (event->notify_rx.om != NULL && OS_MBUF_PKTLEN(event->notify_rx.om) > 0) {
-            bt_append_rx(event->notify_rx.om->om_data,
-                         OS_MBUF_PKTLEN(event->notify_rx.om));
+    case BLE_GAP_EVENT_NOTIFY_RX: {
+        uint16_t nlen = OS_MBUF_PKTLEN(event->notify_rx.om);
+        if (event->notify_rx.om != NULL && nlen > 0) {
+            uint8_t tmp[256];
+            uint16_t copy_len = nlen;
+            if (copy_len > sizeof(tmp)) {
+                copy_len = sizeof(tmp);
+            }
+            if (os_mbuf_copydata(event->notify_rx.om, 0, copy_len, tmp) == 0) {
+                bt_append_rx(tmp, copy_len);
+            }
         }
         return 0;
+    }
 
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.cur_notify || event->subscribe.cur_indicate) {
@@ -745,51 +816,148 @@ static bool bt_wait_sync(int timeout_ms)
     return xSemaphoreTake(sync_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE || host_synced;
 }
 
-static bool bt_ensure_stack(void)
+static bool bt_port_init_once(void)
 {
-    if (stack_started) {
+    if (port_inited) {
         return true;
     }
 
-    if (!port_inited) {
-        rx_mutex = xSemaphoreCreateMutex();
-        sync_sem = xSemaphoreCreateBinary();
-        connect_sem = xSemaphoreCreateBinary();
-        scan_complete_sem = xSemaphoreCreateBinary();
-        if (!rx_mutex || !sync_sem || !connect_sem || !scan_complete_sem) {
-            return false;
-        }
-
-        esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-
-        esp_err_t err = nimble_port_init();
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
-            return false;
-        }
-
-        ble_hs_cfg.reset_cb = bt_on_reset;
-        ble_hs_cfg.sync_cb = bt_on_sync;
-        ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
-        ble_store_config_init();
-
-        nimble_port_freertos_init(bt_host_task);
-        port_inited = true;
-    }
-
-    if (!bt_wait_sync(12000)) {
-        ESP_LOGE(TAG, "NimBLE host sync timeout");
+    rx_mutex = xSemaphoreCreateMutex();
+    sync_sem = xSemaphoreCreateBinary();
+    connect_sem = xSemaphoreCreateBinary();
+    scan_complete_sem = xSemaphoreCreateBinary();
+    if (!rx_mutex || !sync_sem || !connect_sem || !scan_complete_sem) {
+        ESP_LOGE(TAG, "BLE semaphores create failed");
+        snprintf(bt_last_error, sizeof(bt_last_error), "BLE semaphores failed");
         return false;
     }
 
-    if (ble_hs_id_infer_auto(0, &own_addr_type) != 0) {
-        own_addr_type = BLE_OWN_ADDR_PUBLIC;
+    esp_err_t mem_err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    if (mem_err != ESP_OK && mem_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "classic BT mem release: %s (continuing)", esp_err_to_name(mem_err));
     }
 
-    stack_started = true;
-    ESP_LOGI(TAG, "NimBLE stack ready");
+    ESP_LOGI(TAG, "Initializing NimBLE controller...");
+    esp_err_t err = nimble_port_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
+        snprintf(bt_last_error, sizeof(bt_last_error), "NimBLE init failed");
+        return false;
+    }
+
+    ble_hs_cfg.reset_cb = bt_on_reset;
+    ble_hs_cfg.sync_cb = bt_on_sync;
+    ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
+    ble_store_config_init();
+
+    ESP_LOGI(TAG, "Starting NimBLE host task...");
+    nimble_port_freertos_init(bt_host_task);
+    port_inited = true;
     return true;
 }
+
+static bool bt_ensure_stack(void)
+{
+    if (!bt_rf_allowed_flag) {
+        snprintf(bt_last_error, sizeof(bt_last_error), "BLE not allowed during UI init");
+        return false;
+    }
+
+    if (stack_started && ble_hs_synced()) {
+        return true;
+    }
+
+    for (int attempt = 1; attempt <= BT_STACK_INIT_RETRIES; attempt++) {
+        host_synced = false;
+
+        if (!bt_port_init_once()) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        if (!bt_wait_sync(BT_STACK_SYNC_MS) && !ble_hs_synced()) {
+            ESP_LOGW(TAG, "NimBLE sync timeout (attempt %d/%d)", attempt, BT_STACK_INIT_RETRIES);
+            snprintf(bt_last_error, sizeof(bt_last_error), "BLE stack sync timeout");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        if (ble_hs_id_infer_auto(0, &own_addr_type) != 0) {
+            own_addr_type = BLE_OWN_ADDR_PUBLIC;
+            ESP_LOGW(TAG, "Using PUBLIC address type (fallback)");
+        }
+
+        stack_started = true;
+        bt_last_error[0] = '\0';
+        ESP_LOGI(TAG, "NimBLE stack ready (addr_type=%u, attempt=%d)", own_addr_type, attempt);
+        conn_log_add("BLE stack ready");
+        return true;
+    }
+
+    ESP_LOGE(TAG, "NimBLE stack failed after %d attempts", BT_STACK_INIT_RETRIES);
+    return false;
+}
+
+static int bt_run_scan_pass(int duration_ms, uint8_t addr_type, int passive)
+{
+    scan_done = false;
+    if (scan_complete_sem != NULL) {
+        xSemaphoreTake(scan_complete_sem, 0);
+    }
+
+    struct ble_gap_disc_params params;
+    memset(&params, 0, sizeof(params));
+    params.passive = passive ? 1 : 0;
+    params.filter_duplicates = 0;
+    /* Aggressive scan: short interval + full window = maximum dwell time.
+     * itvl=0x18 (30ms) / window=0x18 (30ms) means 100% duty cycle.
+     * This is much better at catching intermittent advertisements from
+     * cheap OBDII adapters that only advertise every 100-200ms. */
+    params.itvl = 0x18;
+    params.window = 0x18;
+    params.filter_policy = 0;
+    params.limited = 0;
+
+    own_addr_type = addr_type;
+    scan_active = true;
+
+    ESP_LOGI(TAG, "BLE scan pass: %d ms, addr_type=%u, %s, itvl=%u, win=%u",
+             duration_ms, addr_type, passive ? "passive" : "active",
+             params.itvl, params.window);
+
+    int rc = ble_gap_disc(own_addr_type, duration_ms, &params, bt_gap_event, NULL);
+    if (rc != 0) {
+        scan_active = false;
+        ESP_LOGE(TAG, "ble_gap_disc failed (%s, type=%u): rc=%d — NimBLE may not be synced",
+                 passive ? "passive" : "active", addr_type, rc);
+        return rc;
+    }
+
+    /* Poll more frequently for scan_done to catch devices faster */
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(duration_ms + 5000);
+    while (!scan_done && xTaskGetTickCount() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    if (!scan_done) {
+        scan_active = false;
+        ble_gap_disc_cancel();
+        if (scan_complete_sem != NULL) {
+            xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(1000));
+        }
+        ESP_LOGW(TAG, "BLE scan pass timeout (%s) — found %d devices",
+                 passive ? "passive" : "active", scan_count);
+        return BLE_HS_ETIMEOUT;
+    }
+
+    return 0;
+}
+
+typedef struct {
+    uint8_t own_addr_type;
+    int passive;
+    const char *label;
+} bt_scan_pass_t;
 
 static int bt_run_scan(int duration_ms)
 {
@@ -800,58 +968,62 @@ static int bt_run_scan(int duration_ms)
     scan_active = false;
     bt_abort_pending_ops();
 
-    /* Wait for any in-flight discovery cancel before starting a new scan. */
     if (scan_complete_sem != NULL) {
-        xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(800));
+        xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(2000));
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(300));
 
     op_abort = false;
     connect_failed = false;
 
     scan_count = 0;
-    scan_done = false;
     memset(scan_buf, 0, sizeof(scan_buf));
 
-    if (scan_complete_sem != NULL) {
-        xSemaphoreTake(scan_complete_sem, 0);
+    if (duration_ms <= 0) {
+        duration_ms = BT_SCAN_DEFAULT_MS;
     }
 
-    struct ble_gap_disc_params params;
-    memset(&params, 0, sizeof(params));
-    params.passive = 0;
-    /* 100% duty cycle active scan — improves discovery of slow OBD BLE adapters */
-    params.itvl = 0x0010;
-    params.window = 0x0010;
-    params.filter_duplicates = 0;
+    static const bt_scan_pass_t passes[] = {
+        { BLE_OWN_ADDR_PUBLIC, 0, "PUBLIC active" },
+        { BLE_OWN_ADDR_RANDOM, 0, "RANDOM active" },
+        { BLE_OWN_ADDR_PUBLIC, 1, "PUBLIC passive" },
+        { BLE_OWN_ADDR_RANDOM, 1, "RANDOM passive" },
+        { BLE_OWN_ADDR_PUBLIC, 0, "PUBLIC active (extra)" },
+    };
 
-    scan_active = true;
-    int rc = ble_gap_disc(own_addr_type, duration_ms, &params, bt_gap_event, NULL);
-    if (rc != 0) {
-        scan_active = false;
-        ESP_LOGE(TAG, "ble_gap_disc failed: %d", rc);
-        return rc;
+    esp_coex_preference_set(ESP_COEX_PREFER_BT);
+
+    int last_rc = 0;
+    const int pass_count = (int)(sizeof(passes) / sizeof(passes[0]));
+    int per_pass_ms = duration_ms / pass_count;
+    if (per_pass_ms < BT_SCAN_PASS_MIN_MS) {
+        per_pass_ms = BT_SCAN_PASS_MIN_MS;
     }
 
-    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(duration_ms + 3000);
-    while (!scan_done && xTaskGetTickCount() < deadline) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
-
-    if (!scan_done) {
-        scan_active = false;
-        ble_gap_disc_cancel();
-        if (scan_complete_sem != NULL) {
-            xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(500));
+    for (int i = 0; i < pass_count; i++) {
+        if (op_abort) {
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+        int rc = bt_run_scan_pass(per_pass_ms, passes[i].own_addr_type, passes[i].passive);
+        ESP_LOGI(TAG, "Scan pass %u (%s %dms): %d device(s), rc=%d",
+                 (unsigned)(i + 1), passes[i].label, per_pass_ms, scan_count, rc);
+        if (rc != 0) {
+            last_rc = rc;
+            conn_log_add("BLE scan pass %u error: %d", (unsigned)(i + 1), rc);
         }
     }
 
-    if (scan_done) {
-        bt_scan_sort_results();
-        ESP_LOGI(TAG, "BLE scan complete: %d device(s)", scan_count);
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+
+    bt_scan_sort_results(false);
+    ESP_LOGI(TAG, "BLE scan complete: %d nearby device(s)", scan_count);
+    conn_log_add("BLE scan: %d device(s) found", scan_count);
+
+    if (scan_count > 0) {
         return 0;
     }
-    return BLE_HS_ETIMEOUT;
+    return last_rc != 0 ? last_rc : 0;
 }
 
 static void bt_cmd_worker(void *arg)
@@ -867,6 +1039,9 @@ static void bt_cmd_worker(void *arg)
         if (!bt_ensure_stack()) {
             ESP_LOGE(TAG, "BT stack not ready");
             msg.ok = false;
+            bt_cmd_last_ok = false;
+            bt_cmd_last_completed = true;
+            conn_log_add("BLE stack not ready");
             if (msg.done != NULL) {
                 xSemaphoreGive(msg.done);
             }
@@ -874,10 +1049,15 @@ static void bt_cmd_worker(void *arg)
         }
 
         switch (msg.id) {
-        case BT_CMD_SCAN:
-            msg.ok = (bt_run_scan(msg.scan_duration_ms > 0 ? msg.scan_duration_ms
-                                                           : BT_SCAN_DEFAULT_MS) == 0);
+        case BT_CMD_SCAN: {
+            int scan_rc = bt_run_scan(msg.scan_duration_ms > 0 ? msg.scan_duration_ms
+                                                               : BT_SCAN_DEFAULT_MS);
+            msg.ok = (scan_rc == 0 || scan_count > 0);
+            if (scan_count == 0 && scan_rc != 0) {
+                snprintf(bt_last_error, sizeof(bt_last_error), "BLE scan error %d", scan_rc);
+            }
             break;
+        }
         case BT_CMD_CONNECT:
             msg.ok = bt_connect_addr_internal(&msg.addr,
                                               msg.name[0] != '\0' ? msg.name : NULL);
@@ -893,11 +1073,16 @@ static void bt_cmd_worker(void *arg)
             bt_abort_pending_ops();
             msg.ok = true;
             break;
+        case BT_CMD_WARMUP:
+            msg.ok = bt_ensure_stack();
+            break;
         default:
             msg.ok = false;
             break;
         }
 
+        bt_cmd_last_ok = msg.ok;
+        bt_cmd_last_completed = true;
         if (msg.done != NULL) {
             xSemaphoreGive(msg.done);
         }
@@ -916,7 +1101,9 @@ static void bt_start_cmd_worker(void)
         return;
     }
 
-    /* Internal RAM stack required for RF/cache freeze during BLE ops */
+    /* BLE task stack must be in internal RAM for cache coherency during RF operations */
+    ESP_LOGI(TAG, "Creating BT cmd worker (stack=%d, core=0)", BT_CMD_TASK_STACK);
+
     if (xTaskCreatePinnedToCore(bt_cmd_worker, "bt_cmd", BT_CMD_TASK_STACK,
                                 NULL, 6, &bt_cmd_task_h, 0) != pdPASS) {
         ESP_LOGE(TAG, "BT cmd worker create failed");
@@ -930,32 +1117,66 @@ static bool bt_submit_cmd_ex(bt_cmd_msg_t *msg, TickType_t wait_ticks, bool to_f
 {
     bt_start_cmd_worker();
     if (!cmd_worker_started || bt_cmd_q == NULL) {
+        snprintf(bt_last_error, sizeof(bt_last_error), "BT worker not started");
+        bt_cmd_last_completed = false;
+        bt_cmd_last_ok = false;
         return false;
     }
 
     msg->done = xSemaphoreCreateBinary();
     if (msg->done == NULL) {
+        snprintf(bt_last_error, sizeof(bt_last_error), "Out of memory");
+        bt_cmd_last_completed = false;
+        bt_cmd_last_ok = false;
         return false;
     }
+
+    bt_cmd_last_completed = false;
+    bt_cmd_last_ok = false;
 
     BaseType_t queued = to_front
         ? xQueueSendToFront(bt_cmd_q, msg, pdMS_TO_TICKS(2000))
         : xQueueSend(bt_cmd_q, msg, pdMS_TO_TICKS(2000));
     if (queued != pdTRUE) {
+        snprintf(bt_last_error, sizeof(bt_last_error), "BT command queue full");
         vSemaphoreDelete(msg->done);
         msg->done = NULL;
+        bt_cmd_last_completed = false;
         return false;
     }
 
-    const bool ok = (xSemaphoreTake(msg->done, wait_ticks) == pdTRUE) && msg->ok;
+    bool completed = false;
+    TickType_t remaining = wait_ticks;
+    while (remaining > 0) {
+        TickType_t slice = remaining > pdMS_TO_TICKS(500) ? pdMS_TO_TICKS(500) : remaining;
+        if (xSemaphoreTake(msg->done, slice) == pdTRUE) {
+            completed = true;
+            break;
+        }
+        remaining -= slice;
+    }
     vSemaphoreDelete(msg->done);
     msg->done = NULL;
-    return ok;
+
+    if (!completed) {
+        snprintf(bt_last_error, sizeof(bt_last_error), "BT operation timeout");
+        bt_cmd_last_completed = false;
+        return false;
+    }
+
+    bt_cmd_last_completed = true;
+    return bt_cmd_last_ok;
 }
 
 static bool bt_submit_cmd(bt_cmd_msg_t *msg, TickType_t wait_ticks)
 {
     return bt_submit_cmd_ex(msg, wait_ticks, false);
+}
+
+static bool bt_submit_cmd_wait(bt_cmd_msg_t *msg, TickType_t wait_ticks)
+{
+    bt_submit_cmd_ex(msg, wait_ticks, false);
+    return bt_cmd_last_completed;
 }
 
 static bool bt_finish_gatt_setup(void)
@@ -1094,6 +1315,18 @@ bool bt_init_stack(void)
     return cmd_worker_started;
 }
 
+bool bt_warmup_stack(void)
+{
+    if (!bt_init_stack()) {
+        return false;
+    }
+
+    bt_cmd_msg_t msg = {
+        .id = BT_CMD_WARMUP,
+    };
+    return bt_submit_cmd(&msg, pdMS_TO_TICKS(BT_STACK_SYNC_MS + 10000));
+}
+
 void bt_prepare_for_operation(void)
 {
     if (bt_cmd_task_h != NULL && xTaskGetCurrentTaskHandle() == bt_cmd_task_h) {
@@ -1101,11 +1334,10 @@ void bt_prepare_for_operation(void)
         return;
     }
 
-    op_abort = true;
     bt_cmd_msg_t msg = {
         .id = BT_CMD_PREPARE,
     };
-    bt_submit_cmd_ex(&msg, pdMS_TO_TICKS(5000), true);
+    bt_submit_cmd_ex(&msg, pdMS_TO_TICKS(8000), true);
 }
 
 void bt_shutdown_stack(void)
@@ -1113,7 +1345,7 @@ void bt_shutdown_stack(void)
     bt_cmd_msg_t msg = {
         .id = BT_CMD_DISCONNECT,
     };
-    bt_submit_cmd(&msg, pdMS_TO_TICKS(3000));
+    bt_submit_cmd(&msg, pdMS_TO_TICKS(8000));
 }
 
 static bool bt_queue_connect(const ble_addr_t *addr, const char *display_name)
@@ -1195,7 +1427,7 @@ static bool bt_connect_auto_internal(void)
         return false;
     }
 
-    bt_scan_sort_results();
+    bt_scan_sort_results(true);
 
     int attempts = scan_count;
     if (attempts > BT_AUTO_CONNECT_MAX_ATTEMPTS) {
@@ -1237,8 +1469,9 @@ int bt_scan_devices(bt_device_info_t *list, int max_count, int duration_ms)
         .scan_duration_ms = duration_ms,
     };
 
-    if (!bt_submit_cmd(&msg, pdMS_TO_TICKS(duration_ms + 35000))) {
+    if (!bt_submit_cmd_wait(&msg, pdMS_TO_TICKS(duration_ms + 45000))) {
         last_fail = BT_FAIL_SCAN;
+        conn_log_add("BLE scan failed: %s", bt_last_error[0] ? bt_last_error : "timeout");
         return 0;
     }
 
@@ -1246,8 +1479,23 @@ int bt_scan_devices(bt_device_info_t *list, int max_count, int duration_ms)
     if (copy > max_count) {
         copy = max_count;
     }
-    memcpy(list, scan_buf, (size_t)copy * sizeof(bt_device_info_t));
+    if (copy > 0) {
+        memcpy(list, scan_buf, (size_t)copy * sizeof(bt_device_info_t));
+        last_fail = BT_FAIL_NONE;
+    } else {
+        last_fail = BT_FAIL_SCAN;
+    }
     return copy;
+}
+
+bool bt_stack_is_ready(void)
+{
+    return stack_started && ble_hs_synced();
+}
+
+const char *bt_get_last_error(void)
+{
+    return bt_last_error[0] != '\0' ? bt_last_error : NULL;
 }
 
 void bt_forget_saved(void)
@@ -1281,7 +1529,7 @@ void bt_disconnect(void)
     bt_cmd_msg_t msg = {
         .id = BT_CMD_DISCONNECT,
     };
-    bt_submit_cmd(&msg, pdMS_TO_TICKS(3000));
+    bt_submit_cmd(&msg, pdMS_TO_TICKS(8000));
 }
 
 bool bt_is_connected(void)
@@ -1615,6 +1863,9 @@ static bool bt_classic_connect_addr(const esp_bd_addr_t addr, const char *name)
 }
 
 bool bt_init_stack(void) { return bt_classic_init(); }
+bool bt_warmup_stack(void) { return bt_classic_init(); }
+bool bt_stack_is_ready(void) { return bt_initialized; }
+const char *bt_get_last_error(void) { return NULL; }
 void bt_shutdown_stack(void) { bt_disconnect(); }
 void bt_prepare_for_operation(void) {}
 
@@ -1803,6 +2054,9 @@ const char *bt_get_last_fail_hint(void)
 #else
 
 bool bt_init_stack(void) { return false; }
+bool bt_warmup_stack(void) { return false; }
+bool bt_stack_is_ready(void) { return false; }
+const char *bt_get_last_error(void) { return "Bluetooth not supported"; }
 void bt_shutdown_stack(void) {}
 void bt_prepare_for_operation(void) {}
 bool bt_link_up(void) { return false; }

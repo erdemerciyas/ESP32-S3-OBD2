@@ -23,7 +23,7 @@ Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-L
 | **NVS** | `schema=5` — BT profili (ad/MAC/addr type), max RPM/speed, gösterge sırası/renkleri, parlaklık, haptic |
 | **Tema** | Dark only (Workshop at Dusk); buzzer (TCA9554 EXIO8) |
 
-**Not:** ESP32-S3 **klasik Bluetooth (SPP) desteklemez** — yalnızca **BLE** ELM327 adaptörleri kullanılabilir. Klasik “OBDII” SPP dongle'ları bu kartta çalışmaz.
+**Not:** ESP32-S3 yalnızca **Bluetooth LE 5.x** (NimBLE central) destekler — **klasik Bluetooth (SPP/RFCOMM) yoktur**. Telefonda ayrı görünen **OBDII** (klasik) ve **OBDBLE** (BLE) cihazlarından ESP32 yalnızca **BLE yayını yapan** adaptöre bağlanır; adı OBDII olsa bile BLE üzerinden olanlar çalışır. Desteklenen GATT seri profilleri: **NUS**, **FFE0/FFE1** (+FFE2 notify), **FFF0/FFF1**, **ABE0/ABE1**, **ISSC**; eşleşmezse genel GATT keşfi denenir (`bt_manager.c`).
 
 ### Evrensel PID akışı
 
