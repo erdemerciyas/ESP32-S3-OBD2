@@ -22,7 +22,15 @@ extern "C" {
 #define OBD2_SLOW_POLL_MS 2000
 #define OBD2_DTC_POLL_MS 30000
 
-#define GAUGE_UPDATE_RATE_HZ 25
+#define GAUGE_UPDATE_RATE_HZ 15
+/** Dashboard refresh when OBD is not live (reduces idle CPU / LVGL lock contention). */
+#define GAUGE_IDLE_UPDATE_HZ 2
+
+/** Return to gauge screen after this idle time on menu/settings/etc. (ms). */
+#define DASHBOARD_IDLE_RETURN_MS 30000
+
+/** Background BLE auto-connect on boot (disabled — use Settings Scan/Auto). */
+#define BT_BACKGROUND_AUTO_CONNECT 0
 #define GAUGE_SMOOTH_DIVISOR 4
 
 #define WIFI_CONNECT_TIMEOUT_MS 15000

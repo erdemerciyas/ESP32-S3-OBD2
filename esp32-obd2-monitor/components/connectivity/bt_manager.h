@@ -44,10 +44,16 @@ const char *bt_get_last_error(void);
 void bt_shutdown_stack(void);
 /** Cancel in-flight BLE scan/connect so user Scan/Connect is not blocked. */
 void bt_prepare_for_operation(void);
-/** Signal auto-connect/connect loops to stop, then queue prepare on the BT worker. */
+/** Non-blocking: signal in-flight scan/connect to stop (safe from LVGL thread). */
+void bt_signal_cancel(void);
+/** Block until BT worker finishes abort (call from bt_ui_job / conn tasks only). */
 void bt_request_cancel_operations(void);
 
 bool bt_link_up(void);
+/** Blocking saved-profile connect (manual/UI paths). */
+bool bt_connect_saved_profile(void);
+/** Non-blocking saved-profile connect; returns true if queued. */
+bool bt_try_connect_saved_async(void);
 bool bt_obd_session_ready(void);
 bool bt_connect_to_addr(const char *addr_str);
 bool bt_connect_auto(void);

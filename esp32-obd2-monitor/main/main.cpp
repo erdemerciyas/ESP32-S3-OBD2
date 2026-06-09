@@ -18,6 +18,8 @@
 #include "obd_service.h"
 #include "dashboard.h"
 #include "gauge.h"
+#include "esp_system.h"
+#include "esp_task_wdt.h"
 
 static const char *TAG = "main";
 
@@ -41,10 +43,28 @@ static void init_hardware(void)
     ESP_LOGI(TAG, "Hardware init complete");
 }
 
+static const char *reset_reason_name(esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_POWERON:   return "power-on";
+        case ESP_RST_EXT:       return "external";
+        case ESP_RST_SW:        return "software";
+        case ESP_RST_PANIC:     return "panic";
+        case ESP_RST_INT_WDT:   return "int_wdt";
+        case ESP_RST_TASK_WDT:  return "task_wdt";
+        case ESP_RST_WDT:       return "wdt";
+        case ESP_RST_DEEPSLEEP: return "deepsleep";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "sdio";
+        default:                return "unknown";
+    }
+}
+
 static void obd_polling_task(void *arg)
 {
     (void)arg;
     while (1) {
+        esp_task_wdt_reset();
         if (connectivity_is_connected()) {
             obd_service_poll_fast();
         }
@@ -57,6 +77,7 @@ static void obd_slow_poll_task(void *arg)
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(3000));
     while (1) {
+        esp_task_wdt_reset();
         if (connectivity_is_connected()) {
             obd_service_poll_slow();
         }
@@ -69,6 +90,7 @@ static void obd_dtc_poll_task(void *arg)
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(10000));
     while (1) {
+        esp_task_wdt_reset();
         if (connectivity_is_connected()) {
             uint8_t dtc_codes[10];
             size_t dtc_count = 0;
@@ -78,66 +100,18 @@ static void obd_dtc_poll_task(void *arg)
     }
 }
 
-static void connectivity_reconnect_task(void *arg)
-{
-    (void)arg;
-
-    /* Let display finish splash; first retry sooner when a profile is saved */
-    vTaskDelay(pdMS_TO_TICKS(3000));
-
-    while (1) {
-        const bool want_bt = (g_settings.preferred_connection == CONN_TYPE_BLUETOOTH ||
-                              g_settings.preferred_connection == CONN_TYPE_NONE);
-        const bool saved_bt = want_bt && g_settings.bt_device_addr[0] != '\0';
-        const TickType_t interval = pdMS_TO_TICKS(saved_bt ? 5000 : 15000);
-
-        if (connectivity_is_connected()) {
-            vTaskDelay(interval);
-            continue;
-        }
-
-        if (bt_serial_ready()) {
-            connectivity_sync_transport_state();
-            if (!connectivity_is_connected()) {
-                connectivity_promote_obd_if_ready();
-            }
-            vTaskDelay(interval);
-            continue;
-        }
-
-        if (want_bt && connectivity_bt_auto_connect_allowed()) {
-            ESP_LOGI(TAG, "OBD adapter not connected, retrying...");
-            connectivity_auto_reconnect();
-        }
-
-        vTaskDelay(interval);
-    }
-}
-
-static void obd_diagnostic_task(void *arg)
-{
-    (void)arg;
-    for (int i = 0; i < 30 && !connectivity_is_connected(); i++) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    if (connectivity_is_connected()) {
-        ESP_LOGI(TAG, "OBD diagnostic: reading DTC codes");
-        uint8_t dtc_codes[10];
-        size_t dtc_count = 0;
-        obd_service_get_dtc_codes(dtc_codes, sizeof(dtc_codes) / 2, &dtc_count);
-    } else {
-        ESP_LOGW(TAG, "OBD diagnostic skipped: not connected");
-    }
-    vTaskDelete(NULL);
-}
-
 static void gauge_update_task(void *arg)
 {
     (void)arg;
     TickType_t last_wake = xTaskGetTickCount();
-    const TickType_t period = pdMS_TO_TICKS(1000 / GAUGE_UPDATE_RATE_HZ);
 
     while (1) {
+        esp_task_wdt_reset();
+
+        const bool fast_ui = connectivity_is_connected() || gauge_needs_animation_tick();
+        const TickType_t period = pdMS_TO_TICKS(
+            fast_ui ? (1000 / GAUGE_UPDATE_RATE_HZ) : (1000 / GAUGE_IDLE_UPDATE_HZ));
+
         display_update_gauges();
         vTaskDelayUntil(&last_wake, period);
     }
@@ -145,27 +119,6 @@ static void gauge_update_task(void *arg)
 
 static SemaphoreHandle_t display_ready_sem;
 static bool display_task_uses_caps;
-
-static void connectivity_boot_task(void *arg)
-{
-    (void)arg;
-    /* Wait for splash; BLE stack is already warmed up in app_main */
-    vTaskDelay(pdMS_TO_TICKS(4000));
-
-    connection_type_t boot_type = g_settings.preferred_connection;
-    if (boot_type == CONN_TYPE_NONE) {
-        boot_type = CONN_TYPE_BLUETOOTH;
-    }
-
-    esp_err_t conn_err = connectivity_start(boot_type);
-    if (conn_err != ESP_OK && boot_type == CONN_TYPE_BLUETOOTH &&
-        g_settings.bt_device_addr[0] != '\0') {
-        ESP_LOGW(TAG, "Initial BT connect failed — reconnect task will retry");
-    } else if (conn_err != ESP_OK) {
-        ESP_LOGW(TAG, "Initial connectivity skipped/failed (manual mode or no adapter)");
-    }
-    vTaskDelete(NULL);
-}
 
 static void display_init_task(void *arg)
 {
@@ -194,6 +147,9 @@ extern "C" void app_main(void)
     /* Connection diagnostics log — dump previous boot's reason to serial */
     conn_log_init();
     conn_log_dump();
+    conn_log_add("Boot reset=%s int_free=%u",
+                 reset_reason_name(esp_reset_reason()),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 
     /* NimBLE NPL mutex alloc needs internal RAM; after LVGL only ~67KB remains and
      * nimble_port_init() asserts. Bring up BLE before display (~126KB free). */
@@ -235,15 +191,8 @@ extern "C" void app_main(void)
 
     obd_service_init();
 
-    /* UI + gauge tasks first; BT scan/connect runs in background (can take 30+ s) */
-    xTaskCreate(gauge_update_task, "gauge_update", 12288, NULL, 4, NULL);
-    xTaskCreate(connectivity_boot_task, "conn_boot", 12288, NULL, 4, NULL);
-
-    /* Auto-reconnect when adapter drops or is not yet available */
-    xTaskCreate(connectivity_reconnect_task, "conn_reconnect", 12288, NULL, 5, NULL);
-
-    /* Run diagnostic task first (waits for connection) */
-    xTaskCreate(obd_diagnostic_task, "obd_diagnostic", 8192, NULL, 6, NULL);
+    /* Gauge UI on core 1 with LVGL — keeps CPU0 free for NimBLE / idle WDT */
+    xTaskCreatePinnedToCore(gauge_update_task, "gauge_update", 12288, NULL, 4, NULL, 1);
 
     /* Fast OBD polling: RPM / speed / throttle */
     xTaskCreate(obd_polling_task, "obd_fast", 4096, NULL, 6, NULL);

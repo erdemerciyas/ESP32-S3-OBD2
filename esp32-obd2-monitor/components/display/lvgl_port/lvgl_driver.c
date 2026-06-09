@@ -16,6 +16,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -28,6 +29,7 @@ static const char *TAG = "lvgl_driver";
 #define LEDC_BL_CHANNEL  LEDC_CHANNEL_0
 
 static lv_display_t *display_handle = NULL;
+static volatile bool lvgl_rf_quiet_flag;
 static esp_io_expander_handle_t s_board_expander = NULL;
 static esp_lcd_panel_handle_t panel_handle = NULL;
 static esp_lcd_touch_handle_t touch_panel = NULL;
@@ -206,6 +208,16 @@ static void lvgl_handler_task(void *arg)
     (void)arg;
     while (1) {
         uint32_t delay_ms = 1;
+        if (lvgl_rf_quiet_flag) {
+            if (lvgl_lock(-1)) {
+                (void)lv_timer_handler();
+                lvgl_unlock();
+            }
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
         if (lvgl_lock(-1)) {
             delay_ms = lv_timer_handler();
             lvgl_unlock();
@@ -215,8 +227,40 @@ static void lvgl_handler_task(void *arg)
         } else if (delay_ms == 0) {
             delay_ms = 1;
         }
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
     }
+}
+
+void lvgl_set_rf_quiet(bool quiet)
+{
+    lvgl_rf_quiet_flag = quiet;
+    if (display_handle == NULL) {
+        return;
+    }
+
+    if (!lvgl_lock(-1)) {
+        return;
+    }
+
+    lv_timer_t *refr = lv_display_get_refr_timer(display_handle);
+    if (refr != NULL) {
+        if (quiet) {
+            lv_timer_pause(refr);
+        } else {
+            lv_timer_resume(refr);
+            lv_obj_t *scr = lv_scr_act();
+            if (scr != NULL) {
+                lv_obj_invalidate(scr);
+            }
+        }
+    }
+    lvgl_unlock();
+}
+
+bool lvgl_rf_quiet(void)
+{
+    return lvgl_rf_quiet_flag;
 }
 
 esp_io_expander_handle_t board_expander_get(void)

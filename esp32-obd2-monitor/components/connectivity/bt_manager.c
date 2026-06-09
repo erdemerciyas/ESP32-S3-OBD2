@@ -16,6 +16,12 @@ static const char *TAG = "bt";
 
 extern app_settings_t g_settings;
 
+extern void connectivity_on_async_bt_result(bool ok);
+extern void bt_on_serial_ready(void);
+extern void bt_on_serial_lost(void);
+
+static volatile bool bt_async_connect_inflight;
+
 static bool obd_ready;
 static bool serial_ready;
 static volatile bool connect_failed;
@@ -47,6 +53,7 @@ bool bt_rf_allowed(void)
 #include "host/ble_store.h"
 #include "esp_bt.h"
 #include "esp_coexist.h"
+#include "esp_task_wdt.h"
 
 extern void ble_store_config_init(void);
 
@@ -347,10 +354,16 @@ static void bt_abort_pending_ops(void)
 
     if (scan_active) {
         scan_active = false;
+        scan_done = false;
+        ble_gap_disc_cancel();
+        if (scan_complete_sem != NULL) {
+            xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(2000));
+        }
         scan_done = true;
+    } else {
+        ble_gap_disc_cancel();
     }
 
-    ble_gap_disc_cancel();
     ble_gap_conn_cancel();
 
     if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
@@ -770,6 +783,7 @@ static int bt_gap_event(struct ble_gap_event *event, void *arg)
         serial_ready = false;
         obd_ready = false;
         notify_enabled = false;
+        bt_on_serial_lost();
         return 0;
 
     case BLE_GAP_EVENT_NOTIFY_RX: {
@@ -792,6 +806,7 @@ static int bt_gap_event(struct ble_gap_event *event, void *arg)
             notify_enabled = true;
             serial_ready = true;
             ESP_LOGI(TAG, "BLE notify subscribed");
+            bt_on_serial_ready();
             if (connect_sem != NULL) {
                 xSemaphoreGive(connect_sem);
             }
@@ -946,7 +961,8 @@ static int bt_run_scan_pass(int duration_ms, uint8_t addr_type, int passive)
     /* Poll more frequently for scan_done to catch devices faster */
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(duration_ms + 5000);
     while (!scan_done && !op_abort && xTaskGetTickCount() < deadline) {
-        vTaskDelay(pdMS_TO_TICKS(20));
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     if (op_abort && !scan_done) {
@@ -1014,10 +1030,16 @@ static int bt_run_scan(int duration_ms)
         { BLE_OWN_ADDR_RANDOM, 0, "RANDOM active" },
         { BLE_OWN_ADDR_PUBLIC, 1, "PUBLIC passive" },
     };
+    static const bt_scan_pass_t passes_ui[] = {
+        { BLE_OWN_ADDR_PUBLIC, 0, "UI PUBLIC active" },
+    };
 
     const bt_scan_pass_t *passes = passes_full;
     int pass_count = (int)(sizeof(passes_full) / sizeof(passes_full[0]));
-    if (duration_ms <= 15000) {
+    if (duration_ms <= 12000) {
+        passes = passes_ui;
+        pass_count = (int)(sizeof(passes_ui) / sizeof(passes_ui[0]));
+    } else if (duration_ms <= 15000) {
         passes = passes_quick;
         pass_count = (int)(sizeof(passes_quick) / sizeof(passes_quick[0]));
     }
@@ -1113,6 +1135,10 @@ static void bt_cmd_worker(void *arg)
 
         bt_cmd_last_ok = msg.ok;
         bt_cmd_last_completed = true;
+        if (msg.id == BT_CMD_CONNECT && msg.done == NULL) {
+            bt_async_connect_inflight = false;
+            connectivity_on_async_bt_result(msg.ok);
+        }
         if (msg.done != NULL) {
             xSemaphoreGive(msg.done);
         }
@@ -1221,6 +1247,7 @@ static bool bt_finish_gatt_setup(void)
         /* Some adapters expose write-only FFE1 — still usable for polling */
         serial_ready = true;
         notify_enabled = false;
+        bt_on_serial_ready();
         if (connect_sem != NULL) {
             xSemaphoreGive(connect_sem);
         }
@@ -1233,6 +1260,7 @@ static bool bt_finish_gatt_setup(void)
     }
 
     serial_ready = true;
+    bt_on_serial_ready();
     return true;
 }
 
@@ -1280,6 +1308,7 @@ static bool bt_connect_addr_with_type(const ble_addr_t *addr, const char *displa
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(BT_CONNECT_TIMEOUT_MS);
     while (conn_handle == BLE_HS_CONN_HANDLE_NONE && !connect_failed && !op_abort &&
            xTaskGetTickCount() < deadline) {
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
@@ -1349,6 +1378,12 @@ bool bt_warmup_stack(void)
     return bt_submit_cmd(&msg, pdMS_TO_TICKS(BT_STACK_SYNC_MS + 10000));
 }
 
+void bt_signal_cancel(void)
+{
+    op_abort = true;
+    bt_async_connect_inflight = false;
+}
+
 void bt_prepare_for_operation(void)
 {
     if (bt_cmd_task_h != NULL && xTaskGetCurrentTaskHandle() == bt_cmd_task_h) {
@@ -1364,7 +1399,7 @@ void bt_prepare_for_operation(void)
 
 void bt_request_cancel_operations(void)
 {
-    op_abort = true;
+    bt_signal_cancel();
     bt_prepare_for_operation();
     /* Leave op_abort set — long-running connect/scan loops exit promptly. */
 }
@@ -1396,22 +1431,67 @@ static bool bt_queue_connect(const ble_addr_t *addr, const char *display_name)
 
 bool bt_link_up(void)
 {
-    if (g_settings.bt_device_addr[0] == '\0' && g_settings.bt_manual_mode) {
-        ESP_LOGI(TAG, "Manual BT: no saved adapter");
+    if (g_settings.bt_device_addr[0] == '\0') {
+        ESP_LOGI(TAG, "No saved BT adapter");
         return false;
     }
 
-    if (g_settings.bt_device_addr[0] != '\0') {
-        ble_addr_t addr;
-        if (bt_str_to_addr(g_settings.bt_device_addr, &addr)) {
-            if (bt_queue_connect(&addr, g_settings.bt_device_name)) {
-                return true;
-            }
-            ESP_LOGW(TAG, "Saved adapter connect failed, falling back to scan");
-        }
+    return bt_connect_saved_profile();
+}
+
+bool bt_connect_saved_profile(void)
+{
+    if (g_settings.bt_device_addr[0] == '\0') {
+        return false;
     }
 
-    return bt_connect_auto();
+    ble_addr_t addr;
+    if (!bt_str_to_addr(g_settings.bt_device_addr, &addr)) {
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Connecting saved profile: %s", g_settings.bt_device_addr);
+    return bt_queue_connect(&addr, g_settings.bt_device_name);
+}
+
+bool bt_try_connect_saved_async(void)
+{
+    if (bt_async_connect_inflight) {
+        return false;
+    }
+    if (g_settings.bt_device_addr[0] == '\0') {
+        return false;
+    }
+    if (conn_handle != BLE_HS_CONN_HANDLE_NONE && serial_ready) {
+        return false;
+    }
+
+    bt_start_cmd_worker();
+    if (!cmd_worker_started || bt_cmd_q == NULL) {
+        return false;
+    }
+
+    ble_addr_t addr;
+    if (!bt_str_to_addr(g_settings.bt_device_addr, &addr)) {
+        return false;
+    }
+
+    bt_cmd_msg_t msg = {
+        .id = BT_CMD_CONNECT,
+        .addr = addr,
+        .done = NULL,
+    };
+    if (g_settings.bt_device_name[0] != '\0') {
+        strncpy(msg.name, g_settings.bt_device_name, sizeof(msg.name) - 1);
+    }
+
+    if (xQueueSend(bt_cmd_q, &msg, 0) != pdTRUE) {
+        return false;
+    }
+
+    bt_async_connect_inflight = true;
+    ESP_LOGI(TAG, "Queued async connect to %s", g_settings.bt_device_addr);
+    return true;
 }
 
 bool bt_connect_to_addr(const char *addr_str)
@@ -1503,14 +1583,12 @@ int bt_scan_devices(bt_device_info_t *list, int max_count, int duration_ms)
         duration_ms = BT_SCAN_DEFAULT_MS;
     }
 
-    bt_request_cancel_operations();
-
     bt_cmd_msg_t msg = {
         .id = BT_CMD_SCAN,
         .scan_duration_ms = duration_ms,
     };
 
-    const TickType_t wait_ticks = pdMS_TO_TICKS(duration_ms + 35000);
+    const TickType_t wait_ticks = pdMS_TO_TICKS(duration_ms + 25000);
     if (!bt_submit_cmd_ex(&msg, wait_ticks, true)) {
         last_fail = BT_FAIL_SCAN;
         conn_log_add("BLE scan failed: %s", bt_last_error[0] ? bt_last_error : "timeout");
@@ -1825,6 +1903,7 @@ static void bt_classic_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *para
             spp_connected = true;
             spp_handle = param->open.handle;
             serial_ready = true;
+            bt_on_serial_ready();
             ESP_LOGI(TAG, "Classic SPP connected");
         } else {
             connect_failed = true;
@@ -1838,6 +1917,7 @@ static void bt_classic_spp_cb(esp_spp_cb_event_t event, esp_spp_cb_param_t *para
         serial_ready = false;
         obd_ready = false;
         spp_handle = 0;
+        bt_on_serial_lost();
         break;
     case ESP_SPP_DATA_IND_EVT:
         if (param->data_ind.len > 0 && spp_rx_mutex &&
@@ -1913,6 +1993,7 @@ bool bt_stack_is_ready(void) { return bt_initialized; }
 const char *bt_get_last_error(void) { return NULL; }
 void bt_shutdown_stack(void) { bt_disconnect(); }
 void bt_prepare_for_operation(void) {}
+void bt_signal_cancel(void) {}
 void bt_request_cancel_operations(void) {}
 
 bool bt_link_up(void)
@@ -1927,6 +2008,18 @@ bool bt_link_up(void)
         }
     }
     return bt_connect_auto();
+}
+
+bool bt_connect_saved_profile(void)
+{
+    if (g_settings.bt_device_addr[0] == '\0') {
+        return false;
+    }
+    esp_bd_addr_t addr;
+    if (!bt_classic_str_to_addr(g_settings.bt_device_addr, addr)) {
+        return false;
+    }
+    return bt_classic_connect_addr(addr, g_settings.bt_device_name);
 }
 
 bool bt_connect_to_addr(const char *addr_str)
@@ -2108,8 +2201,10 @@ bool bt_stack_is_ready(void) { return false; }
 const char *bt_get_last_error(void) { return "Bluetooth not supported"; }
 void bt_shutdown_stack(void) {}
 void bt_prepare_for_operation(void) {}
+void bt_signal_cancel(void) {}
 void bt_request_cancel_operations(void) {}
 bool bt_link_up(void) { return false; }
+bool bt_connect_saved_profile(void) { return false; }
 bool bt_obd_session_ready(void) { return false; }
 bool bt_connect_to_addr(const char *addr_str) { (void)addr_str; return false; }
 bool bt_connect_auto(void) { return false; }

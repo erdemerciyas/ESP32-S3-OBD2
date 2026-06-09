@@ -34,6 +34,8 @@ typedef enum {
 
     UI_CONN_IND_OFF = 0,
 
+    UI_CONN_IND_PENDING,
+
     UI_CONN_IND_LINK,
 
     UI_CONN_IND_SERIAL,
@@ -61,6 +63,12 @@ typedef ui_conn_ind_level_t ui_wifi_ind_level_t;
 ui_conn_ind_level_t ui_conn_ind_level_from(bool link_up, bool serial_up,
 
                                            connectivity_state_t conn_state);
+
+ui_conn_ind_level_t ui_conn_ind_level_from_ex(bool link_up, bool serial_up,
+
+                                              connectivity_state_t conn_state,
+
+                                              bool auto_connect_pending);
 
 
 

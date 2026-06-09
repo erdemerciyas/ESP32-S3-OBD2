@@ -17,6 +17,10 @@
 #define UI_SCREEN_H              BOARD_LCD_HEIGHT
 #define UI_SAFE_W                (UI_SCREEN_W - (UI_ROUND_INSET * 2))
 #define UI_SAFE_H                (UI_SCREEN_H - (UI_ROUND_INSET * 2))
+#define UI_SUB_PAD               UI_ROUND_INSET
+#define UI_SUB_CONTENT_W         UI_SAFE_W
+#define UI_SUB_TOUCH_BTN         48
+#define UI_SUB_ROW_H             52
 #define UI_SWIPE_THRESHOLD_PX    50
 #define UI_SWIPE_COOLDOWN_MS     400
 #define UI_DOUBLE_TAP_MS         320

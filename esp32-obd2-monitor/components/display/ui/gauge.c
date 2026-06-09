@@ -495,6 +495,19 @@ void gauge_update_fullscreen(gauge_type_t type, int16_t value)
     gauge_target_values[type] = value;
 }
 
+bool gauge_needs_animation_tick(void)
+{
+    if (gauge_transition_busy) {
+        return true;
+    }
+    for (int i = 0; i < GAUGE_MAX; i++) {
+        if (fullscreen_gauge_values[i] != gauge_target_values[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void gauge_tick(void)
 {
     for (int i = 0; i < GAUGE_MAX; i++) {

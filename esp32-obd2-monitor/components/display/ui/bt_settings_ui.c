@@ -22,19 +22,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define BT_UI_HEADER_H   52
-#define BT_UI_FOOTER_H   56
-#define BT_UI_PAD        16
-#define BT_UI_STATUS_H   88
-#define BT_UI_BTN_ROW_Y  (BT_UI_HEADER_H + BT_UI_STATUS_H + 8)
-#define BT_UI_BTN_ROW2_Y (BT_UI_BTN_ROW_Y + 40)
-#define BT_UI_LIST_TOP   (BT_UI_BTN_ROW2_Y + 44)
-#define BT_UI_LIST_H     (UI_SCREEN_H - BT_UI_LIST_TOP - BT_UI_FOOTER_H - 8)
-#define BT_UI_DEVICE_ROW_H 52
+#define BT_UI_HEADER_H     52
+#define BT_UI_FOOTER_H     56
+#define BT_UI_PAD          UI_ROUND_INSET
+#define BT_UI_CONTENT_W    UI_SAFE_W
+#define BT_UI_BTN_H        44
+#define BT_UI_STATUS_H     76
+#define BT_UI_DEVICE_ROW_H UI_SUB_ROW_H
 #define BT_UI_LIST_MAX_ROWS  20
 #define BT_UI_JOB_STACK      8192
 #define BT_UI_SCAN_BUF_MAX   BT_UI_LIST_MAX_ROWS
-#define BT_UI_SCAN_DURATION_MS 12000
+#define BT_UI_SCAN_DURATION_MS 10000
 
 static const char *TAG = "bt_ui";
 
@@ -77,8 +75,6 @@ static bt_device_info_t g_bt_scan_work_buf[BT_UI_SCAN_BUF_MAX];
 
 static QueueHandle_t bt_ui_job_q;
 static TaskHandle_t bt_ui_worker_h;
-static StackType_t bt_ui_worker_stack[BT_UI_JOB_STACK];
-static StaticTask_t bt_ui_worker_tcb;
 
 static lv_obj_t *bt_ui_btn_content(lv_obj_t *btn, const char *icon_sym, const char *text,
                                    lv_color_t text_color)
@@ -210,7 +206,7 @@ static void bt_ui_progress_timer_cb(lv_timer_t *t)
             }
             break;
     }
-    bt_ui_update_status_labels();
+    /* Status labels are static during connect — avoid label/layout churn */
     lvgl_unlock();
 }
 
@@ -341,6 +337,7 @@ static void bt_ui_job_finished_cb(void *user_data)
 {
     bt_ui_job_t *job = (bt_ui_job_t *)user_data;
     bt_ui_lvgl_begin();
+    lvgl_set_rf_quiet(false);
 
     if (job == NULL) {
         worker_busy = false;
@@ -390,6 +387,8 @@ static void bt_ui_job_finished_cb(void *user_data)
                 bt_ui_set_message_locked(connectivity_get_state() == CONN_STATE_OBD_READY ?
                                          "Auto-connect successful" :
                                          "BT OK - turn ignition ON");
+            } else if (job->result == ESP_ERR_NOT_FOUND) {
+                bt_ui_set_message_locked("No saved device — tap Scan first");
             } else {
                 bt_ui_set_message_locked(bt_get_last_fail_hint());
             }
@@ -418,6 +417,7 @@ static void bt_ui_job_finished_cb(void *user_data)
     bt_ui_update_status_labels();
     bt_ui_set_buttons_enabled(true);
     worker_busy = false;
+    connectivity_bt_ui_end();
     if (job_watchdog_timer != NULL) {
         lv_timer_pause(job_watchdog_timer);
     }
@@ -489,13 +489,15 @@ static bool bt_ui_ensure_worker(void)
     }
 
     if (bt_ui_worker_h == NULL) {
-        bt_ui_worker_h = xTaskCreateStatic(bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK,
-                                           NULL, 5, bt_ui_worker_stack, &bt_ui_worker_tcb);
+        /* Internal stack on core 1 — keeps BLE blocking off LVGL / NimBLE core 0 */
+        BaseType_t ok = xTaskCreatePinnedToCore(
+            bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, NULL, 4, &bt_ui_worker_h, 1);
         if (bt_ui_worker_h == NULL) {
             ESP_LOGE(TAG, "BT UI worker create failed (int_free=%u)",
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
             return false;
         }
+        (void)ok;
     }
 
     return true;
@@ -509,6 +511,8 @@ static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
         return;
     }
 
+    connectivity_bt_ui_begin();
+    lvgl_set_rf_quiet(true);
     worker_busy = true;
     job_started_tick = lv_tick_get();
     bt_ui_set_buttons_enabled(false);
@@ -522,6 +526,8 @@ static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
 
     if (!bt_ui_ensure_worker()) {
         worker_busy = false;
+        lvgl_set_rf_quiet(false);
+        connectivity_bt_ui_end();
         bt_ui_set_buttons_enabled(true);
         bt_ui_set_message("Failed to start connection task");
         free(job);
@@ -531,6 +537,8 @@ static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
     if (xQueueSend(bt_ui_job_q, &job, 0) != pdTRUE) {
         ESP_LOGE(TAG, "BT UI job queue full");
         worker_busy = false;
+        lvgl_set_rf_quiet(false);
+        connectivity_bt_ui_end();
         bt_ui_set_buttons_enabled(true);
         bt_ui_set_message("Busy, please wait...");
         free(job);
@@ -585,8 +593,10 @@ void bt_settings_ui_on_screen_shown(void)
 
 static void bt_ui_force_reset_worker(void)
 {
-    bt_request_cancel_operations();
+    bt_signal_cancel();
+    lvgl_set_rf_quiet(false);
     worker_busy = false;
+    connectivity_bt_ui_end();
     bt_ui_progress_stop();
     bt_ui_set_buttons_enabled(true);
     if (job_watchdog_timer != NULL) {
@@ -612,9 +622,8 @@ static void bt_ui_trigger_scan(const char *status_msg)
     }
 
     job->kind = BT_UI_JOB_SCAN;
-    bt_request_cancel_operations();
     bt_ui_set_message(status_msg != NULL ? status_msg :
-                      "Scanning nearby BLE (~12s)...");
+                      "Scanning nearby BLE (~10s)...");
     haptic_click();
     bt_ui_start_job(job, false);
 }
@@ -622,7 +631,7 @@ static void bt_ui_trigger_scan(const char *status_msg)
 static void bt_ui_scan_btn_cb(lv_event_t *e)
 {
     (void)e;
-    bt_ui_trigger_scan("Scanning nearby BLE (~12s)...");
+    bt_ui_trigger_scan("Scanning nearby BLE (~10s)...");
 }
 
 static void bt_ui_auto_btn_cb(lv_event_t *e)
@@ -632,13 +641,18 @@ static void bt_ui_auto_btn_cb(lv_event_t *e)
         return;
     }
 
+    if (g_settings.bt_device_addr[0] == '\0') {
+        bt_ui_set_message("No saved device — tap Scan first");
+        return;
+    }
+
     bt_ui_job_t *job = calloc(1, sizeof(bt_ui_job_t));
     if (job == NULL) {
         return;
     }
 
     job->kind = BT_UI_JOB_AUTO;
-    bt_ui_set_message("Trying auto-connect...");
+    bt_ui_set_message("Reconnecting saved adapter...");
     bt_ui_start_job(job, true);
 }
 
@@ -678,11 +692,13 @@ static void bt_ui_disconnect_btn_cb(lv_event_t *e)
 
 void bt_settings_ui_create(lv_obj_t *screen)
 {
-    const int content_w = UI_SCREEN_W - (BT_UI_PAD * 2);
-    const int btn_w = (content_w - 8) / 2;
+    const int content_w = BT_UI_CONTENT_W;
+    const int btn_gap = 8;
+    const int btn_w = (content_w - btn_gap) / 2;
+    int y = BT_UI_HEADER_H + 6;
 
     lv_obj_t *status_card = lv_obj_create(screen);
-    lv_obj_set_pos(status_card, BT_UI_PAD, BT_UI_HEADER_H + 6);
+    lv_obj_set_pos(status_card, BT_UI_PAD, y);
     lv_obj_set_size(status_card, content_w, BT_UI_STATUS_H);
     lv_obj_add_style(status_card, style_get_card(), 0);
     lv_obj_remove_flag(status_card, LV_OBJ_FLAG_SCROLLABLE);
@@ -690,56 +706,62 @@ void bt_settings_ui_create(lv_obj_t *screen)
     status_bt_icon = ui_conn_ind_create(status_card, -8, 6);
 
     status_saved_lbl = lv_label_create(status_card);
-    lv_obj_set_pos(status_saved_lbl, 12, 10);
+    lv_obj_set_pos(status_saved_lbl, 12, 8);
     lv_obj_set_width(status_saved_lbl, content_w - 48);
     lv_obj_set_style_text_font(status_saved_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_saved_lbl, color_text, 0);
     lv_label_set_long_mode(status_saved_lbl, LV_LABEL_LONG_DOT);
 
     status_obd_lbl = lv_label_create(status_card);
-    lv_obj_set_pos(status_obd_lbl, 12, 32);
+    lv_obj_set_pos(status_obd_lbl, 12, 28);
     lv_obj_set_style_text_font(status_obd_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_obd_lbl, color_text_dim, 0);
 
     status_msg_lbl = lv_label_create(status_card);
-    lv_obj_set_pos(status_msg_lbl, 12, 54);
+    lv_obj_set_pos(status_msg_lbl, 12, 48);
     lv_obj_set_width(status_msg_lbl, content_w - 24);
     lv_obj_set_style_text_font(status_msg_lbl, UI_FONT_SM, 0);
     lv_obj_set_style_text_color(status_msg_lbl, color_accent, 0);
     lv_label_set_long_mode(status_msg_lbl, LV_LABEL_LONG_DOT);
-    lv_label_set_text(status_msg_lbl, "Lists every nearby BLE device (scroll down)");
+    lv_label_set_text(status_msg_lbl, "Tap Scan, then pick OBDBLE from the list");
+
+    y += BT_UI_STATUS_H + 8;
 
     scan_btn = lv_btn_create(screen);
-    lv_obj_set_size(scan_btn, btn_w, 34);
-    lv_obj_set_pos(scan_btn, BT_UI_PAD, BT_UI_BTN_ROW_Y);
+    lv_obj_set_size(scan_btn, btn_w, BT_UI_BTN_H);
+    lv_obj_set_pos(scan_btn, BT_UI_PAD, y);
     lv_obj_add_style(scan_btn, style_get_btn_primary(), 0);
     lv_obj_add_event_cb(scan_btn, bt_ui_scan_btn_cb, LV_EVENT_CLICKED, NULL);
     bt_ui_btn_content(scan_btn, LV_SYMBOL_REFRESH, "Scan", color_bg_dark);
 
     auto_btn = lv_btn_create(screen);
-    lv_obj_set_size(auto_btn, btn_w, 34);
-    lv_obj_set_pos(auto_btn, BT_UI_PAD + btn_w + 8, BT_UI_BTN_ROW_Y);
+    lv_obj_set_size(auto_btn, btn_w, BT_UI_BTN_H);
+    lv_obj_set_pos(auto_btn, BT_UI_PAD + btn_w + btn_gap, y);
     lv_obj_add_style(auto_btn, style_get_btn_secondary(), 0);
     lv_obj_add_event_cb(auto_btn, bt_ui_auto_btn_cb, LV_EVENT_CLICKED, NULL);
     bt_ui_btn_content(auto_btn, LV_SYMBOL_BLUETOOTH, "Auto", color_primary);
 
+    y += BT_UI_BTN_H + 6;
+
     forget_btn = lv_btn_create(screen);
-    lv_obj_set_size(forget_btn, btn_w, 34);
-    lv_obj_set_pos(forget_btn, BT_UI_PAD, BT_UI_BTN_ROW2_Y);
+    lv_obj_set_size(forget_btn, btn_w, BT_UI_BTN_H);
+    lv_obj_set_pos(forget_btn, BT_UI_PAD, y);
     lv_obj_add_style(forget_btn, style_get_btn_secondary(), 0);
     lv_obj_add_event_cb(forget_btn, bt_ui_forget_btn_cb, LV_EVENT_CLICKED, NULL);
     bt_ui_btn_content(forget_btn, LV_SYMBOL_TRASH, "Forget", color_text);
 
     disconnect_btn = lv_btn_create(screen);
-    lv_obj_set_size(disconnect_btn, btn_w, 34);
-    lv_obj_set_pos(disconnect_btn, BT_UI_PAD + btn_w + 8, BT_UI_BTN_ROW2_Y);
+    lv_obj_set_size(disconnect_btn, btn_w, BT_UI_BTN_H);
+    lv_obj_set_pos(disconnect_btn, BT_UI_PAD + btn_w + btn_gap, y);
     lv_obj_add_style(disconnect_btn, style_get_btn_secondary(), 0);
     lv_obj_add_event_cb(disconnect_btn, bt_ui_disconnect_btn_cb, LV_EVENT_CLICKED, NULL);
     bt_ui_btn_content(disconnect_btn, LV_SYMBOL_CLOSE, "Disconnect", color_text);
 
+    y += BT_UI_BTN_H + 8;
+
     device_list = lv_obj_create(screen);
-    lv_obj_set_pos(device_list, BT_UI_PAD, BT_UI_LIST_TOP);
-    lv_obj_set_size(device_list, content_w, BT_UI_LIST_H);
+    lv_obj_set_pos(device_list, BT_UI_PAD, y);
+    lv_obj_set_size(device_list, content_w, UI_SCREEN_H - y - BT_UI_FOOTER_H - (BT_UI_PAD / 2));
     lv_obj_add_style(device_list, style_get_card(), 0);
     lv_obj_set_flex_flow(device_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(device_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -758,6 +780,10 @@ void bt_settings_ui_refresh(void)
         return;
     }
 
+    if (connectivity_is_user_busy()) {
+        return;
+    }
+
     if (!lvgl_lock(0)) {
         return;
     }
@@ -765,7 +791,8 @@ void bt_settings_ui_refresh(void)
     telemetry_snapshot_t snap;
     telemetry_get_snapshot(&snap);
     bt_settings_ui_sync_conn_ind(
-        ui_conn_ind_level_from(snap.bt_linked, snap.bt_serial_up, snap.conn_state));
+        ui_conn_ind_level_from_ex(snap.bt_linked, snap.bt_serial_up, snap.conn_state,
+                                  snap.bt_auto_pending));
     bt_ui_update_status_labels();
     lvgl_unlock();
 }

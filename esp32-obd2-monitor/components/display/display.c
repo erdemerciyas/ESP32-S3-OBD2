@@ -1,4 +1,5 @@
 #include "display.h"
+#include "connectivity.h"
 #include "lvgl_driver.h"
 #include "dashboard.h"
 #include "splash.h"
@@ -17,6 +18,11 @@ static const char *TAG = "display";
 static bool live_updates_enabled;
 
 bool display_live_updates_enabled(void)
+{
+    return live_updates_enabled;
+}
+
+bool connectivity_ui_ready(void)
 {
     return live_updates_enabled;
 }

@@ -74,8 +74,8 @@ CONFIG_BT_NIMBLE_PINNED_TO_CORE=0
 CONFIG_BT_CTRL_PINNED_TO_CORE_0=y
 CONFIG_BT_CTRL_PINNED_TO_CORE=0
 
-# BLE scan + I2C touch can defer ISRs — relax INT WDT on CPU0 only
-CONFIG_ESP_INT_WDT_TIMEOUT_MS=1300
+# BLE scan can defer ISRs on CPU0 (NimBLE) — needs headroom during RF ops
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=10000
 # CONFIG_ESP_INT_WDT_CHECK_CPU1 is not set
 
 # Disable CPU1 idle WDT check during long BLE connect

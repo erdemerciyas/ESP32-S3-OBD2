@@ -42,6 +42,7 @@ gauge_type_t gauge_next_available(gauge_type_t from);
 gauge_type_t gauge_prev_available(gauge_type_t from);
 gauge_type_t gauge_first_available(void);
 bool gauge_is_transitioning(void);
+bool gauge_needs_animation_tick(void);
 void gauge_cancel_transition(void);
 lv_obj_t *gauge_get_container(void);
 const char *gauge_get_label(gauge_type_t type);

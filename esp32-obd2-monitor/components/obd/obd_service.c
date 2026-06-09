@@ -473,6 +473,22 @@ void obd_service_get_data(obd_data_t *data)
     }
 }
 
+bool obd_service_data_is_live(const obd_data_t *data)
+{
+    if (data == NULL || !data->session_valid) {
+        return false;
+    }
+
+    const uint32_t age_ms = obd_now_ms() - data->last_update_ms;
+    if (age_ms > 5000U) {
+        return false;
+    }
+
+    return data->rpm_valid || data->speed_valid || data->coolant_valid ||
+           data->throttle_valid || data->fuel_valid || data->load_valid ||
+           data->battery_valid || data->intake_valid;
+}
+
 esp_err_t obd_service_send_command(const uint8_t *cmd, size_t len, uint8_t *resp, size_t *resp_len)
 {
     return connectivity_send_cmd(cmd, len, resp, resp_len);

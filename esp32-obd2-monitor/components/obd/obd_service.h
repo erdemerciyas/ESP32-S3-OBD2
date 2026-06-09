@@ -126,6 +126,9 @@ void obd_service_poll_all(void);
 
 void obd_service_get_data(obd_data_t *data);
 
+/** Son birkaç saniyede geçerli PID yanıtı var mı (UI canlı veri). */
+bool obd_service_data_is_live(const obd_data_t *data);
+
 
 
 /** UI: gauge_type_t values match obd_gauge_id_t. */
