@@ -13,10 +13,11 @@ Waveshare **[ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-L
 | **PID'ler** | RPM, speed, coolant, throttle, fuel, load, intake, battery, derived fuel rate (MAF+RPM), DTC |
 | **Evrensel OBD** | Bağlantıda `0100` / `0120` / `0140` destek bitmap'i; yalnız desteklenen PID'ler poll edilir; desteklenmeyen göstergeler kaydırmadan çıkar |
 | **Gösterge UI** | Tam ekran yay; büyük değer fontu (`font_gauge_96`); sola/sağa yalnızca **mevcut** göstergeler; geçersiz değer `--`; alt nokta `n/N` |
-| **Bluetooth HUD** | Sağ üst BT ikonu: kapalı → bağlanıyor → ELM → OBD (renk/parlama) — gösterge, menü, Connection ekranı |
+| **Bluetooth HUD** | Alt orta BT ikonu: kapalı → bağlanıyor → ELM → OBD (renk/parlama) — gösterge, menü, Connection ekranı |
 | **Açılış** | `splash.c` ~5 sn EXTREME/MONITOR; ardından ana gösterge |
 | **Menü** | Çift dokunma; **Gauge / Connection / Settings / About**; Font Awesome ikonları; **BACK** → ana ekran (`lv_scr_load`, fade animasyonu yok) |
-| **Bağlantı** | **BLE ELM327** (NimBLE central): Scan, Auto, Forget, Disconnect; kayıtlı adaptör; USB-UART (GPIO43/44) yedek |
+| **Bağlantı** | **BLE ELM327** (NimBLE central): Scan, Auto, Forget, Disconnect; kayıtlı adaptör; açılışta otomatik arama/bağlanma |
+| **Otomatik BT** | NVS'te kayıtlı MAC varsa `bt_manual_mode` yok sayılır; `conn_boot` + `conn_reconnect` (5 s aralık) periyodik dener |
 | **Bağlantı günlüğü** | `conn_log` — son 20 olay NVS'te; açılışta seri porta dökülür |
 | **FSM** | `DISCONNECTED` → `LINK_UP` → `ELM_INIT` → `OBD_READY` (`elm327_session`) |
 | **Telemetri** | `telemetry_snapshot_t` — UI ↔ `obd` gevşek bağlı |
@@ -103,16 +104,16 @@ Varsayılan taşıma: **`CONN_TYPE_BLUETOOTH`**. NimBLE central; GATT profilleri
 |------|----------------|
 | Adaptör OBD soketine takılı, kontak açık | — |
 | Menü → **Connection** → **Scan** | BLE ELM327 adayları listelenir |
-| Listeden adaptör seçin | Bağlanır → NVS'e kayıt |
-| Başarılı | `Saved: <name> <MAC>` |
-| Sonraki açılışlar | Kayıtlı adaptör otomatik denenir |
+| Listeden adaptör seçin | Bağlanır → NVS'e kayıt (`bt_manual_mode=false`) |
+| Başarılı | `Saved: <name> <MAC>`, `OBD: Ready - connected` |
+| Sonraki açılışlar | Kayıtlı adaptör otomatik aranır ve bağlanır (~4 s sonra, bulunamazsa 5 s aralıkla tekrar) |
 | **Auto** | Tam BLE taraması + ilk uygun adaptör |
 | **Forget** | NVS profilini siler |
 | **Disconnect** | Aktif BLE oturumunu kapatır |
 
-**Varsayılan:** `bt_manual_mode=true` — kayıtlı adaptör yokken açılışta otomatik tarama yapılmaz.
+**Varsayılan:** `bt_manual_mode=true` — kayıtlı adaptör **yokken** açılışta otomatik tarama yapılmaz. Kayıtlı MAC varsa manual mode otomatik devre dışı kalır (`settings.c`).
 
-NimBLE çağrıları UI thread'den **`bt_cmd` worker** kuyruğu üzerinden yapılır (Scan sırasında çökme önlenir).
+NimBLE çağrıları UI thread'den **`bt_cmd` worker** kuyruğu üzerinden yapılır (Scan sırasında çökme önlenir). **ELM327/OBD probe (`bt_obd_session_ready`) yalnızca arka plan görevlerinde** çalışır — UI thread'de çağrılırsa LVGL kilitlenir (dokunmatik donması).
 
 ### Notlar
 
@@ -168,7 +169,8 @@ esp32-obd2-monitor/
 |-------|---------|-------|-----|
 | `display_init` | 5 | **40 KB** | LVGL + splash + dashboard |
 | `bt_cmd` | 5 | **20 KB** | NimBLE scan/connect/disconnect kuyruğu |
-| `conn_reconnect` | 5 | 12 KB | Otomatik yeniden bağlanma |
+| `conn_boot` | 4 | 12 KB | Açılışta ilk BT bağlantı denemesi (~4 s gecikme) |
+| `conn_reconnect` | 5 | 12 KB | Otomatik yeniden bağlanma + OBD promotion (kayıtlı profil: 5 s aralık) |
 | `obd_fast` | 6 | 4 KB | 40 ms — desteklenen hızlı PID |
 | `obd_slow` | 4 | 4 KB | 2 s — desteklenen yavaş PID |
 | `obd_dtc` | 3 | 4 KB | 30 s DTC |
@@ -199,7 +201,10 @@ Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 | Menüden BACK → reboot | Eski `LV_SCR_LOAD_ANIM_FADE_ON`; güncel `lv_scr_load` + `gauge_cancel_transition()` |
 | Scan'de reboot | Eski firmware (NimBLE UI thread); güncel `bt_cmd` worker |
 | BT listede var, bağlanmıyor | Adaptör BLE mi? (klasik SPP değil); `conn_log`; 15 s timeout |
-| Tüm göstergeler `--` | Kontak; PID keşfi log; ELM327 protokol |
+| Ana ekran donuyor, ayarlarda bağlı | Eski firmware: OBD probe UI thread'de; güncel: `connectivity_promote_obd_if_ready()` yalnızca `conn_reconnect` |
+| Ana ekranda BT ikonu pasif, ayarlarda OK | Eski firmware: `telemetry.bt_linked` yalnız `conn_type` ile; güncel: `bt_serial_ready()` ile senkron |
+| Açılışta otomatik bağlanmıyor | Kayıtlı MAC var mı? `Forget` sonrası Scan gerekir; `bt_manual_mode` + boş addr → boot atlanır |
+| Tüm göstergeler `--` | Kontak; PID keşfi log; ELM327 protokol; `OBD_READY` + `session_valid` gerekir |
 | Kaydırma boş sayfalar | Evrensel PID filtresi; gauge order ayarları |
 | Eksik ikon / metin | `gen_fonts.ps1` + `fa-brands-400.ttf` (Bluetooth U+F293) |
 
@@ -209,7 +214,7 @@ Ayrıntı: **`UPLOAD.md` → Sorun giderme**.
 |-------|----------|
 | Yeni PID + gösterge | `pid_table.c`, `apply_pid` (`obd_service.c`), `gauge_configs[]` |
 | Destek bitmap | `pid_support.c` |
-| BLE / ELM327 | `bt_manager.c`, `bt_elm327_profiles.h`, `elm327_session.c`, `conn_log.c` |
+| BLE / ELM327 | `bt_manager.c`, `connectivity.c` (`sync` + `promote_obd`), `elm327_session.c`, `conn_log.c` |
 | UI / ikon | `ui_icons.c`, `dashboard.c`, `bt_settings_ui.c`, `board_config.h` |
 | Font üretimi | `components/display/fonts/gen_fonts.ps1`, `font_gauge_96.c` |
 | Testler | `test/test_obd_parser.c`, `test/test_pid_support.c` |

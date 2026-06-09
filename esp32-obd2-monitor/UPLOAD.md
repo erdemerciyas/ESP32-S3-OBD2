@@ -4,7 +4,7 @@ Bu dosya, projeyi **Waveshare ESP32-S3-Touch-LCD-2.1** kartına yüklerken yapı
 
 **Resmi dokümantasyon:** [Waveshare ESP32-S3-Touch-LCD-2.1](https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.1)
 
-**Son başarılı yükleme:** COM3, hedef `esp32s3`, ESP-IDF v5.3.5 (Haziran 2026) — BLE ELM327, firmware ~**1,6 MB**
+**Son başarılı yükleme:** COM3, hedef `esp32s3`, ESP-IDF v5.3.5 (9 Haziran 2026) — BLE ELM327 OBDBLE auto-reconnect + UI freeze fix, firmware ~**1,66 MB** (`0x196800`)
 
 ---
 
@@ -147,6 +147,9 @@ Partition değişince tam yeniden yapılandırma gerekir (`sdkconfig` silinip `s
 | 10 | Settings açılınca siyah ekran | `CONFIG_LV_MEM_SIZE_KILOBYTES=128`; gauge order listesi lazy-build (`dashboard.c`) |
 | 11 | BT Scan UI thread'den çökme | `bt_cmd` worker task (20 KB) — NimBLE scan/connect kuyruğu |
 | 12 | Menüden ana ekrana dönünce reboot | `LV_SCR_LOAD_ANIM_FADE_ON` kaldırıldı → `lv_scr_load` + `gauge_cancel_transition()`; `lvgl_handler` 16 KB, `gauge_update` 12 KB |
+| 13 | Ayarlarda BT bağlı, ana ekranda ikon pasif / veri yok | `telemetry.bt_linked` + `connectivity_sync_transport_state()` (hızlı FSM); `conn_type`/`conn_state` BT katmanıyla hizalanır |
+| 14 | Açılışta kayıtlı OBDBLE otomatik bağlanmıyor | `connectivity_bt_auto_connect_allowed()` — kayıtlı MAC varsa `bt_manual_mode` yok sayılır; `settings_load` manual=false; `conn_boot` + `conn_reconnect` (5 s) |
+| 15 | Ana ekran açılışta donuyor (dokunmatik yok) | `bt_obd_session_ready()` UI thread'den kaldırıldı → `connectivity_promote_obd_if_ready()` yalnızca `conn_reconnect` arka plan görevinde (10–30 s blok LVGL'i kilitlemez) |
 
 ### Başarılı boot log (referans)
 
@@ -207,12 +210,12 @@ Layout sabitleri: `board_config.h` → `UI_SCREEN_W/H`, `UI_SWIPE_THRESHOLD_PX`,
 |-------|-----|
 | `components/display/ui/dashboard.c` | 5 ekran, touch/swipe/menu olayları |
 | `components/display/ui/gauge.c` | Tam ekran yay + indicator row + geçersiz `--` |
-| `components/connectivity/connectivity.c` | Bağlantı FSM + BT/WiFi/USB |
+| `components/connectivity/connectivity.c` | Bağlantı FSM + `sync_transport_state` (hızlı) + `promote_obd_if_ready` (ağır, arka plan) |
 | `components/connectivity/bt_manager.c` | NimBLE central, `bt_cmd` worker, NVS reconnect |
 | `components/connectivity/bt_elm327_profiles.h` | NUS + FFE0/FFE1/FFE2 GATT profilleri |
 | `components/connectivity/elm327_session.c` | Paylaşılan AT init / OBD probe |
 | `components/display/ui/bt_settings_ui.c` | Connection ekranı: Scan / Auto / Forget / Disconnect |
-| `components/telemetry/telemetry.c` | UI snapshot (obd + bağlantı) |
+| `components/telemetry/telemetry.c` | UI snapshot (obd + bağlantı); hızlı FSM sync; `bt_linked` ← `bt_serial_ready()` |
 | `components/display/ui/styles.c` | Renk paleti ve LVGL stilleri |
 
 ### Kritik kaynak dosyalar
@@ -385,6 +388,12 @@ Sürücü (CP210x / CH340 / USB-JTAG) ve kablo.
 - Splash sonrası `lv_scr_load(dashboard)` — güncel `display.c`
 - **CH422G kullanmayın** — bu kart TCA9554 kullanır ([Waveshare docs](https://docs.waveshare.com/ESP32-S3-Touch-LCD-2.1))
 
+### Ana ekran donuyor (dokunmatik yanıt vermiyor)
+
+- **Eski firmware:** `gauge_update` → `telemetry_refresh` → `bt_obd_session_ready()` LVGL lock altında — tüm UI 10–30 s bloke
+- **Güncel:** OBD probe yalnızca `conn_reconnect` task (`connectivity_promote_obd_if_ready`); telemetry yalnızca hızlı `connectivity_sync_transport_state()`
+- Seri log: `conn_reconnect` "OBD adapter not connected, retrying..." normal; UI donmamalı
+
 ### Bluetooth Scan bağlantı kopması / reboot
 
 - NimBLE UI thread'den çağrılmamalı — güncel `bt_cmd` worker kullanın
@@ -414,6 +423,43 @@ Sürücü (CP210x / CH340 / USB-JTAG) ve kablo.
 
 - EXIO8 (TCA9554 pin 7) boot'ta LOW olmalı
 - `tca9554_expander.c` → `0x7F`, `board_config.h` → `BOARD_EXIO_BUZZER`
+
+### Bluetooth: otomatik bağlanma ve UI senkronizasyonu (9 Haziran 2026)
+
+**Belirti:** OBDBLE araçta bağlı (`OBD: Ready - connected` ayarlarda) ama ana ekranda BT ikonu pasif, göstergeler `--`, veya açılışta dokunmatik tamamen donuyor.
+
+**Kök nedenler:**
+
+1. **FSM kopukluğu:** BLE katmanı (`bt_serial_ready`) aktifken `connectivity` FSM `current_type`/`conn_state` güncellenmiyordu → ana ekran HUD yanlış durum gösteriyordu.
+2. **Manual mode:** NVS'te kayıtlı MAC olsa bile `bt_manual_mode=true` boot/reconnect'i engelliyordu.
+3. **UI deadlock:** `telemetry_refresh()` → `connectivity_sync_transport_state()` → `bt_obd_session_ready()` LVGL kilidi altında 10–30 s blokluyordu.
+
+**Çözüm (güncel firmware):**
+
+| Fonksiyon | Thread | Süre | İş |
+|-----------|--------|------|-----|
+| `connectivity_sync_transport_state()` | UI / telemetry (hızlı) | <1 ms | `current_type`, `conn_state` hizala |
+| `connectivity_promote_obd_if_ready()` | `conn_reconnect` only | 10–30 s | ELM327 init + OBD probe → `OBD_READY` |
+| `connectivity_bt_auto_connect_allowed()` | boot + reconnect | — | Kayıtlı MAC → manual mode yok say |
+| `connectivity_auto_reconnect()` | `conn_reconnect` | — | Bağlantı koptuysa scan/connect |
+
+**Boot zaman çizelgesi:**
+
+```
+t=0     app_main → early BLE init (NimBLE warmup)
+t=~3s   display_init → splash → ana gösterge
+t=~4s   conn_boot → connectivity_start(BT) — kayıtlı OBDBLE dene
+t=~3s   conn_reconnect ilk döngü — sync / promote / retry (5 s aralık kayıtlı profil)
+```
+
+**Test (Chevrolet Kalos + OBDBLE `81:23:45:67:89:BA`):**
+
+1. Connection → Scan → OBDBLE seç → `OBD: Ready - connected`
+2. BACK → ana ekran: BT ikonu yeşil/mavi, dokunmatik çalışır
+3. Kontak açık → RPM/hız gelir
+4. Tam güç kes → aç → ~10–30 s içinde otomatik bağlanma (adaptör menzilde)
+
+---
 
 ### NimBLE derleme / bağlantı
 
@@ -477,9 +523,9 @@ Proje kökü: `alternative/` (monorepo). Yalnız `esp32-obd2-monitor/` commit ed
 4. `idf.py -p COM3 flash` veya `.\build_flash.ps1 -Action all -Port COM3`
 5. Kart reset olur; ekranda amber gösterge + üst **BT** HUD ikonu görünmeli, buzzer susmalı
 6. **Kaydır** → gösterge değişir; **çift dokun** → menü; **BACK** → ana ekran
-7. Menü → **Connection** → **Scan** → BLE adaptör seç
-8. Seri log: `Application started successfully` ve `Dashboard ready — swipe gauges, double-tap menu`
+7. Menü → **Connection** — kayıtlı OBDBLE varsa otomatik bağlanmayı bekle veya Scan
+8. Seri log: `Application started successfully`, `OBD READY (BT, RPM response received)` veya `conn_reconnect` retry
 
 ---
 
-*Son güncelleme: Haziran 2026 — ana ekrana dönüş reboot düzeltmesi (`lv_scr_load`), LVGL/gauge task stack artışı, BLE ELM327 (NimBLE), English UI, Settings, LVGL 128 KB heap, `font_gauge_96`.*
+*Son güncelleme: 9 Haziran 2026 — BLE otomatik reconnect (kayıtlı profil), FSM/UI sync, ana ekran UI freeze fix (`promote_obd` arka plan), telemetry `bt_linked` düzeltmesi.*

@@ -26,6 +26,11 @@ bool connectivity_is_connected(void);
 connectivity_state_t connectivity_get_state(void);
 const char *connectivity_get_status_text(void);
 esp_err_t connectivity_auto_reconnect(void);
+/** Fast FSM/metadata sync only — safe from UI thread. */
+void connectivity_sync_transport_state(void);
+/** ELM327/OBD probe — call from background tasks only (blocks 10–30 s). */
+void connectivity_promote_obd_if_ready(void);
+bool connectivity_bt_auto_connect_allowed(void);
 esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found_count,
                              int duration_ms);
 esp_err_t connectivity_bt_connect_manual(const char *addr, const char *name, uint8_t addr_type);

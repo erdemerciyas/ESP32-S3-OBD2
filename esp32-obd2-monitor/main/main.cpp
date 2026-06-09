@@ -82,22 +82,35 @@ static void connectivity_reconnect_task(void *arg)
 {
     (void)arg;
 
-    /* Let display and initial connect attempt finish first */
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    /* Let display finish splash; first retry sooner when a profile is saved */
+    vTaskDelay(pdMS_TO_TICKS(3000));
 
     while (1) {
-        if (!connectivity_is_connected()) {
-            const bool bt_manual_idle =
-                (g_settings.preferred_connection == CONN_TYPE_BLUETOOTH &&
-                 g_settings.bt_manual_mode &&
-                 g_settings.bt_device_addr[0] == '\0');
-            if (!bt_manual_idle) {
-                ESP_LOGI(TAG, "OBD adapter not connected, retrying...");
-                connectivity_auto_reconnect();
-            }
+        const bool want_bt = (g_settings.preferred_connection == CONN_TYPE_BLUETOOTH ||
+                              g_settings.preferred_connection == CONN_TYPE_NONE);
+        const bool saved_bt = want_bt && g_settings.bt_device_addr[0] != '\0';
+        const TickType_t interval = pdMS_TO_TICKS(saved_bt ? 5000 : 15000);
+
+        if (connectivity_is_connected()) {
+            vTaskDelay(interval);
+            continue;
         }
-        /* Full ELM327 auto-discovery can take 30+ seconds */
-        vTaskDelay(pdMS_TO_TICKS(15000));
+
+        if (bt_serial_ready()) {
+            connectivity_sync_transport_state();
+            if (!connectivity_is_connected()) {
+                connectivity_promote_obd_if_ready();
+            }
+            vTaskDelay(interval);
+            continue;
+        }
+
+        if (want_bt && connectivity_bt_auto_connect_allowed()) {
+            ESP_LOGI(TAG, "OBD adapter not connected, retrying...");
+            connectivity_auto_reconnect();
+        }
+
+        vTaskDelay(interval);
     }
 }
 
@@ -136,11 +149,19 @@ static bool display_task_uses_caps;
 static void connectivity_boot_task(void *arg)
 {
     (void)arg;
-    /* Wait for BLE warmup + splash to finish */
-    vTaskDelay(pdMS_TO_TICKS(6000));
+    /* Wait for splash; BLE stack is already warmed up in app_main */
+    vTaskDelay(pdMS_TO_TICKS(4000));
 
-    esp_err_t conn_err = connectivity_start(g_settings.preferred_connection);
-    if (conn_err != ESP_OK) {
+    connection_type_t boot_type = g_settings.preferred_connection;
+    if (boot_type == CONN_TYPE_NONE) {
+        boot_type = CONN_TYPE_BLUETOOTH;
+    }
+
+    esp_err_t conn_err = connectivity_start(boot_type);
+    if (conn_err != ESP_OK && boot_type == CONN_TYPE_BLUETOOTH &&
+        g_settings.bt_device_addr[0] != '\0') {
+        ESP_LOGW(TAG, "Initial BT connect failed — reconnect task will retry");
+    } else if (conn_err != ESP_OK) {
         ESP_LOGW(TAG, "Initial connectivity skipped/failed (manual mode or no adapter)");
     }
     vTaskDelete(NULL);

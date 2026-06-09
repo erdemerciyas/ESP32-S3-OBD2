@@ -252,6 +252,10 @@ esp_err_t settings_load(app_settings_t *settings)
 
     settings_apply_defaults(settings);
 
+    if (settings->bt_device_addr[0] != '\0') {
+        settings->bt_manual_mode = false;
+    }
+
     if (persist_migration) {
         settings_save(settings);
     }

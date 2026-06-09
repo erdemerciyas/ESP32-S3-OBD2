@@ -152,12 +152,17 @@ static esp_err_t connectivity_bring_up(connection_type_t type)
     return ESP_OK;
 }
 
+bool connectivity_bt_auto_connect_allowed(void)
+{
+    if (g_settings.bt_device_addr[0] != '\0') {
+        return true;
+    }
+    return !g_settings.bt_manual_mode;
+}
+
 static bool connectivity_bt_boot_allowed(void)
 {
-    if (g_settings.bt_manual_mode && g_settings.bt_device_addr[0] == '\0') {
-        return false;
-    }
-    return true;
+    return connectivity_bt_auto_connect_allowed();
 }
 
 static bool connectivity_wifi_boot_allowed(void)
@@ -283,6 +288,56 @@ const char *connectivity_get_status_text(void)
     return status_text;
 }
 
+void connectivity_sync_transport_state(void)
+{
+    if (connectivity_user_busy) {
+        return;
+    }
+
+    if (!bt_serial_ready()) {
+        return;
+    }
+
+    connectivity_lock();
+
+    if (current_type != CONN_TYPE_BLUETOOTH) {
+        current_type = CONN_TYPE_BLUETOOTH;
+        if (conn_state == CONN_STATE_DISCONNECTED || conn_state == CONN_STATE_ERROR) {
+            connectivity_set_state(CONN_STATE_LINK_UP, "BT linked");
+        }
+    } else if (conn_state == CONN_STATE_DISCONNECTED || conn_state == CONN_STATE_ERROR) {
+        connectivity_set_state(CONN_STATE_LINK_UP, "BT ready - ignition ON");
+    }
+
+    connectivity_unlock();
+}
+
+void connectivity_promote_obd_if_ready(void)
+{
+    if (connectivity_user_busy || !bt_serial_ready()) {
+        return;
+    }
+
+    connectivity_lock();
+    const bool already = (conn_state == CONN_STATE_OBD_READY);
+    connectivity_unlock();
+    if (already) {
+        return;
+    }
+
+    if (!bt_obd_session_ready()) {
+        return;
+    }
+
+    connectivity_lock();
+    if (conn_state != CONN_STATE_OBD_READY) {
+        connectivity_set_state(CONN_STATE_OBD_READY, "OBD ready");
+        reconnect_attempts = 0;
+    }
+    connectivity_unlock();
+    obd_service_discover_supported_pids();
+}
+
 esp_err_t connectivity_auto_reconnect(void)
 {
     if (connectivity_user_busy) {
@@ -304,8 +359,7 @@ esp_err_t connectivity_auto_reconnect(void)
         preferred = CONN_TYPE_BLUETOOTH;
     }
 
-    if (preferred == CONN_TYPE_BLUETOOTH && g_settings.bt_manual_mode &&
-        g_settings.bt_device_addr[0] == '\0') {
+    if (preferred == CONN_TYPE_BLUETOOTH && !connectivity_bt_auto_connect_allowed()) {
         connectivity_unlock();
         return ESP_ERR_INVALID_STATE;
     }

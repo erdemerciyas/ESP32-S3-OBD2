@@ -1396,7 +1396,7 @@ static bool bt_queue_connect(const ble_addr_t *addr, const char *display_name)
 
 bool bt_link_up(void)
 {
-    if (g_settings.bt_manual_mode && g_settings.bt_device_addr[0] == '\0') {
+    if (g_settings.bt_device_addr[0] == '\0' && g_settings.bt_manual_mode) {
         ESP_LOGI(TAG, "Manual BT: no saved adapter");
         return false;
     }
@@ -1917,7 +1917,7 @@ void bt_request_cancel_operations(void) {}
 
 bool bt_link_up(void)
 {
-    if (g_settings.bt_manual_mode && g_settings.bt_device_addr[0] == '\0') {
+    if (g_settings.bt_device_addr[0] == '\0' && g_settings.bt_manual_mode) {
         return false;
     }
     if (g_settings.bt_device_addr[0] != '\0') {
