@@ -13,8 +13,10 @@
 #include <string.h>
 #include "haptic.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/idf_additions.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,8 +31,10 @@
 #define BT_UI_LIST_TOP   (BT_UI_BTN_ROW2_Y + 44)
 #define BT_UI_LIST_H     (UI_SCREEN_H - BT_UI_LIST_TOP - BT_UI_FOOTER_H - 8)
 #define BT_UI_DEVICE_ROW_H 52
-#define BT_UI_JOB_STACK      12288
-#define BT_UI_LIST_MAX_ROWS  32
+#define BT_UI_LIST_MAX_ROWS  20
+#define BT_UI_JOB_STACK      8192
+#define BT_UI_SCAN_BUF_MAX   BT_UI_LIST_MAX_ROWS
+#define BT_UI_SCAN_DURATION_MS 12000
 
 static const char *TAG = "bt_ui";
 
@@ -49,6 +53,8 @@ static int scan_result_count;
 static volatile bool worker_busy;
 static lv_timer_t *progress_timer;
 static lv_timer_t *deferred_scan_timer;
+static lv_timer_t *job_watchdog_timer;
+static uint32_t job_started_tick;
 
 typedef enum {
     BT_UI_JOB_SCAN = 0,
@@ -67,7 +73,12 @@ typedef struct {
     esp_err_t result;
 } bt_ui_job_t;
 
-static bt_device_info_t g_bt_scan_work_buf[BT_SCAN_MAX_RESULTS];
+static bt_device_info_t g_bt_scan_work_buf[BT_UI_SCAN_BUF_MAX];
+
+static QueueHandle_t bt_ui_job_q;
+static TaskHandle_t bt_ui_worker_h;
+static StackType_t bt_ui_worker_stack[BT_UI_JOB_STACK];
+static StaticTask_t bt_ui_worker_tcb;
 
 static lv_obj_t *bt_ui_btn_content(lv_obj_t *btn, const char *icon_sym, const char *text,
                                    lv_color_t text_color)
@@ -101,6 +112,10 @@ void bt_settings_ui_sync_conn_ind(ui_conn_ind_level_t level)
 
 static void bt_ui_update_status_labels(void)
 {
+    if (status_saved_lbl == NULL || status_obd_lbl == NULL) {
+        return;
+    }
+
     char saved_buf[96];
     if (g_settings.bt_device_addr[0] != '\0') {
         if (g_settings.bt_device_name[0] != '\0') {
@@ -142,9 +157,31 @@ static void bt_ui_update_status_labels(void)
     }
 }
 
+static void bt_ui_lvgl_begin(void)
+{
+    lvgl_lock(-1);
+}
+
+static void bt_ui_lvgl_end(void)
+{
+    lvgl_unlock();
+}
+
+static void bt_ui_set_message_locked(const char *text)
+{
+    if (status_msg_lbl != NULL && text != NULL) {
+        lv_label_set_text(status_msg_lbl, text);
+    }
+}
+
 static void bt_ui_set_message(const char *text)
 {
-    lv_label_set_text(status_msg_lbl, text);
+    if (status_msg_lbl == NULL) {
+        return;
+    }
+    bt_ui_lvgl_begin();
+    bt_ui_set_message_locked(text);
+    bt_ui_lvgl_end();
 }
 
 static void bt_ui_progress_timer_cb(lv_timer_t *t)
@@ -153,24 +190,28 @@ static void bt_ui_progress_timer_cb(lv_timer_t *t)
     if (!worker_busy) {
         return;
     }
+    if (!lvgl_lock(0)) {
+        return;
+    }
 
     switch (connectivity_get_state()) {
         case CONN_STATE_OBD_READY:
-            bt_ui_set_message("OBD ready - connected");
+            bt_ui_set_message_locked("OBD ready - connected");
             break;
         case CONN_STATE_LINK_UP:
         case CONN_STATE_ELM_INIT:
-            bt_ui_set_message("BT OK - ELM327 initializing...");
+            bt_ui_set_message_locked("BT OK - ELM327 initializing...");
             break;
         default:
             if (bt_serial_ready()) {
-                bt_ui_set_message("Bluetooth connected - waiting for OBD...");
+                bt_ui_set_message_locked("Bluetooth connected - waiting for OBD...");
             } else {
-                bt_ui_set_message("Connecting to adapter...");
+                bt_ui_set_message_locked("Connecting to adapter...");
             }
             break;
     }
     bt_ui_update_status_labels();
+    lvgl_unlock();
 }
 
 static void bt_ui_progress_start(void)
@@ -188,9 +229,14 @@ static void bt_ui_progress_stop(void)
     }
 }
 
+static void bt_ui_device_click_cb(lv_event_t *e);
+static void bt_ui_trigger_scan(const char *status_msg);
+static void bt_ui_force_reset_worker(void);
+
 static void bt_ui_set_buttons_enabled(bool enabled)
 {
-    lv_obj_t *buttons[] = { scan_btn, auto_btn, forget_btn, disconnect_btn };
+    /* Keep Scan tappable so the user can retry if a job stalls. */
+    lv_obj_t *buttons[] = { auto_btn, forget_btn, disconnect_btn };
     for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
         if (buttons[i] == NULL) {
             continue;
@@ -203,12 +249,32 @@ static void bt_ui_set_buttons_enabled(bool enabled)
     }
 }
 
-static void bt_ui_device_click_cb(lv_event_t *e);
-static void bt_ui_trigger_scan(const char *status_msg);
+static void bt_ui_job_watchdog_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!worker_busy) {
+        return;
+    }
+    if (lv_tick_elaps(job_started_tick) < 70000) {
+        return;
+    }
+
+    ESP_LOGW(TAG, "BT UI job watchdog fired — releasing UI");
+    bt_ui_force_reset_worker();
+    bt_ui_set_message("Timed out — tap Scan again");
+}
 
 static void bt_ui_populate_device_list(const bt_device_info_t *devices, int count)
 {
+    if (device_list == NULL) {
+        return;
+    }
+
+    lv_obj_remove_flag(device_list, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_state(device_list, LV_STATE_DISABLED);
     lv_obj_clean(device_list);
+    lv_obj_remove_state(device_list, LV_STATE_DISABLED);
+    lv_obj_add_flag(device_list, LV_OBJ_FLAG_CLICKABLE);
     scan_result_count = count;
     if (count > BT_SCAN_MAX_RESULTS) {
         count = BT_SCAN_MAX_RESULTS;
@@ -274,9 +340,12 @@ static void bt_ui_populate_device_list(const bt_device_info_t *devices, int coun
 static void bt_ui_job_finished_cb(void *user_data)
 {
     bt_ui_job_t *job = (bt_ui_job_t *)user_data;
+    bt_ui_lvgl_begin();
+
     if (job == NULL) {
         worker_busy = false;
         bt_ui_set_buttons_enabled(true);
+        bt_ui_lvgl_end();
         return;
     }
 
@@ -313,33 +382,33 @@ static void bt_ui_job_finished_cb(void *user_data)
                     }
                 }
             }
-            bt_ui_set_message(scan_msg);
+            bt_ui_set_message_locked(scan_msg);
             break;
         }
         case BT_UI_JOB_AUTO:
             if (job->result == ESP_OK) {
-                bt_ui_set_message(connectivity_get_state() == CONN_STATE_OBD_READY ?
-                                  "Auto-connect successful" :
-                                  "BT OK - turn ignition ON");
+                bt_ui_set_message_locked(connectivity_get_state() == CONN_STATE_OBD_READY ?
+                                         "Auto-connect successful" :
+                                         "BT OK - turn ignition ON");
             } else {
-                bt_ui_set_message(bt_get_last_fail_hint());
+                bt_ui_set_message_locked(bt_get_last_fail_hint());
             }
             break;
         case BT_UI_JOB_CONNECT:
             if (job->result == ESP_OK) {
-                bt_ui_set_message(connectivity_get_state() == CONN_STATE_OBD_READY ?
-                                  "Connected and saved" :
-                                  "BT OK - turn ignition ON");
+                bt_ui_set_message_locked(connectivity_get_state() == CONN_STATE_OBD_READY ?
+                                         "Connected and saved" :
+                                         "BT OK - turn ignition ON");
             } else {
-                bt_ui_set_message(bt_get_last_fail_hint());
+                bt_ui_set_message_locked(bt_get_last_fail_hint());
             }
             break;
         case BT_UI_JOB_FORGET:
             bt_ui_populate_device_list(NULL, 0);
-            bt_ui_set_message("Saved adapter forgotten");
+            bt_ui_set_message_locked("Saved adapter forgotten");
             break;
         case BT_UI_JOB_DISCONNECT:
-            bt_ui_set_message("Disconnected");
+            bt_ui_set_message_locked("Disconnected");
             break;
         default:
             break;
@@ -349,18 +418,24 @@ static void bt_ui_job_finished_cb(void *user_data)
     bt_ui_update_status_labels();
     bt_ui_set_buttons_enabled(true);
     worker_busy = false;
+    if (job_watchdog_timer != NULL) {
+        lv_timer_pause(job_watchdog_timer);
+    }
+    bt_ui_lvgl_end();
     free(job);
 }
 
-static void bt_ui_worker_task(void *arg)
+static void bt_ui_execute_job(bt_ui_job_t *job)
 {
-    bt_ui_job_t *job = (bt_ui_job_t *)arg;
+    if (job == NULL) {
+        return;
+    }
 
     switch (job->kind) {
         case BT_UI_JOB_SCAN:
             job->device_count = 0;
-            job->result = connectivity_bt_scan(g_bt_scan_work_buf, BT_SCAN_MAX_RESULTS,
-                                               &job->device_count);
+            job->result = connectivity_bt_scan(g_bt_scan_work_buf, BT_UI_SCAN_BUF_MAX,
+                                               &job->device_count, BT_UI_SCAN_DURATION_MS);
             if (job->result == ESP_OK || job->device_count > 0) {
                 job->result = ESP_OK;
             }
@@ -381,9 +456,49 @@ static void bt_ui_worker_task(void *arg)
             job->result = ESP_ERR_INVALID_ARG;
             break;
     }
+}
 
-    lv_async_call(bt_ui_job_finished_cb, job);
-    vTaskDelete(NULL);
+static void bt_ui_worker_task(void *arg)
+{
+    (void)arg;
+    bt_ui_job_t *job = NULL;
+
+    for (;;) {
+        if (xQueueReceive(bt_ui_job_q, &job, portMAX_DELAY) != pdTRUE || job == NULL) {
+            continue;
+        }
+
+        bt_ui_execute_job(job);
+        lv_async_call(bt_ui_job_finished_cb, job);
+    }
+}
+
+static bool bt_ui_ensure_worker(void)
+{
+    if (bt_ui_worker_h != NULL && bt_ui_job_q != NULL) {
+        return true;
+    }
+
+    if (bt_ui_job_q == NULL) {
+        bt_ui_job_q = xQueueCreate(1, sizeof(bt_ui_job_t *));
+        if (bt_ui_job_q == NULL) {
+            ESP_LOGE(TAG, "BT UI job queue create failed (int_free=%u)",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            return false;
+        }
+    }
+
+    if (bt_ui_worker_h == NULL) {
+        bt_ui_worker_h = xTaskCreateStatic(bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK,
+                                           NULL, 5, bt_ui_worker_stack, &bt_ui_worker_tcb);
+        if (bt_ui_worker_h == NULL) {
+            ESP_LOGE(TAG, "BT UI worker create failed (int_free=%u)",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            return false;
+        }
+    }
+
+    return true;
 }
 
 static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
@@ -395,15 +510,29 @@ static void bt_ui_start_job(bt_ui_job_t *job, bool show_progress)
     }
 
     worker_busy = true;
+    job_started_tick = lv_tick_get();
     bt_ui_set_buttons_enabled(false);
 
-    /* Internal RAM stack only — PSRAM stack + BLE wait can crash/cache-fault */
-    BaseType_t created = xTaskCreate(bt_ui_worker_task, "bt_ui_job", BT_UI_JOB_STACK, job, 5, NULL);
-    if (created != pdPASS) {
-        ESP_LOGE(TAG, "Failed to start BT UI worker task");
+    if (job_watchdog_timer == NULL) {
+        job_watchdog_timer = lv_timer_create(bt_ui_job_watchdog_cb, 2000, NULL);
+    } else {
+        lv_timer_reset(job_watchdog_timer);
+        lv_timer_resume(job_watchdog_timer);
+    }
+
+    if (!bt_ui_ensure_worker()) {
         worker_busy = false;
         bt_ui_set_buttons_enabled(true);
         bt_ui_set_message("Failed to start connection task");
+        free(job);
+        return;
+    }
+
+    if (xQueueSend(bt_ui_job_q, &job, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "BT UI job queue full");
+        worker_busy = false;
+        bt_ui_set_buttons_enabled(true);
+        bt_ui_set_message("Busy, please wait...");
         free(job);
         return;
     }
@@ -443,38 +572,37 @@ static void bt_ui_device_click_cb(lv_event_t *e)
     bt_ui_start_job(job, true);
 }
 
-static void bt_ui_deferred_scan_cb(lv_timer_t *t)
+void bt_settings_ui_on_screen_shown(void)
 {
-    (void)t;
+    if (status_msg_lbl == NULL) {
+        return;
+    }
     if (deferred_scan_timer != NULL) {
         lv_timer_pause(deferred_scan_timer);
     }
-    if (!bt_rf_allowed()) {
-        bt_ui_set_message("UI not ready — tap Scan");
-        return;
-    }
-    bt_ui_trigger_scan("Scanning all nearby BLE devices...");
+    bt_ui_set_message("Tap Scan to list nearby BLE adapters");
 }
 
-void bt_settings_ui_on_screen_shown(void)
+static void bt_ui_force_reset_worker(void)
 {
-    if (device_list == NULL || worker_busy) {
-        return;
-    }
-
-    if (deferred_scan_timer == NULL) {
-        deferred_scan_timer = lv_timer_create(bt_ui_deferred_scan_cb, 1200, NULL);
-        lv_timer_set_repeat_count(deferred_scan_timer, 1);
-    } else {
-        lv_timer_reset(deferred_scan_timer);
-        lv_timer_resume(deferred_scan_timer);
+    bt_request_cancel_operations();
+    worker_busy = false;
+    bt_ui_progress_stop();
+    bt_ui_set_buttons_enabled(true);
+    if (job_watchdog_timer != NULL) {
+        lv_timer_pause(job_watchdog_timer);
     }
 }
 
 static void bt_ui_trigger_scan(const char *status_msg)
 {
     if (worker_busy) {
-        return;
+        if (lv_tick_elaps(job_started_tick) < 8000) {
+            bt_ui_set_message("Busy — wait a few seconds");
+            return;
+        }
+        ESP_LOGW(TAG, "Resetting stuck scan worker");
+        bt_ui_force_reset_worker();
     }
 
     bt_ui_job_t *job = calloc(1, sizeof(bt_ui_job_t));
@@ -484,14 +612,17 @@ static void bt_ui_trigger_scan(const char *status_msg)
     }
 
     job->kind = BT_UI_JOB_SCAN;
-    bt_ui_set_message(status_msg != NULL ? status_msg : "Scanning all nearby BLE (20s)...");
+    bt_request_cancel_operations();
+    bt_ui_set_message(status_msg != NULL ? status_msg :
+                      "Scanning nearby BLE (~12s)...");
+    haptic_click();
     bt_ui_start_job(job, false);
 }
 
 static void bt_ui_scan_btn_cb(lv_event_t *e)
 {
     (void)e;
-    bt_ui_trigger_scan("Scanning all nearby BLE (20s)...");
+    bt_ui_trigger_scan("Scanning nearby BLE (~12s)...");
 }
 
 static void bt_ui_auto_btn_cb(lv_event_t *e)

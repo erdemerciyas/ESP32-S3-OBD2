@@ -8,6 +8,7 @@ idf_component_register(
         "fonts/font_ui_16.c"
         "fonts/font_ui_20.c"
         "fonts/font_gauge_96.c"
+        "fonts/font_gauge_128.c"
         "fonts/font_icons_24.c"
         "fonts/font_icons_28.c"
         "ui/dashboard.c"
@@ -18,7 +19,7 @@ idf_component_register(
         "ui/haptic.c"
         "ui/ui_icons.c"
     INCLUDE_DIRS "." "lvgl_port" "ui" "fonts"
-    REQUIRES lvgl esp_lcd espressif__esp_lcd_st7701 espressif__esp_lcd_panel_io_additions
+    REQUIRES lvgl esp_lcd esp_timer espressif__esp_lcd_st7701 espressif__esp_lcd_panel_io_additions
              espressif__esp_io_expander espressif__esp_lcd_touch driver app telemetry connectivity system obd
 )
 

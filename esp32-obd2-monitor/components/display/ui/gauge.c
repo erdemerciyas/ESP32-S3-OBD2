@@ -59,9 +59,9 @@ static lv_color_t last_drawn_value_color;
 #define GAUGE_ARC_SIZE           (UI_SCREEN_W - (GAUGE_ARC_MARGIN * 2))
 #define GAUGE_ARC_STROKE_TRACK   12
 #define GAUGE_ARC_STROKE_VALUE   14
-#define GAUGE_INFO_W             (GAUGE_ARC_SIZE - 48)
-#define GAUGE_INFO_H             280
-#define GAUGE_VALUE_FONT         (&font_gauge_96)
+#define GAUGE_INFO_W             (GAUGE_ARC_SIZE - 32)
+#define GAUGE_INFO_H             300
+#define GAUGE_VALUE_FONT         UI_FONT_GAUGE_VALUE
 #define GAUGE_FADE_OUT_MS        160
 #define GAUGE_FADE_IN_MS         220
 
@@ -351,7 +351,7 @@ void gauge_create_fullscreen(lv_obj_t *parent, gauge_type_t type)
     lv_obj_set_width(fullscreen_label_value, GAUGE_INFO_W);
     lv_obj_set_style_text_align(fullscreen_label_value, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(fullscreen_label_value, "0");
-    lv_obj_align(fullscreen_label_value, LV_ALIGN_CENTER, 0, 8);
+    lv_obj_align(fullscreen_label_value, LV_ALIGN_CENTER, 0, 4);
     lv_obj_set_style_text_font(fullscreen_label_value, GAUGE_VALUE_FONT, 0);
     lv_obj_set_style_text_color(fullscreen_label_value, color_accent, 0);
     lv_obj_remove_flag(fullscreen_label_value, LV_OBJ_FLAG_CLICKABLE);

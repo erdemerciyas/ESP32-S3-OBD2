@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 #define BT_SCAN_MAX_RESULTS   64
+#define BT_SCAN_DEFAULT_MS    20000
 
 typedef struct {
     char name[BT_DEVICE_NAME_MAX];
@@ -43,6 +44,8 @@ const char *bt_get_last_error(void);
 void bt_shutdown_stack(void);
 /** Cancel in-flight BLE scan/connect so user Scan/Connect is not blocked. */
 void bt_prepare_for_operation(void);
+/** Signal auto-connect/connect loops to stop, then queue prepare on the BT worker. */
+void bt_request_cancel_operations(void);
 
 bool bt_link_up(void);
 bool bt_obd_session_ready(void);

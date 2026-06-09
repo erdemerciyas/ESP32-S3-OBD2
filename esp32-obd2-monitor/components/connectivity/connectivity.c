@@ -383,7 +383,6 @@ static esp_err_t connectivity_finish_bt_session(void)
 
 static void connectivity_bt_prepare_session(void)
 {
-    bt_prepare_for_operation();
     connectivity_lock();
     if (current_type == CONN_TYPE_BLUETOOTH) {
         connectivity_stop();
@@ -393,7 +392,8 @@ static void connectivity_bt_prepare_session(void)
     connectivity_unlock();
 }
 
-esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found_count)
+esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found_count,
+                             int duration_ms)
 {
     if (list == NULL || found_count == NULL || max_count <= 0) {
         return ESP_ERR_INVALID_ARG;
@@ -401,15 +401,17 @@ esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found
 
     *found_count = 0;
     connectivity_set_user_busy(true);
+    bt_request_cancel_operations();
 
     if (!connectivity_ensure_bt_worker()) {
         connectivity_set_user_busy(false);
         return ESP_ERR_INVALID_STATE;
     }
 
-    connectivity_bt_prepare_session();
-
-    *found_count = bt_scan_devices(list, max_count, 0);
+    if (duration_ms <= 0) {
+        duration_ms = BT_SCAN_DEFAULT_MS;
+    }
+    *found_count = bt_scan_devices(list, max_count, duration_ms);
     connectivity_set_user_busy(false);
 
     if (*found_count > 0) {
@@ -439,6 +441,7 @@ esp_err_t connectivity_bt_connect_manual(const char *addr, const char *name, uin
         return ESP_ERR_INVALID_STATE;
     }
 
+    bt_request_cancel_operations();
     connectivity_bt_prepare_session();
 
     esp_err_t err = ESP_FAIL;

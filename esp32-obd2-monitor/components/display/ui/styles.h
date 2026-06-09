@@ -17,7 +17,7 @@ typedef enum {
     THEME_DIM
 } theme_color_type_t;
 
-/* Workshop-at-dusk theme — aligned with ui-demo.html */
+/* Workshop-at-dusk theme (dark only) */
 extern lv_color_t color_primary;
 extern lv_color_t color_secondary;
 extern lv_color_t color_accent;

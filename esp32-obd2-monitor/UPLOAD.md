@@ -337,7 +337,7 @@ CONFIG_FREERTOS_HZ=1000
 | 1 | Swipe / menü çalışmıyordu | `dashboard.c`: `LV_EVENT_PRESSED`/`RELEASED`, swipe eşiği 50 px, çift dokunma 320 ms |
 | 2 | UI kayık / taşma | Gösterge `460×460 @ y=110` → toplam 570 px; `gauge.c` tam `480×480`, overlay status |
 | 3 | Touch–display kopuk (LVGL 9) | `lv_indev_set_display(touch_handle, display_handle)` |
-| 4 | Eski kırmızı tema | `styles.c` → Workshop at Dusk (`ui-demo.html` token’ları) |
+| 4 | Eski kırmızı tema | `styles.c` → Workshop at Dusk paleti |
 
 ---
 
@@ -463,7 +463,7 @@ idf.py test
 
 ## Git / commit notu
 
-Proje kökü: `alternative/` (monorepo). Yalnız `esp32-obd2-monitor/` commit edilir; `_ref/`, `esp-ard/`, `esp-obd/` dahil edilmez.
+Proje kökü: `alternative/` (monorepo). Yalnız `esp32-obd2-monitor/` commit edilir.
 
 `sdkconfig.defaults` repoda tutulur (`.gitignore` istisnası: `!sdkconfig.defaults`).
 

@@ -1,15 +1,6 @@
 {
   "name": "fonts",
-  "version": "1.0.0",
-  "description": "- `font_ui_*.c` — Montserrat subset with Turkish characters (`ui_charset.txt`).\r - `font_icons_*.c` — Font Awesome glyphs for `LV_SYMBOL_*` icons.",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
+  "private": true,
   "dependencies": {
     "lv_font_conv": "^1.5.3"
   }

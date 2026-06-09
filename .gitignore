@@ -43,9 +43,12 @@ Thumbs.db
 # PlatformIO (esp-ard, esp-obd)
 .pio/
 
-# Reference vendored repos (sources only, not nested .git)
-**/_ref/**/.git/
+# Archived reference projects (not part of firmware)
+**/_ref/
 
 # Build helper scratch
 .cache/
 .eslintcache
+
+# graphify knowledge graph (regenerable: graphify update .)
+**/graphify-out/

@@ -5,7 +5,7 @@
 
 static const char *TAG = "styles";
 
-/* Racing theme colors - matching ui-demo.html (initialized in styles_init) */
+/* Workshop-at-dusk palette (initialized in styles_init) */
 lv_color_t color_primary;
 lv_color_t color_secondary;
 lv_color_t color_accent;

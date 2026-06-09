@@ -338,7 +338,7 @@ void lvgl_init(void)
 
 void lvgl_start(void)
 {
-    xTaskCreatePinnedToCore(lvgl_handler_task, "lvgl_handler", 16384, NULL, 5, NULL, 1);
+    xTaskCreatePinnedToCore(lvgl_handler_task, "lvgl_handler", 20480, NULL, 5, NULL, 1);
     ESP_LOGI(TAG, "LVGL handler task started");
 }
 

@@ -101,6 +101,7 @@ static SemaphoreHandle_t sync_sem;
 static SemaphoreHandle_t connect_sem;
 static SemaphoreHandle_t gatt_disc_sem;
 static SemaphoreHandle_t scan_complete_sem;
+static SemaphoreHandle_t bt_cmd_done_sem;
 
 static bt_device_info_t scan_buf[BT_SCAN_MAX_RESULTS];
 static int scan_count;
@@ -344,12 +345,21 @@ static void bt_abort_pending_ops(void)
         return;
     }
 
+    if (scan_active) {
+        scan_active = false;
+        scan_done = true;
+    }
+
     ble_gap_disc_cancel();
     ble_gap_conn_cancel();
 
     if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-        conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        const uint16_t handle = conn_handle;
+        ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        if (conn_handle == handle) {
+            conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        }
     }
 
     serial_ready = false;
@@ -935,8 +945,18 @@ static int bt_run_scan_pass(int duration_ms, uint8_t addr_type, int passive)
 
     /* Poll more frequently for scan_done to catch devices faster */
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(duration_ms + 5000);
-    while (!scan_done && xTaskGetTickCount() < deadline) {
+    while (!scan_done && !op_abort && xTaskGetTickCount() < deadline) {
         vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    if (op_abort && !scan_done) {
+        scan_active = false;
+        ble_gap_disc_cancel();
+        if (scan_complete_sem != NULL) {
+            xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(1000));
+        }
+        ESP_LOGI(TAG, "BLE scan pass cancelled (%s)", passive ? "passive" : "active");
+        return BLE_HS_EAGAIN;
     }
 
     if (!scan_done) {
@@ -967,14 +987,13 @@ static int bt_run_scan(int duration_ms)
 
     scan_active = false;
     bt_abort_pending_ops();
+    op_abort = false;
+    connect_failed = false;
 
     if (scan_complete_sem != NULL) {
         xSemaphoreTake(scan_complete_sem, pdMS_TO_TICKS(2000));
     }
     vTaskDelay(pdMS_TO_TICKS(300));
-
-    op_abort = false;
-    connect_failed = false;
 
     scan_count = 0;
     memset(scan_buf, 0, sizeof(scan_buf));
@@ -983,18 +1002,29 @@ static int bt_run_scan(int duration_ms)
         duration_ms = BT_SCAN_DEFAULT_MS;
     }
 
-    static const bt_scan_pass_t passes[] = {
+    static const bt_scan_pass_t passes_full[] = {
         { BLE_OWN_ADDR_PUBLIC, 0, "PUBLIC active" },
         { BLE_OWN_ADDR_RANDOM, 0, "RANDOM active" },
         { BLE_OWN_ADDR_PUBLIC, 1, "PUBLIC passive" },
         { BLE_OWN_ADDR_RANDOM, 1, "RANDOM passive" },
         { BLE_OWN_ADDR_PUBLIC, 0, "PUBLIC active (extra)" },
     };
+    static const bt_scan_pass_t passes_quick[] = {
+        { BLE_OWN_ADDR_PUBLIC, 0, "PUBLIC active" },
+        { BLE_OWN_ADDR_RANDOM, 0, "RANDOM active" },
+        { BLE_OWN_ADDR_PUBLIC, 1, "PUBLIC passive" },
+    };
+
+    const bt_scan_pass_t *passes = passes_full;
+    int pass_count = (int)(sizeof(passes_full) / sizeof(passes_full[0]));
+    if (duration_ms <= 15000) {
+        passes = passes_quick;
+        pass_count = (int)(sizeof(passes_quick) / sizeof(passes_quick[0]));
+    }
 
     esp_coex_preference_set(ESP_COEX_PREFER_BT);
 
     int last_rc = 0;
-    const int pass_count = (int)(sizeof(passes) / sizeof(passes[0]));
     int per_pass_ms = duration_ms / pass_count;
     if (per_pass_ms < BT_SCAN_PASS_MIN_MS) {
         per_pass_ms = BT_SCAN_PASS_MIN_MS;
@@ -1123,14 +1153,21 @@ static bool bt_submit_cmd_ex(bt_cmd_msg_t *msg, TickType_t wait_ticks, bool to_f
         return false;
     }
 
-    msg->done = xSemaphoreCreateBinary();
-    if (msg->done == NULL) {
-        snprintf(bt_last_error, sizeof(bt_last_error), "Out of memory");
-        bt_cmd_last_completed = false;
-        bt_cmd_last_ok = false;
-        return false;
+    if (bt_cmd_done_sem == NULL) {
+        bt_cmd_done_sem = xSemaphoreCreateBinary();
+        if (bt_cmd_done_sem == NULL) {
+            snprintf(bt_last_error, sizeof(bt_last_error), "Out of memory");
+            bt_cmd_last_completed = false;
+            bt_cmd_last_ok = false;
+            return false;
+        }
     }
 
+    while (xSemaphoreTake(bt_cmd_done_sem, 0) == pdTRUE) {
+        /* drain stale completion signals */
+    }
+
+    msg->done = bt_cmd_done_sem;
     bt_cmd_last_completed = false;
     bt_cmd_last_ok = false;
 
@@ -1139,26 +1176,11 @@ static bool bt_submit_cmd_ex(bt_cmd_msg_t *msg, TickType_t wait_ticks, bool to_f
         : xQueueSend(bt_cmd_q, msg, pdMS_TO_TICKS(2000));
     if (queued != pdTRUE) {
         snprintf(bt_last_error, sizeof(bt_last_error), "BT command queue full");
-        vSemaphoreDelete(msg->done);
-        msg->done = NULL;
         bt_cmd_last_completed = false;
         return false;
     }
 
-    bool completed = false;
-    TickType_t remaining = wait_ticks;
-    while (remaining > 0) {
-        TickType_t slice = remaining > pdMS_TO_TICKS(500) ? pdMS_TO_TICKS(500) : remaining;
-        if (xSemaphoreTake(msg->done, slice) == pdTRUE) {
-            completed = true;
-            break;
-        }
-        remaining -= slice;
-    }
-    vSemaphoreDelete(msg->done);
-    msg->done = NULL;
-
-    if (!completed) {
+    if (xSemaphoreTake(bt_cmd_done_sem, wait_ticks) != pdTRUE) {
         snprintf(bt_last_error, sizeof(bt_last_error), "BT operation timeout");
         bt_cmd_last_completed = false;
         return false;
@@ -1337,7 +1359,14 @@ void bt_prepare_for_operation(void)
     bt_cmd_msg_t msg = {
         .id = BT_CMD_PREPARE,
     };
-    bt_submit_cmd_ex(&msg, pdMS_TO_TICKS(8000), true);
+    bt_submit_cmd_ex(&msg, pdMS_TO_TICKS(20000), true);
+}
+
+void bt_request_cancel_operations(void)
+{
+    op_abort = true;
+    bt_prepare_for_operation();
+    /* Leave op_abort set — long-running connect/scan loops exit promptly. */
 }
 
 void bt_shutdown_stack(void)
@@ -1415,10 +1444,17 @@ static bool bt_connect_auto_internal(void)
                 return true;
             }
         }
+        if (op_abort) {
+            return false;
+        }
     }
 
     if (bt_run_scan(BT_SCAN_DEFAULT_MS) != 0) {
         last_fail = BT_FAIL_SCAN;
+        return false;
+    }
+
+    if (op_abort) {
         return false;
     }
 
@@ -1435,6 +1471,9 @@ static bool bt_connect_auto_internal(void)
     }
 
     for (int i = 0; i < attempts; i++) {
+        if (op_abort) {
+            break;
+        }
         ble_addr_t addr;
         if (!bt_str_to_addr(scan_buf[i].addr, &addr)) {
             continue;
@@ -1464,12 +1503,15 @@ int bt_scan_devices(bt_device_info_t *list, int max_count, int duration_ms)
         duration_ms = BT_SCAN_DEFAULT_MS;
     }
 
+    bt_request_cancel_operations();
+
     bt_cmd_msg_t msg = {
         .id = BT_CMD_SCAN,
         .scan_duration_ms = duration_ms,
     };
 
-    if (!bt_submit_cmd_wait(&msg, pdMS_TO_TICKS(duration_ms + 45000))) {
+    const TickType_t wait_ticks = pdMS_TO_TICKS(duration_ms + 35000);
+    if (!bt_submit_cmd_ex(&msg, wait_ticks, true)) {
         last_fail = BT_FAIL_SCAN;
         conn_log_add("BLE scan failed: %s", bt_last_error[0] ? bt_last_error : "timeout");
         return 0;
@@ -1645,7 +1687,10 @@ void bt_save_device(const char *name, const char *addr_str, uint8_t addr_type)
         g_settings.bt_device_name[sizeof(g_settings.bt_device_name) - 1] = '\0';
     }
     g_settings.bt_addr_type = addr_type;
+    g_settings.bt_manual_mode = false;
+    g_settings.preferred_connection = CONN_TYPE_BLUETOOTH;
     settings_save(&g_settings);
+    ESP_LOGI("bt_mgr", "Saved BT profile: %s (%s)", g_settings.bt_device_name, g_settings.bt_device_addr);
 }
 
 bt_fail_stage_t bt_get_last_fail_stage(void)
@@ -1868,6 +1913,7 @@ bool bt_stack_is_ready(void) { return bt_initialized; }
 const char *bt_get_last_error(void) { return NULL; }
 void bt_shutdown_stack(void) { bt_disconnect(); }
 void bt_prepare_for_operation(void) {}
+void bt_request_cancel_operations(void) {}
 
 bool bt_link_up(void)
 {
@@ -2037,7 +2083,10 @@ void bt_save_device(const char *name, const char *addr_str, uint8_t addr_type)
         g_settings.bt_device_name[sizeof(g_settings.bt_device_name) - 1] = '\0';
     }
     g_settings.bt_addr_type = addr_type;
+    g_settings.bt_manual_mode = false;
+    g_settings.preferred_connection = CONN_TYPE_BLUETOOTH;
     settings_save(&g_settings);
+    ESP_LOGI("bt_mgr", "Saved BT profile: %s (%s)", g_settings.bt_device_name, g_settings.bt_device_addr);
 }
 
 bt_fail_stage_t bt_get_last_fail_stage(void) { return last_fail; }
@@ -2059,6 +2108,7 @@ bool bt_stack_is_ready(void) { return false; }
 const char *bt_get_last_error(void) { return "Bluetooth not supported"; }
 void bt_shutdown_stack(void) {}
 void bt_prepare_for_operation(void) {}
+void bt_request_cancel_operations(void) {}
 bool bt_link_up(void) { return false; }
 bool bt_obd_session_ready(void) { return false; }
 bool bt_connect_to_addr(const char *addr_str) { (void)addr_str; return false; }

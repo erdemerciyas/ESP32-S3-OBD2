@@ -26,7 +26,8 @@ bool connectivity_is_connected(void);
 connectivity_state_t connectivity_get_state(void);
 const char *connectivity_get_status_text(void);
 esp_err_t connectivity_auto_reconnect(void);
-esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found_count);
+esp_err_t connectivity_bt_scan(bt_device_info_t *list, int max_count, int *found_count,
+                             int duration_ms);
 esp_err_t connectivity_bt_connect_manual(const char *addr, const char *name, uint8_t addr_type);
 esp_err_t connectivity_bt_enable_auto_mode(void);
 esp_err_t connectivity_bt_disconnect(void);

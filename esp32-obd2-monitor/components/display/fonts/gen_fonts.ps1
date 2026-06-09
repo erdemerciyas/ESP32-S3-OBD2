@@ -32,9 +32,11 @@ foreach ($sz in @(12, 14, 16, 20)) {
 }
 
 $gaugeRange = "0x30-0x39,0x2E,0x2D"
-& node $conv --font $ttf --size 96 --bpp 4 --format lvgl --no-compress `
-    -o (Join-Path $dir "font_gauge_96.c") -r $gaugeRange --lv-font-name "font_gauge_96"
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+foreach ($pair in @(@(96, "font_gauge_96"), @(128, "font_gauge_128"))) {
+    & node $conv --font $ttf --size $pair[0] --bpp 4 --format lvgl --no-compress `
+        -o (Join-Path $dir ($pair[1] + ".c")) -r $gaugeRange --lv-font-name $pair[1]
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 
 foreach ($pair in @(@(24, "font_icons_24"), @(28, "font_icons_28"))) {
     & node $conv --font $fa -r $iconSolid --font $fab -r $iconBrand --size $pair[0] --bpp 4 --format lvgl --no-compress `
