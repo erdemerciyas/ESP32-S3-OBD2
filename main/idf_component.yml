@@ -1,0 +1,3 @@
+dependencies:
+  espressif/esp32_display_panel: "^1.0"
+  lvgl/lvgl: "^8"

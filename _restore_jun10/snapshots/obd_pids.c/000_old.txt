@@ -1,0 +1,2 @@
+#define VOLTAGE_MIN_V      9.5f
+#define VOLTAGE_MAX_V      15.0f

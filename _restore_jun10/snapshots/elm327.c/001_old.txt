@@ -1,0 +1,63 @@
+static void elm327_run_init(void)
+{
+    const vehicle_profile_t *profile = vehicle_profile_get();
+    const char *full_cmds[] = {
+        "ATZ",
+        "ATE0",
+        "ATL0",
+        "ATS0",
+        "ATH0",
+        profile->init_protocol_cmd,
+        profile->init_timeout_cmd,
+        "ATAT1",
+    };
+    const char *quick_cmds[] = {
+        "ATE0",
+        "ATL0",
+        "ATS0",
+        "ATH0",
+        profile->init_protocol_cmd,
+        profile->init_timeout_cmd,
+        "ATAT1",
+    };
+    const char **cmds;
+    size_t cmd_count;
+    uint32_t atz_delay_ms;
+
+    s_state = ELM_STATE_INIT;
+    vehicle_data_clear_supported_pids();
+
+    if (s_elm_configured) {
+        cmds = quick_cmds;
+        cmd_count = sizeof(quick_cmds) / sizeof(quick_cmds[0]);
+        atz_delay_ms = 0;
+        vehicle_data_set_state(OBD_STATE_ELM_INIT, "Initializing adapter...");
+    } else {
+        cmds = full_cmds;
+        cmd_count = sizeof(full_cmds) / sizeof(full_cmds[0]);
+        atz_delay_ms = 900;
+        vehicle_data_set_state(OBD_STATE_ELM_INIT, "Starting ELM327...");
+    }
+
+    for (size_t i = 0; i < cmd_count; i++) {
+        if (!send_raw(cmds[i])) {
+            s_state = ELM_STATE_ERROR;
+            vehicle_data_set_state(OBD_STATE_ERROR, "ELM327 send failed");
+            app_log_error(TAG, "Send failed during init: %s", cmds[i]);
+            return;
+        }
+        if (i == 0 && atz_delay_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(atz_delay_ms));
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(40));
+        }
+        if (!wait_response(2000)) {
+            ESP_LOGW(TAG, "Timeout on %s", cmds[i]);
+        }
+    }
+
+    s_elm_configured = true;
+    s_state = ELM_STATE_READY;
+    vehicle_data_set_state(OBD_STATE_READY, "Connected");
+    app_log_info(TAG, "Init complete (%s / %s)", profile->display_name, profile->protocol);
+}

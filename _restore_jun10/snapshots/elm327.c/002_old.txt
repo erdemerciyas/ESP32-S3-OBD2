@@ -1,0 +1,4 @@
+        if (!ble_obd_is_connected()) {
+            s_state = ELM_STATE_IDLE;
+            s_elm_configured = false;
+            s_rx_len = 0;

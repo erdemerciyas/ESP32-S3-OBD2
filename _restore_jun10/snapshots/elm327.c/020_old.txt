@@ -1,0 +1,10 @@
+        if (s_state == ELM_STATE_ERROR) {
+            s_state = ELM_STATE_IDLE;
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        if (s_state == ELM_STATE_IDLE) {
+            elm327_run_init();
+            continue;
+        }

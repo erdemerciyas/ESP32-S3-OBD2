@@ -1,0 +1,22 @@
+---
+description: Bluetooth ELM327 bağlantı stabilitesini koruma kuralı
+globs: main/obd/**/*
+alwaysApply: false
+---
+
+# OBD ELM327 ↔ ESP32-S3 — Dokunulmaz Bağlantı
+
+OBD portuna takılı ELM327 Bluetooth okuyucu, ESP32-S3 ile **sorunsuz iletişim kuruyor ve sorunsuz bağlanıyor**. Sonraki süreçlerde bu davranış **asla kaybedilmemeli**; bozacak değişiklikler yapma.
+
+## Korunan modüller
+
+- `main/obd/ble_obd.c` — tarama, bağlantı, GATT, yeniden bağlanma
+- `main/obd/elm327.c` — komut kuyruğu, yanıt işleme, zaman aşımı
+
+## Geliştirme sırasında
+
+- Üst katmanlarda (UI, PID, DTC) çalışırken BLE/ELM327 kodunu gereksiz yere değiştirme.
+- Zorunlu değişiklikte minimal diff kullan; bağlantı + yeniden bağlanma + PID okumayı test et.
+- Zaman aşımı, UUID profilleri, NVS adres kaydı ve komut önceliğini keyfi değiştirme.
+
+Detaylı kural ve dipnot: `docs/GELISTIRME_KURALLARI.md`

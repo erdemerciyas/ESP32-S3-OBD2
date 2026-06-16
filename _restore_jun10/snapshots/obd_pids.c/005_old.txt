@@ -1,0 +1,1 @@
+static bool s_discovery_done;

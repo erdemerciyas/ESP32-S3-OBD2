@@ -1,0 +1,10 @@
+static void on_gatt_ready(uint16_t conn_handle)
+{
+    if (s_notify_handle && s_write_handle) {
+        app_log_info(TAG, "GATT ready notify=0x%04X write=0x%04X", s_notify_handle, s_write_handle);
+        s_state = BLE_OBD_CONNECTED;
+    } else {
+        app_log_error(TAG, "Required characteristics not found");
+        ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    }
+}

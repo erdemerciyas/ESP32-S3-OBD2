@@ -1,0 +1,2 @@
+    esp_timer_create(&reconnect_args, &s_reconnect_timer);
+    esp_timer_create(&connect_args, &s_connect_timer);

@@ -1,0 +1,7 @@
+static void query_vehicle_info(void)
+{
+    char resp[128];
+
+    vehicle_data_clear_vehicle_info();
+
+    if (elm327_send_cmd_sync("ATDP", resp, sizeof(resp), 3000)) {

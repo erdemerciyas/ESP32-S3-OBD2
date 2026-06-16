@@ -1,0 +1,4 @@
+static bool s_elm_configured;
+static int s_init_fail_count;
+
+static bool init_cmd_critical(const char *cmd)

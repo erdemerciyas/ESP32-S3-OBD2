@@ -1,0 +1,4 @@
+void elm327_on_rx_data(const uint8_t *data, size_t len)
+{
+    elm327_on_rx(data, len);
+}

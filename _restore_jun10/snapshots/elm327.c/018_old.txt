@@ -1,0 +1,69 @@
+static void elm327_run_init(void)
+{
+    const vehicle_profile_t *profile = vehicle_profile_get();
+    const char *full_cmds[] = {
+        "ATZ",
+        "ATE0",
+        "ATL0",
+        "ATS0",
+        "ATH0",
+        profile->init_protocol_cmd,
+        profile->init_timeout_cmd,
+        "ATAT1",
+    };
+    size_t cmd_count = sizeof(full_cmds) / sizeof(full_cmds[0]);
+    bool atz_ok = false;
+
+    s_state = ELM_STATE_INIT;
+    vehicle_data_clear_supported_pids();
+    s_elm_configured = false;
+
+    vehicle_data_set_state(OBD_STATE_ELM_INIT, "Starting ELM327...");
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    for (size_t i = 0; i < cmd_count; i++) {
+        const char *cmd = full_cmds[i];
+        uint32_t timeout_ms = init_cmd_timeout_ms(cmd, profile->init_protocol_cmd);
+        uint32_t pre_delay_ms = (i == 0) ? 1200 : 60;
+        int attempts = (strcmp(cmd, "ATZ") == 0) ? 3 : 1;
+        char step_msg[48];
+        snprintf(step_msg, sizeof(step_msg), "ELM327: %s", cmd);
+        vehicle_data_set_state(OBD_STATE_ELM_INIT, step_msg);
+
+        if (!send_init_cmd(cmd, timeout_ms, pre_delay_ms, attempts)) {
+            if (init_cmd_critical(cmd)) {
+                s_init_fail_count++;
+                if (s_init_fail_count >= 3) {
+                    s_state = ELM_STATE_IDLE;
+                    s_init_fail_count = 0;
+                    vehicle_data_set_state(OBD_STATE_ELM_INIT, "Retrying adapter...");
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                } else {
+                    s_state = ELM_STATE_IDLE;
+                    char msg[48];
+                    snprintf(msg, sizeof(msg), "Retrying ELM327 (%d/3)...", s_init_fail_count);
+                    vehicle_data_set_state(OBD_STATE_ELM_INIT, msg);
+                    vTaskDelay(pdMS_TO_TICKS(1500));
+                }
+                return;
+            }
+            app_log_warn(TAG, "Non-critical init timeout on %s, continuing", cmd);
+        } else if (strcmp(cmd, "ATZ") == 0) {
+            atz_ok = true;
+        }
+    }
+
+    if (!atz_ok) {
+        s_init_fail_count++;
+        s_state = ELM_STATE_IDLE;
+        vehicle_data_set_state(OBD_STATE_ELM_INIT, "Waiting for adapter...");
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        return;
+    }
+
+    s_init_fail_count = 0;
+    s_elm_configured = true;
+    s_state = ELM_STATE_READY;
+    vehicle_data_set_state(OBD_STATE_PID_DISCOVERY, "Discovering PIDs...");
+    app_log_info(TAG, "Init complete (%s / %s)", profile->display_name, profile->protocol);
+}

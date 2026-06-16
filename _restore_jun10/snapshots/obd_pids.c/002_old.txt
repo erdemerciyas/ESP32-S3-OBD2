@@ -1,0 +1,12 @@
+    /* Always try PID 0x42 (ECU control-module voltage from CAN bus) first.
+     * If the ECU responds with NO DATA / ERROR, voltage_pid_cb sets
+     * s_use_atrv = true and the next poll will fall through to ATRV. */
+    if (!s_use_atrv) {
+        if (elm327_send_cmd_prio("0142", voltage_pid_cb, NULL, profile->slow_timeout_ms, true)) {
+            s_voltage_last = now;
+            return true;
+        }
+        /* queue full; try ATRV as immediate fallback */
+    }
+
+    /* ATRV fallback: reads ELM327 adapter voltage (with atrv_voltage_scale correction) */
