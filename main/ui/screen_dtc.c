@@ -38,8 +38,23 @@ static void request_scan_if_needed(bool visible, bool connected)
 void screen_dtc_create(lv_obj_t *parent)
 {
     const ui_theme_t *t = theme_get();
+    const lv_coord_t y_top = UI_PAD_TOP;
+    const lv_coord_t btn_b = UI_VIEWPORT_SZ - UI_STAT_BOTTOM_OFF;
+    const lv_coord_t btn_t = btn_b - UI_BTN_H;
+    const lv_coord_t safe_w = theme_safe_width(y_top, btn_b);
 
-    lv_obj_t *hdr_row = theme_create_flex_row(parent);
+    lv_obj_t *wrap = lv_obj_create(parent);
+    lv_obj_set_width(wrap, safe_w);
+    lv_obj_set_height(wrap, btn_t - y_top);
+    lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, y_top);
+    lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(wrap, 0, 0);
+    lv_obj_set_style_pad_all(wrap, 0, 0);
+    lv_obj_set_style_pad_row(wrap, UI_GAP, 0);
+    lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hdr_row = theme_create_flex_row(wrap);
     lv_obj_set_height(hdr_row, LV_SIZE_CONTENT);
     lv_obj_set_flex_align(hdr_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -53,16 +68,16 @@ void screen_dtc_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(s_count_label, t->font_sm, 0);
     lv_obj_set_style_text_color(s_count_label, t->text_dim, 0);
 
-    s_status_label = lv_label_create(parent);
+    s_status_label = lv_label_create(wrap);
     lv_label_set_text(s_status_label, "");
     lv_obj_set_width(s_status_label, LV_PCT(100));
     lv_obj_set_style_text_font(s_status_label, t->font_sm, 0);
     lv_obj_set_style_text_color(s_status_label, t->text_dim, 0);
     lv_obj_set_style_text_align(s_status_label, LV_TEXT_ALIGN_CENTER, 0);
 
-    s_list = lv_obj_create(parent);
+    s_list = lv_obj_create(wrap);
     lv_obj_set_width(s_list, LV_PCT(100));
-    lv_obj_set_height(s_list, UI_VIEWPORT_SZ - UI_PAD_TOP - UI_DOT_H - UI_BTN_H - 56);
+    lv_obj_set_flex_grow(s_list, 1);
     theme_apply_card(s_list);
     lv_obj_set_style_pad_all(s_list, 6, 0);
     lv_obj_set_style_pad_row(s_list, 2, 0);
@@ -73,10 +88,10 @@ void screen_dtc_create(lv_obj_t *parent)
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t *btn_row = theme_create_flex_row(parent);
-    lv_obj_set_width(btn_row, LV_PCT(100));
+    lv_obj_set_width(btn_row, theme_safe_width(btn_t, btn_b));
     lv_obj_set_height(btn_row, UI_BTN_H - 4);
     lv_obj_add_flag(btn_row, LV_OBJ_FLAG_FLOATING);
-    lv_obj_align(btn_row, LV_ALIGN_BOTTOM_MID, 0, -(UI_STAT_LIFT + UI_DOT_H));
+    lv_obj_align(btn_row, LV_ALIGN_BOTTOM_MID, 0, UI_FLOAT_BOTTOM_Y);
 
     lv_obj_t *refresh_btn = lv_btn_create(btn_row);
     lv_obj_set_size(refresh_btn, LV_PCT(48), UI_BTN_H - 8);

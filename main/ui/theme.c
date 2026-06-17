@@ -1,22 +1,23 @@
 #include "theme.h"
 #include "vehicle_data.h"
+#include <math.h>
 
 extern const lv_font_t lv_font_montserrat_56;
 extern const lv_font_t lv_font_montserrat_94_bold;
 
 static ui_theme_t s_theme = {
-    .bg         = LV_COLOR_MAKE(0x04, 0x08, 0x0C),
-    .surface    = LV_COLOR_MAKE(0x0C, 0x14, 0x1E),
-    .surface_hi = LV_COLOR_MAKE(0x14, 0x1E, 0x2C),
+    .bg         = LV_COLOR_MAKE(0x02, 0x06, 0x0A),
+    .surface    = LV_COLOR_MAKE(0x0A, 0x12, 0x1C),
+    .surface_hi = LV_COLOR_MAKE(0x12, 0x1C, 0x2A),
     .primary    = LV_COLOR_MAKE(0x00, 0xD4, 0xAA),
     .secondary  = LV_COLOR_MAKE(0x38, 0xBD, 0xF8),
-    .text       = LV_COLOR_MAKE(0xF1, 0xF5, 0xF9),
-    .text_dim   = LV_COLOR_MAKE(0x8B, 0x9A, 0xB0),
+    .text       = LV_COLOR_MAKE(0xF8, 0xFA, 0xFC),
+    .text_dim   = LV_COLOR_MAKE(0x7A, 0x8A, 0xA2),
     .ok         = LV_COLOR_MAKE(0x22, 0xC5, 0x5E),
     .warn       = LV_COLOR_MAKE(0xFA, 0xCC, 0x15),
     .crit       = LV_COLOR_MAKE(0xEF, 0x44, 0x44),
-    .arc_bg     = LV_COLOR_MAKE(0x16, 0x20, 0x30),
-    .border     = LV_COLOR_MAKE(0x20, 0x30, 0x44),
+    .arc_bg     = LV_COLOR_MAKE(0x0E, 0x18, 0x24),
+    .border     = LV_COLOR_MAKE(0x1C, 0x2A, 0x3C),
     .font_sm    = &lv_font_montserrat_16,
     .font_md    = &lv_font_montserrat_20,
     .font_lg    = &lv_font_montserrat_28,
@@ -29,6 +30,35 @@ static ui_theme_t s_theme = {
 const ui_theme_t *theme_get(void)
 {
     return &s_theme;
+}
+
+lv_coord_t ui_chord_width_at_y(lv_coord_t y_tab)
+{
+    const lv_coord_t cy = UI_CIRCLE_CY;
+    const lv_coord_t r = (UI_VIEWPORT_SZ / 2) - UI_SAFE_MARGIN;
+    lv_coord_t dy = y_tab - cy;
+
+    if (dy < 0) {
+        dy = -dy;
+    }
+    if (dy >= r) {
+        return 0;
+    }
+
+    float hw = sqrtf((float)(r * r - dy * dy));
+    return (lv_coord_t)(hw * 2.0f);
+}
+
+lv_coord_t theme_safe_width(lv_coord_t y_top, lv_coord_t y_bottom)
+{
+    lv_coord_t w_top = ui_chord_width_at_y(y_top);
+    lv_coord_t w_bot = ui_chord_width_at_y(y_bottom);
+    lv_coord_t w = w_top;
+
+    if (w_bot < w) {
+        w = w_bot;
+    }
+    return w;
 }
 
 lv_color_t theme_threshold_color(threshold_level_t level)

@@ -723,6 +723,7 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)lv_drivers\win_drv.c" />
     <ClCompile Include="LVGL.Simulator.cpp" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\obd2_dashboard\app_main.c" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\obd2_dashboard\round_mask.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\obd2_dashboard\demo_feed.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\obd2_dashboard\vehicle_data_sim.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\data\vehicle_profile.c" />
@@ -736,6 +737,8 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_grid.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_dtc.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_settings.c" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_56.c" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_94_bold.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="LVGL.Simulator.rc" />

@@ -14,7 +14,7 @@
 #define UI_VIEWPORT_SZ  (UI_PANEL_D - UI_BEZEL * 2)
 #define UI_TAB_H        0
 #define UI_DOT_H        18
-#define UI_DOT_BAR_LIFT 10
+#define UI_DOT_BAR_LIFT 24
 #define UI_TAB_BAR_LIFT 0
 #define UI_STAT_LIFT    18
 #define UI_PAD_HOR      10
@@ -22,15 +22,23 @@
 #define UI_PAD_BOT      6
 #define UI_GAP          6
 
-#define UI_GAUGE_SZ         420
-#define UI_GAUGE_ARC_W      18
-#define UI_GAUGE_CENTER_W   350
-#define UI_GAUGE_CENTER_H   240
-#define UI_STAT_H           74
-#define UI_SCAN_ARC_SZ  142
-#define UI_BTN_H        42
-#define UI_SETTING_ROW_H  40
-#define UI_SETTING_GAP    6
+/* Round-panel layout (visible circle R = UI_VIEWPORT_SZ / 2, center in tab) */
+#define UI_CIRCLE_CY          (UI_VIEWPORT_SZ / 2)
+#define UI_SAFE_MARGIN        10
+#define UI_GAUGE_ARC_W        18
+#define UI_GAUGE_SZ           (UI_VIEWPORT_SZ - UI_GAUGE_ARC_W)
+#define UI_GAUGE_Y_OFF        -10   /* slight lift; keep inside tab bounds */
+#define UI_STAT_H             68
+#define UI_STAT_BOTTOM_OFF    68
+#define UI_BT_ICON_Y          20
+#define UI_FLOAT_BOTTOM_Y     (-(UI_STAT_BOTTOM_OFF))
+#define UI_SCAN_ARC_SZ        142
+#define UI_BTN_H              42
+#define UI_SETTING_ROW_H      40
+#define UI_SETTING_GAP        6
+
+lv_coord_t ui_chord_width_at_y(lv_coord_t y_tab);
+lv_coord_t theme_safe_width(lv_coord_t y_top, lv_coord_t y_bottom);
 
 typedef struct {
     lv_color_t bg;

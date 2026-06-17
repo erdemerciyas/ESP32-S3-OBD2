@@ -3,6 +3,11 @@
 #include "vehicle_data.h"
 #include "ble_obd.h"
 #include <stdio.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
 
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_device_label;
@@ -22,6 +27,8 @@ void screen_connect_create(lv_obj_t *parent)
     theme_create_header(parent, "Connection");
 
     lv_obj_t *body = theme_create_flex_col(parent, true);
+    lv_obj_set_width(body, theme_safe_width(UI_PAD_TOP + 40,
+                                           UI_VIEWPORT_SZ - UI_STAT_BOTTOM_OFF));
     lv_obj_set_flex_align(body, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(body, 6, 0);
 
@@ -64,10 +71,14 @@ void screen_connect_create(lv_obj_t *parent)
     lv_obj_set_width(s_device_label, LV_PCT(100));
 
     s_scan_btn = lv_btn_create(parent);
-    lv_obj_set_width(s_scan_btn, LV_PCT(100));
+    {
+        const lv_coord_t btn_b = UI_VIEWPORT_SZ - UI_STAT_BOTTOM_OFF;
+        const lv_coord_t btn_t = btn_b - UI_BTN_H;
+        lv_obj_set_width(s_scan_btn, theme_safe_width(btn_t, btn_b));
+    }
     lv_obj_set_height(s_scan_btn, UI_BTN_H);
     lv_obj_add_flag(s_scan_btn, LV_OBJ_FLAG_FLOATING);
-    lv_obj_align(s_scan_btn, LV_ALIGN_BOTTOM_MID, 0, -(UI_STAT_LIFT + UI_DOT_H));
+    lv_obj_align(s_scan_btn, LV_ALIGN_BOTTOM_MID, 0, UI_FLOAT_BOTTOM_Y);
     lv_obj_set_style_bg_color(s_scan_btn, t->surface_hi, 0);
     lv_obj_set_style_border_color(s_scan_btn, t->primary, 0);
     lv_obj_set_style_border_width(s_scan_btn, 1, 0);
@@ -99,8 +110,15 @@ void screen_connect_update(void)
         vd->state == OBD_STATE_CONNECTING ||
         vd->state == OBD_STATE_ELM_INIT ||
         vd->state == OBD_STATE_PID_DISCOVERY) {
-        anim_val = (anim_val + 10) % 270;
+        /* Smooth sine-wave sweep animation (270° range, ~1.2s period) */
+        uint32_t now = lv_tick_get();
+        float phase = (now % 1200) / 1200.0f;
+        float angle = (sinf(phase * 2.0f * M_PI - M_PI / 2.0f) + 1.0f) * 0.5f;
+        anim_val = (int)(angle * 270.0f);
         lv_arc_set_value(s_scan_arc, anim_val);
+        /* Pulse arc width: 8..14 during scanning */
+        int w = 8 + (int)(angle * 6.0f);
+        lv_obj_set_style_arc_width(s_scan_arc, (lv_coord_t)w, LV_PART_INDICATOR);
         if (vd->state == OBD_STATE_ELM_INIT || vd->state == OBD_STATE_PID_DISCOVERY) {
             lv_obj_set_style_arc_color(s_scan_arc, t->primary, LV_PART_INDICATOR);
         } else {
@@ -108,9 +126,11 @@ void screen_connect_update(void)
         }
     } else if (vd->state == OBD_STATE_READY) {
         lv_arc_set_value(s_scan_arc, 270);
+        lv_obj_set_style_arc_width(s_scan_arc, 10, LV_PART_INDICATOR);
         lv_obj_set_style_arc_color(s_scan_arc, t->ok, LV_PART_INDICATOR);
     } else {
         lv_arc_set_value(s_scan_arc, 0);
+        lv_obj_set_style_arc_width(s_scan_arc, 10, LV_PART_INDICATOR);
         lv_obj_set_style_arc_color(s_scan_arc, t->primary, LV_PART_INDICATOR);
     }
 }

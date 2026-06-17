@@ -16,12 +16,39 @@
 
 static const char *TAG = "obd_pids";
 
-#define VOLTAGE_POLL_MS    1500
+#define VOLTAGE_POLL_MS    1000
 #define VOLTAGE_MIN_V      9.0f
 #define VOLTAGE_MAX_V      15.5f
-#define ATRV_TIMEOUT_MS    1500
+#define ATRV_TIMEOUT_MS    1200
+
+/* EMA filter: lower = smoother (0.3 gives ~3-sample averaging effect) */
+#define VOLTAGE_EMA_ALPHA  0.30f
+/* Reject readings that deviate more than this from filtered value */
+#define VOLTAGE_SPIKE_MAX  0.60f
+/* Accept larger jump on first valid reading (cold start) */
+#define VOLTAGE_INIT_JUMP  3.0f
 #define POLL_TASK_STACK   4096
-#define POLL_TASK_PRIO    4
+#define POLL_TASK_PRIO    6
+
+/* Value range limits for spike filtering */
+#define RPM_MIN            0.0f
+#define RPM_MAX            8000.0f
+#define SPEED_MIN          0.0f
+#define SPEED_MAX          300.0f
+#define TEMP_MIN           -40.0f
+#define TEMP_MAX           150.0f
+#define PCT_MIN            0.0f
+#define PCT_MAX            100.0f
+#define MAP_MIN            0.0f
+#define MAP_MAX            260.0f
+#define TIMING_MIN         -64.0f
+#define TIMING_MAX         64.0f
+#define TRIM_MIN           -100.0f
+#define TRIM_MAX           100.0f
+#define O2_VOLT_MIN        0.0f
+#define O2_VOLT_MAX        1.5f
+
+static float clampf(float val, float lo, float hi);
 
 typedef struct {
     char cmd[8];
@@ -42,6 +69,11 @@ static uint32_t s_disc_sent_at;
 static bool s_use_atrv;
 static uint32_t s_voltage_last;
 static uint32_t s_dtc_last;
+
+/* Voltage EMA filter state */
+static float s_voltage_filtered;
+static bool  s_voltage_filter_init;
+static uint8_t s_voltage_spike_count;
 
 static pid_entry_t s_live_entries[8];
 static pid_entry_t s_fast_entries[12];
@@ -129,56 +161,56 @@ static float decode_rpm(const char *hex)
 {
     int a = 0, b = 0;
     sscanf(hex, "%2x%2x", &a, &b);
-    return ((a * 256.0f) + b) / 4.0f;
+    return clampf(((a * 256.0f) + b) / 4.0f, RPM_MIN, RPM_MAX);
 }
 
 static float decode_speed(const char *hex)
 {
     int a = 0;
     sscanf(hex, "%2x", &a);
-    return (float)a;
+    return clampf((float)a, SPEED_MIN, SPEED_MAX);
 }
 
 static float decode_temp(const char *hex)
 {
     int a = 0;
     sscanf(hex, "%2x", &a);
-    return (float)a - 40.0f;
+    return clampf((float)a - 40.0f, TEMP_MIN, TEMP_MAX);
 }
 
 static float decode_pct(const char *hex)
 {
     int a = 0;
     sscanf(hex, "%2x", &a);
-    return a * 100.0f / 255.0f;
+    return clampf(a * 100.0f / 255.0f, PCT_MIN, PCT_MAX);
 }
 
 static float decode_map(const char *hex)
 {
     int a = 0;
     sscanf(hex, "%2x", &a);
-    return (float)a;
+    return clampf((float)a, MAP_MIN, MAP_MAX);
 }
 
 static float decode_timing(const char *hex)
 {
     int a = 0;
     sscanf(hex, "%2x", &a);
-    return (a / 2.0f) - 64.0f;
+    return clampf((a / 2.0f) - 64.0f, TIMING_MIN, TIMING_MAX);
 }
 
 static float decode_trim(const char *hex)
 {
     int a = 0;
     sscanf(hex, "%2x", &a);
-    return ((a - 128.0f) * 100.0f) / 128.0f;
+    return clampf(((a - 128.0f) * 100.0f) / 128.0f, TRIM_MIN, TRIM_MAX);
 }
 
 static float decode_o2_voltage(const char *hex)
 {
     int a = 0;
     sscanf(hex, "%2x", &a);
-    return a * 0.005f;
+    return clampf(a * 0.005f, O2_VOLT_MIN, O2_VOLT_MAX);
 }
 
 static float decode_voltage_ecu(const char *hex)
@@ -188,24 +220,77 @@ static float decode_voltage_ecu(const char *hex)
     return ((a * 256.0f) + b) / 1000.0f;
 }
 
+static float clampf(float val, float lo, float hi)
+{
+    if (val < lo) return lo;
+    if (val > hi) return hi;
+    return val;
+}
+
 static bool voltage_valid(float v)
 {
     return v >= VOLTAGE_MIN_V && v <= VOLTAGE_MAX_V;
 }
 
+/**
+ * Apply EMA filter + spike rejection to raw voltage.
+ * Returns true if the value was accepted and stored.
+ */
+static bool voltage_filter_apply(float raw)
+{
+    if (!s_voltage_filter_init) {
+        /* First valid reading — seed the filter directly */
+        s_voltage_filtered = raw;
+        s_voltage_filter_init = true;
+        s_voltage_spike_count = 0;
+        return true;
+    }
+
+    float diff = raw - s_voltage_filtered;
+    if (diff < 0) diff = -diff;
+
+    /* Spike rejection: if reading is too far from filtered, reject it.
+     * Allow up to 3 consecutive spikes before resetting the filter
+     * (handles genuine rapid changes like engine start). */
+    if (diff > VOLTAGE_SPIKE_MAX) {
+        s_voltage_spike_count++;
+        if (s_voltage_spike_count < 3) {
+            app_log_warn(TAG, "Voltage spike rejected: %.2fV (filtered=%.2fV, diff=%.2fV)",
+                         raw, s_voltage_filtered, diff);
+            return false;
+        }
+        /* 3+ consecutive spikes: accept as real change, reset filter */
+        app_log_info(TAG, "Voltage filter reset: %.2fV -> %.2fV (forced)",
+                     s_voltage_filtered, raw);
+        s_voltage_filtered = raw;
+        s_voltage_spike_count = 0;
+        return true;
+    }
+
+    /* Normal EMA update */
+    s_voltage_filtered = s_voltage_filtered + VOLTAGE_EMA_ALPHA * (raw - s_voltage_filtered);
+    s_voltage_spike_count = 0;
+    return true;
+}
+
 static void set_voltage(float v, const char *source)
 {
     if (!voltage_valid(v)) {
-        app_log_warn(TAG, "Reject voltage %.2fV from %s", v, source);
+        app_log_warn(TAG, "Reject voltage %.2fV from %s (out of range)", v, source);
         return;
     }
+    if (!voltage_filter_apply(v)) {
+        return;
+    }
+
     vehicle_data_t *vd = vehicle_data_get();
     vehicle_data_lock();
     float prev = vd->voltage;
-    vd->voltage = v;
+    vd->voltage = s_voltage_filtered;
     vehicle_data_unlock();
-    if (prev < 0.1f || (v > prev + 0.04f) || (v < prev - 0.04f)) {
-        app_log_info(TAG, "Voltage %.2fV (%s)", v, source);
+
+    if (prev < 0.1f || (s_voltage_filtered > prev + 0.03f) || (s_voltage_filtered < prev - 0.03f)) {
+        app_log_info(TAG, "Voltage %.2fV raw=%.2fV (%s)", s_voltage_filtered, v, source);
     }
 }
 
@@ -229,39 +314,33 @@ static bool response_is_error(const char *resp)
            strstr(resp, "ERROR") != NULL;
 }
 
+/**
+ * Parse ATRV voltage response from ELM327.
+ * Typical responses: "14.8V", "14.8", " 14.8V\r\n"
+ * Returns 0.0f on parse failure.
+ */
 static float parse_atrv_voltage(const char *resp)
 {
     if (!resp || resp[0] == '\0') {
         return 0.0f;
     }
 
-    char line[48];
-    size_t len = 0;
-    while (resp[len] && resp[len] != '\r' && resp[len] != '\n' && len < sizeof(line) - 1) {
-        line[len] = resp[len];
-        len++;
-    }
-    line[len] = '\0';
-
-    char *start = line;
-    while (*start && isspace((unsigned char)*start)) {
-        start++;
-    }
-    size_t slen = strlen(start);
-    while (slen > 0 && (start[slen - 1] == 'V' || start[slen - 1] == 'v' ||
-                        isspace((unsigned char)start[slen - 1]))) {
-        start[--slen] = '\0';
+    /* Skip leading whitespace */
+    const char *p = resp;
+    while (*p && isspace((unsigned char)*p)) {
+        p++;
     }
 
+    /* Parse the float value directly — stop at V/v or whitespace */
     float v = 0.0f;
-    if (sscanf(start, "%f", &v) != 1) {
+    if (sscanf(p, "%f", &v) != 1) {
         return 0.0f;
     }
 
+    /* Apply calibration scale if configured */
     const vehicle_profile_t *profile = vehicle_profile_get();
     if (profile->use_atrv_voltage && profile->atrv_voltage_scale > 0.0f &&
         profile->atrv_voltage_scale != 1.0f) {
-        /* Clone ELM327 ATRV reads consistently high — always apply scale. */
         v *= profile->atrv_voltage_scale;
     }
 
@@ -363,24 +442,12 @@ static void voltage_pid_cb(const char *resp, void *user_data)
 static void atrv_response_cb(const char *resp, void *user_data)
 {
     (void)user_data;
-    float raw = 0.0f;
-    if (resp && resp[0] != '\0') {
-        char line[48];
-        size_t len = 0;
-        while (resp[len] && resp[len] != '\r' && resp[len] != '\n' && len < sizeof(line) - 1) {
-            line[len] = resp[len];
-            len++;
-        }
-        line[len] = '\0';
-        sscanf(line, "%f", &raw);
-    }
-
     float v = parse_atrv_voltage(resp);
     if (voltage_valid(v)) {
         set_voltage(v, "ATRV");
         return;
     }
-    app_log_warn(TAG, "ATRV parse failed raw=%.2fV resp=%s", raw, resp ? resp : "(null)");
+    app_log_warn(TAG, "ATRV parse failed resp=%s", resp ? resp : "(null)");
 }
 
 static void parse_supported_pids(const char *resp, int block)
@@ -419,7 +486,7 @@ static void discover_cb(const char *resp, void *user_data)
     s_disc_busy = false;
 }
 
-static const uint8_t s_dash_pids[] = { 0x0C, 0x0C, 0x0D, 0x0C, 0x05 };
+static const uint8_t s_dash_pids[] = { 0x0C, 0x0D, 0x05 };
 static const uint8_t s_grid_pids[] = { 0x11, 0x0B, 0x04, 0x0F, 0x0E, 0x06, 0x07, 0x14, 0x15 };
 
 static pid_entry_t *find_entry_by_pid(uint8_t pid)
@@ -502,6 +569,8 @@ static bool poll_voltage(uint32_t now)
 
 static bool run_dash_poll(uint32_t now)
 {
+    /* Priority order: RPM (50ms) -> Speed (100ms) -> Coolant (500ms).
+     * Try each in order; first one that's due and can queue wins. */
     for (size_t n = 0; n < sizeof(s_dash_pids) / sizeof(s_dash_pids[0]); n++) {
         size_t idx = (s_dash_slot + n) % (sizeof(s_dash_pids) / sizeof(s_dash_pids[0]));
         if (poll_entry_by_pid(s_dash_pids[idx], now, true)) {
@@ -552,6 +621,9 @@ static void poll_task(void *arg)
             s_disc_busy = false;
             s_discovery_done = false;
             s_use_atrv = profile->use_atrv_voltage;
+            s_voltage_filter_init = false;
+            s_voltage_filtered = 0.0f;
+            s_voltage_spike_count = 0;
             obd_dtc_reset();
             init_poll_entries();
             vTaskDelay(pdMS_TO_TICKS(50));

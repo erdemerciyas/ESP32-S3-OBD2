@@ -2,8 +2,10 @@
 #include "theme.h"
 #include "vehicle_data.h"
 #include <stdio.h>
+#include <string.h>
 
 static lv_obj_t *s_values[9];
+static char s_prev_grid[9][24];
 
 static const char *s_names[] = {
     "TPS", "MAP", "Load",
@@ -13,9 +15,24 @@ static const char *s_names[] = {
 
 void screen_grid_create(lv_obj_t *parent)
 {
-    theme_create_header(parent, "Live Data");
+    const lv_coord_t y_top = UI_PAD_TOP + 34;
+    const lv_coord_t y_bottom = UI_VIEWPORT_SZ - UI_STAT_BOTTOM_OFF;
+    const lv_coord_t safe_w = theme_safe_width(y_top, y_bottom);
 
-    lv_obj_t *grid = theme_create_flex_col(parent, true);
+    lv_obj_t *wrap = lv_obj_create(parent);
+    lv_obj_set_width(wrap, safe_w);
+    lv_obj_set_height(wrap, y_bottom - y_top);
+    lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, y_top);
+    lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(wrap, 0, 0);
+    lv_obj_set_style_pad_all(wrap, 0, 0);
+    lv_obj_set_style_pad_row(wrap, UI_GAP, 0);
+    lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+
+    theme_create_header(wrap, "Live Data");
+
+    lv_obj_t *grid = theme_create_flex_col(wrap, true);
 
     int idx = 0;
     for (int r = 0; r < 3; r++) {
@@ -34,32 +51,26 @@ void screen_grid_update(void)
     vehicle_data_t *vd = vehicle_data_get();
     char buf[24];
 
-    snprintf(buf, sizeof(buf), "%.0f%%", vd->throttle);
-    lv_label_set_text(s_values[0], buf);
+#define GRID_SET(idx, fmt, ...)                          \
+    do {                                                  \
+        snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__);  \
+        if (strcmp(buf, s_prev_grid[idx]) != 0) {         \
+            strncpy(s_prev_grid[idx], buf, sizeof(s_prev_grid[idx])); \
+            lv_label_set_text(s_values[idx], buf);        \
+        }                                                 \
+    } while (0)
 
-    snprintf(buf, sizeof(buf), "%.0fkPa", vd->map);
-    lv_label_set_text(s_values[1], buf);
-
-    snprintf(buf, sizeof(buf), "%.0f%%", vd->load);
-    lv_label_set_text(s_values[2], buf);
-
-    snprintf(buf, sizeof(buf), "%.0f%s",
+    GRID_SET(0, "%.0f%%", vd->throttle);
+    GRID_SET(1, "%.0fkPa", vd->map);
+    GRID_SET(2, "%.0f%%", vd->load);
+    GRID_SET(3, "%.0f%s",
              vehicle_data_convert_temp(vd->iat, vd->metric_units),
              vehicle_data_temp_unit(vd->metric_units));
-    lv_label_set_text(s_values[3], buf);
+    GRID_SET(4, "%.1f", vd->timing);
+    GRID_SET(5, "%+.1f%%", vd->fuel_trim_st);
+    GRID_SET(6, "%+.1f%%", vd->fuel_trim_lt);
+    GRID_SET(7, "%.2fV", vd->o2_voltage);
+    GRID_SET(8, "%.2fV", vd->o2_b1s2);
 
-    snprintf(buf, sizeof(buf), "%.1f", vd->timing);
-    lv_label_set_text(s_values[4], buf);
-
-    snprintf(buf, sizeof(buf), "%+.1f%%", vd->fuel_trim_st);
-    lv_label_set_text(s_values[5], buf);
-
-    snprintf(buf, sizeof(buf), "%+.1f%%", vd->fuel_trim_lt);
-    lv_label_set_text(s_values[6], buf);
-
-    snprintf(buf, sizeof(buf), "%.2fV", vd->o2_voltage);
-    lv_label_set_text(s_values[7], buf);
-
-    snprintf(buf, sizeof(buf), "%.2fV", vd->o2_b1s2);
-    lv_label_set_text(s_values[8], buf);
+#undef GRID_SET
 }

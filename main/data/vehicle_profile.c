@@ -21,8 +21,8 @@
  */
 
 static const vehicle_pid_poll_t s_kalos_live[] = {
-    { 0x0C, 150, true, true  },
-    { 0x0D, 250, true, true  },
+    { 0x0C, 50, true, true  },
+    { 0x0D, 100, true, true  },
     { 0x05, 500, true, true  },
 };
 
@@ -55,7 +55,7 @@ static const vehicle_profile_t s_kalos_2005 = {
     .rpm_max            = 7000,
     .rpm_redline        = 6500,
     .use_atrv_voltage   = true,
-    .atrv_voltage_scale = 0.7524f,
+    .atrv_voltage_scale = 1.0f,
     .known_pid_masks    = {
         /* PID 0100 yaniti BE3EB811 -> bit mask (pid-1) */
         0x8833787E,

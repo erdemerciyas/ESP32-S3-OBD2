@@ -18,7 +18,7 @@ static const char *TAG = "elm327";
 
 #define RX_BUF_SIZE      512
 #define CMD_QUEUE_LEN    16
-#define ELM_QUEUE_MAX    3
+#define ELM_QUEUE_MAX    8
 #define ELM_TASK_STACK   4096
 #define ELM_TASK_PRIO    5
 
@@ -34,9 +34,13 @@ static char s_rx_buf[RX_BUF_SIZE];
 static size_t s_rx_len;
 static QueueHandle_t s_cmd_queue;
 static SemaphoreHandle_t s_sync_sem;
+static SemaphoreHandle_t s_elm_mutex;
 static char s_sync_response[256];
 static char s_pending_response[256];
 static TaskHandle_t s_task_handle;
+
+static void elm_lock(void) { xSemaphoreTake(s_elm_mutex, portMAX_DELAY); }
+static void elm_unlock(void) { xSemaphoreGive(s_elm_mutex); }
 
 static bool s_elm_configured;
 
@@ -305,6 +309,7 @@ static void process_rx_buffer(void)
 
 static void elm327_on_rx(const uint8_t *data, size_t len)
 {
+    elm_lock();
     for (size_t i = 0; i < len; i++) {
         if (s_rx_len < RX_BUF_SIZE - 1) {
             s_rx_buf[s_rx_len++] = (char)data[i];
@@ -312,6 +317,7 @@ static void elm327_on_rx(const uint8_t *data, size_t len)
         }
     }
     process_rx_buffer();
+    elm_unlock();
 }
 
 static bool send_raw(const char *cmd)
@@ -438,9 +444,13 @@ static void elm327_task(void *arg)
                 cmd.cb(s_sync_response, cmd.user_data);
             }
         } else {
+            elm_lock();
             ESP_LOGW(TAG, "Timeout: %s", cmd.cmd);
             s_rx_len = 0;
             s_rx_buf[0] = '\0';
+            s_sync_response[0] = '\0';
+            s_pending_response[0] = '\0';
+            elm_unlock();
         }
 
         s_state = ELM_STATE_READY;
@@ -449,6 +459,7 @@ static void elm327_task(void *arg)
 
 void elm327_init(void)
 {
+    s_elm_mutex = xSemaphoreCreateMutex();
     s_cmd_queue = xQueueCreate(CMD_QUEUE_LEN, sizeof(elm_cmd_t));
     ble_obd_set_rx_callback(elm327_on_rx_data);
 }
