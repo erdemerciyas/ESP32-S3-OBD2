@@ -10,21 +10,7 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 | Araç profili | **Universal OBD-II** (`ATSP0`, runtime PID keşfi) |
 | UI sekmeleri | Connect · Dash · Grid · Settings (DTC kaldırıldı) |
 | Son flash | COM3 — `obd2_dashboard.bin` **0x135160** (~1.24 MB), 2026-06-18 |
-| Git | `29279ce` pushed; aşağıdaki değişiklikler **henüz commit edilmedi** |
-
-### Commit edilmemiş yerel değişiklikler
-
-| Dosya | Özet |
-|-------|------|
-| `main/data/vehicle_profile.c` | Kalos → Universal profil |
-| `main/obd/obd_pids.c` | Erken READY, voltaj poll, arka plan keşif, DTC poll kaldırıldı |
-| `main/ui/ui.c`, `ui.h` | DTC sekmesi kaldırıldı (4 sekme) |
-| `main/ui/screen_dtc.c` | **Silindi** |
-| `main/main.c`, `main/CMakeLists.txt` | `obd_dtc` / `screen_dtc` build dışı |
-| `simulator/LVGL.Simulator/LVGL.Simulator.vcxproj` | `screen_dtc.c` referansı kaldırıldı |
-| `CHANGELOG.md` | Bu dosya (yeni) |
-
-> `main/obd/obd_dtc.c` kaynakta duruyor; firmware build'ine dahil değil.
+| Git | `1b365e6` pushed — `main` = `origin/main` |
 
 ---
 
@@ -157,7 +143,7 @@ simulator\build_simulator.cmd
 
 ## Açık işler / fikirler
 
-- [ ] Commit + push: universal profil, OBD düzeltmeleri, DTC kaldırma
+- [x] Commit + push: universal profil, OBD düzeltmeleri, DTC kaldırma (`1b365e6`)
 - [ ] İsteğe bağlı: `obd_dtc.c` kaynak dosyasını tamamen sil veya ileride yeniden ekle
 - [ ] İsteğe bağlı: Kalos preset profili (çoklu profil seçimi)
 - [ ] İsteğe bağlı: `ATDP` ile algılanan protokolü ayarlar ekranında göster
