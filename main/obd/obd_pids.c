@@ -1,5 +1,4 @@
 #include "obd_pids.h"
-#include "obd_dtc.h"
 #include "elm327.h"
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
@@ -64,11 +63,11 @@ static size_t s_dash_slot;
 static size_t s_grid_slot;
 static int s_disc_idx;
 static bool s_disc_busy;
-static bool s_discovery_done;
+static bool s_disc_ready;
+static bool s_disc_complete;
 static uint32_t s_disc_sent_at;
 static bool s_use_atrv;
 static uint32_t s_voltage_last;
-static uint32_t s_dtc_last;
 
 /* Voltage EMA filter state */
 static float s_voltage_filtered;
@@ -211,6 +210,13 @@ static float decode_o2_voltage(const char *hex)
     int a = 0;
     sscanf(hex, "%2x", &a);
     return clampf(a * 0.005f, O2_VOLT_MIN, O2_VOLT_MAX);
+}
+
+static float decode_maf(const char *hex)
+{
+    int a = 0, b = 0;
+    sscanf(hex, "%2x%2x", &a, &b);
+    return ((a * 256.0f) + b) / 100.0f;
 }
 
 static float decode_voltage_ecu(const char *hex)
@@ -402,6 +408,9 @@ static void update_pid_value(uint8_t pid, const char *resp)
     case 0x15:
         vehicle_data_set_float(&vd->o2_b1s2, decode_o2_voltage(data));
         break;
+    case 0x10:
+        vehicle_data_set_float(&vd->maf, decode_maf(data));
+        break;
     default:
         break;
     }
@@ -424,12 +433,9 @@ static void voltage_pid_cb(const char *resp, void *user_data)
         app_log_info(TAG, "PID 0x42 unavailable, using ATRV");
         return;
     }
-    if (!vehicle_data_is_pid_supported(0x42)) {
-        s_use_atrv = true;
-        return;
-    }
     const char *data = extract_data_bytes(resp, 0x42);
     if (!data) {
+        s_use_atrv = true;
         return;
     }
     float v = decode_voltage_ecu(data);
@@ -476,6 +482,34 @@ static void parse_supported_pids(const char *resp, int block)
     vehicle_data_set_pid_supported(block, mask);
 }
 
+#define DASH_PID_RPM      0x0C
+
+#define PID_DISC_BLOCK_COUNT 7
+static const char *const s_disc_cmds[PID_DISC_BLOCK_COUNT] = {
+    "0100", "0120", "0140", "0160", "0180", "01A0", "01C0",
+};
+
+static void mark_disc_ready(void)
+{
+    if (s_disc_ready) {
+        return;
+    }
+    s_disc_ready = true;
+    s_voltage_last = 0;
+    vehicle_data_set_state(OBD_STATE_READY, "Connected");
+    app_log_info(TAG, "Ready: %s (PID scan continues)", vehicle_profile_get()->display_name);
+}
+
+static void mark_disc_complete(void)
+{
+    if (s_disc_complete) {
+        return;
+    }
+    s_disc_complete = true;
+    vehicle_profile_apply_known_pids();
+    app_log_info(TAG, "PID discovery complete");
+}
+
 static void discover_cb(const char *resp, void *user_data)
 {
     int block = (int)(intptr_t)user_data;
@@ -484,10 +518,58 @@ static void discover_cb(const char *resp, void *user_data)
     }
     s_disc_idx = block + 1;
     s_disc_busy = false;
+
+    if (block == 0) {
+        mark_disc_ready();
+    }
+    if (s_disc_idx >= PID_DISC_BLOCK_COUNT) {
+        mark_disc_complete();
+    }
 }
 
-static const uint8_t s_dash_pids[] = { 0x0C, 0x0D, 0x05 };
-static const uint8_t s_grid_pids[] = { 0x11, 0x0B, 0x04, 0x0F, 0x0E, 0x06, 0x07, 0x14, 0x15 };
+static void advance_disc_on_timeout(uint32_t now)
+{
+    const vehicle_profile_t *profile = vehicle_profile_get();
+    if (!s_disc_busy || now - s_disc_sent_at <= profile->disc_timeout_ms + 300) {
+        return;
+    }
+
+    int timed_block = s_disc_idx;
+    s_disc_busy = false;
+    s_disc_idx++;
+
+    if (timed_block == 0) {
+        mark_disc_ready();
+    }
+    if (s_disc_idx >= PID_DISC_BLOCK_COUNT) {
+        mark_disc_complete();
+    }
+}
+
+static bool try_send_disc_block(bool high_priority)
+{
+    if (s_disc_complete || s_disc_busy || s_disc_idx >= PID_DISC_BLOCK_COUNT) {
+        return false;
+    }
+    if (!elm327_can_queue(high_priority)) {
+        return false;
+    }
+
+    const vehicle_profile_t *profile = vehicle_profile_get();
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    if (!elm327_send_cmd_prio(s_disc_cmds[s_disc_idx], discover_cb,
+                              (void *)(intptr_t)s_disc_idx, profile->disc_timeout_ms,
+                              high_priority)) {
+        return false;
+    }
+
+    s_disc_busy = true;
+    s_disc_sent_at = now;
+    if (!s_disc_ready) {
+        vehicle_data_set_state(OBD_STATE_PID_DISCOVERY, "Discovering PIDs...");
+    }
+    return true;
+}
 
 static pid_entry_t *find_entry_by_pid(uint8_t pid)
 {
@@ -549,7 +631,7 @@ static bool poll_voltage(uint32_t now)
         return false;
     }
 
-    /* Kalos/KWP: ECU has no PID 0x42 — use ATRV only when profile says so. */
+    /* Try PID 0x42 first; fall back to ATRV when ECU or profile requires it. */
     if (!profile->use_atrv_voltage && !s_use_atrv) {
         if (elm327_send_cmd_prio("0142", voltage_pid_cb, NULL, profile->slow_timeout_ms, true)) {
             s_voltage_last = now;
@@ -569,12 +651,19 @@ static bool poll_voltage(uint32_t now)
 
 static bool run_dash_poll(uint32_t now)
 {
-    /* Priority order: RPM (50ms) -> Speed (100ms) -> Coolant (500ms).
-     * Try each in order; first one that's due and can queue wins. */
-    for (size_t n = 0; n < sizeof(s_dash_pids) / sizeof(s_dash_pids[0]); n++) {
-        size_t idx = (s_dash_slot + n) % (sizeof(s_dash_pids) / sizeof(s_dash_pids[0]));
-        if (poll_entry_by_pid(s_dash_pids[idx], now, true)) {
-            s_dash_slot = (idx + 1) % (sizeof(s_dash_pids) / sizeof(s_dash_pids[0]));
+    /* Dashboard mode: RPM always wins when due for smooth gauge. */
+    if (poll_entry_by_pid(DASH_PID_RPM, now, true)) {
+        return true;
+    }
+
+    for (size_t n = 0; n < s_live_count; n++) {
+        size_t idx = (s_dash_slot + n) % s_live_count;
+        uint8_t pid = s_live_entries[idx].pid;
+        if (pid == DASH_PID_RPM) {
+            continue;
+        }
+        if (poll_entry_by_pid(pid, now, true)) {
+            s_dash_slot = (idx + 1) % s_live_count;
             return true;
         }
     }
@@ -583,23 +672,18 @@ static bool run_dash_poll(uint32_t now)
 
 static bool run_grid_poll(uint32_t now)
 {
-    size_t count = sizeof(s_grid_pids) / sizeof(s_grid_pids[0]);
-
-    for (size_t n = 0; n < count; n++) {
-        size_t idx = (s_grid_slot + n) % count;
-        if (poll_entry_by_pid(s_grid_pids[idx], now, false)) {
-            s_grid_slot = (idx + 1) % count;
-            return true;
-        }
+    size_t total = s_fast_count + s_slow_count;
+    if (total == 0) {
+        return false;
     }
-    return false;
-}
 
-static bool profile_has_known_pids(void)
-{
-    const vehicle_profile_t *p = vehicle_profile_get();
-    for (int i = 0; i < 4; i++) {
-        if (p->known_pid_masks[i] != 0) {
+    for (size_t n = 0; n < total; n++) {
+        size_t idx = (s_grid_slot + n) % total;
+        uint8_t pid = (idx < s_fast_count)
+                          ? s_fast_entries[idx].pid
+                          : s_slow_entries[idx - s_fast_count].pid;
+        if (poll_entry_by_pid(pid, now, false)) {
+            s_grid_slot = (idx + 1) % total;
             return true;
         }
     }
@@ -608,8 +692,6 @@ static bool profile_has_known_pids(void)
 
 static void poll_task(void *arg)
 {
-    static const char *disc_cmds[] = { "0100", "0120" };
-
     init_poll_entries();
 
     while (1) {
@@ -619,77 +701,45 @@ static void poll_task(void *arg)
         if (!elm327_is_ready()) {
             s_disc_idx = 0;
             s_disc_busy = false;
-            s_discovery_done = false;
+            s_disc_ready = false;
+            s_disc_complete = false;
             s_use_atrv = profile->use_atrv_voltage;
             s_voltage_filter_init = false;
             s_voltage_filtered = 0.0f;
             s_voltage_spike_count = 0;
-            obd_dtc_reset();
             init_poll_entries();
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
 
-        if (!s_discovery_done) {
-            vehicle_data_set_state(OBD_STATE_PID_DISCOVERY, "Discovering PIDs...");
+        advance_disc_on_timeout(now);
+
+        if (!s_disc_ready) {
             poll_voltage(now);
-            if (profile_has_known_pids()) {
-                vehicle_profile_apply_known_pids();
-                s_discovery_done = true;
-                s_voltage_last = 0;
-                vehicle_data_set_state(OBD_STATE_READY, "Connected");
-                app_log_info(TAG, "Ready (known PIDs): %s", profile->display_name);
-                vTaskDelay(pdMS_TO_TICKS(5));
-                continue;
-            }
-            if (s_disc_idx < 2) {
-                if (s_disc_busy && now - s_disc_sent_at > profile->disc_timeout_ms + 300) {
-                    s_disc_busy = false;
-                    s_disc_idx++;
-                }
-                if (!s_disc_busy &&
-                    elm327_send_cmd(disc_cmds[s_disc_idx], discover_cb,
-                                    (void *)(intptr_t)s_disc_idx, profile->disc_timeout_ms)) {
-                    s_disc_busy = true;
-                    s_disc_sent_at = now;
-                }
-                vTaskDelay(pdMS_TO_TICKS(5));
-                continue;
-            }
-            vehicle_profile_apply_known_pids();
-            s_discovery_done = true;
-            s_voltage_last = 0;
-            vehicle_data_set_state(OBD_STATE_READY, "Connected");
-            app_log_info(TAG, "Ready: %s", profile->display_name);
-        }
-
-        int tab = ui_get_active_tab();
-        bool dash_focus = tab == UI_TAB_DASH;
-        bool grid_focus = tab == UI_TAB_GRID;
-        bool dtc_focus = tab == UI_TAB_DTC;
-
-        /* ATRV on its own timer — not starved by RPM/speed round-robin. */
-        poll_voltage(now);
-
-        if (dtc_focus) {
+            try_send_disc_block(true);
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
 
+        int tab = ui_get_active_tab();
+        bool grid_focus = tab == UI_TAB_GRID;
+
         bool queued = false;
-        if (dash_focus) {
-            queued = run_dash_poll(now);
-        } else if (grid_focus) {
+        if (grid_focus) {
+            poll_voltage(now);
             queued = run_grid_poll(now);
-            if (!obd_dtc_is_busy() && now - s_dtc_last >= 30000) {
-                s_dtc_last = now;
-                obd_dtc_read_all();
-            }
         } else {
             queued = run_dash_poll(now);
+            if (!queued) {
+                queued = poll_voltage(now);
+            }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(queued ? 2 : 5));
+        if (!queued) {
+            try_send_disc_block(false);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(queued ? 1 : 4));
     }
 }
 

@@ -73,11 +73,22 @@ static void ui_update_cb(lv_timer_t *timer)
     s_active_tab = (int)lv_tabview_get_tab_act(s_tabview);
     update_dots(lv_tabview_get_tab_act(s_tabview));
 
-    screen_connect_update();
-    screen_dash_update(connected);
-    screen_grid_update();
-    screen_dtc_update(s_active_tab == UI_TAB_DTC && connected);
-    screen_settings_update();
+    switch (s_active_tab) {
+    case UI_TAB_CONNECT:
+        screen_connect_update();
+        break;
+    case UI_TAB_DASH:
+        screen_dash_update(connected);
+        break;
+    case UI_TAB_GRID:
+        screen_grid_update();
+        break;
+    case UI_TAB_SETTINGS:
+        screen_settings_update();
+        break;
+    default:
+        break;
+    }
 }
 
 void ui_init(void)
@@ -96,10 +107,9 @@ void ui_init(void)
     lv_obj_t *tab_conn = lv_tabview_add_tab(s_tabview, "conn");
     lv_obj_t *tab_dash = lv_tabview_add_tab(s_tabview, "dash");
     lv_obj_t *tab_grid = lv_tabview_add_tab(s_tabview, "grid");
-    lv_obj_t *tab_dtc  = lv_tabview_add_tab(s_tabview, "dtc");
     lv_obj_t *tab_set  = lv_tabview_add_tab(s_tabview, "set");
 
-    lv_obj_t *tabs[] = { tab_conn, tab_dash, tab_grid, tab_dtc, tab_set };
+    lv_obj_t *tabs[] = { tab_conn, tab_dash, tab_grid, tab_set };
     for (int i = 0; i < UI_TAB_COUNT; i++) {
         theme_apply_content(tabs[i]);
         prepare_tab_page(tabs[i]);
@@ -108,7 +118,6 @@ void ui_init(void)
     screen_connect_create(tab_conn);
     screen_dash_create(tab_dash);
     screen_grid_create(tab_grid);
-    screen_dtc_create(tab_dtc);
     screen_settings_create(tab_set);
 
     s_dot_row = lv_obj_create(scr);

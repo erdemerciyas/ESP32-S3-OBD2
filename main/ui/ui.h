@@ -7,7 +7,6 @@ enum {
     UI_TAB_CONNECT = 0,
     UI_TAB_DASH,
     UI_TAB_GRID,
-    UI_TAB_DTC,
     UI_TAB_SETTINGS,
     UI_TAB_COUNT,
 };
@@ -21,11 +20,9 @@ bool ui_is_obd_connected(void);
 void screen_connect_create(lv_obj_t *parent);
 void screen_dash_create(lv_obj_t *parent);
 void screen_grid_create(lv_obj_t *parent);
-void screen_dtc_create(lv_obj_t *parent);
 void screen_settings_create(lv_obj_t *parent);
 
 void screen_connect_update(void);
 void screen_dash_update(bool connected);
 void screen_grid_update(void);
-void screen_dtc_update(bool visible);
 void screen_settings_update(void);

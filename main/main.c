@@ -6,7 +6,6 @@
 #include "ble_obd.h"
 #include "elm327.h"
 #include "obd_pids.h"
-#include "obd_dtc.h"
 #include "ui.h"
 
 static const char *TAG = "main";
@@ -36,7 +35,6 @@ void app_main(void)
     ble_obd_init();
     elm327_init();
     obd_pids_init();
-    obd_dtc_init();
 
     elm327_start();
     obd_pids_start();

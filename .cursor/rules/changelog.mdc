@@ -1,0 +1,11 @@
+---
+description: Proje changelog dosyasını oku ve güncelle
+alwaysApply: true
+---
+
+# Changelog
+
+- Oturum başında veya bağlam belirsizse **`CHANGELOG.md`** dosyasını oku (proje kökü).
+- Anlamlı değişiklik yaptıktan sonra (özellikle OBD, UI, profil, flash) aynı dosyaya **tarihli madde** ekle.
+- **Mevcut durum** tablosunu güncelle: profil, son flash, commit durumu, açık işler.
+- Commit edilmemiş yerel değişiklikleri changelog'da belirt; commit sonrası tabloyu temizle.

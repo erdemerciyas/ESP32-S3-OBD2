@@ -735,7 +735,6 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_connect.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_dash.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_grid.c" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_dtc.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_settings.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_56.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_94_bold.c" />
