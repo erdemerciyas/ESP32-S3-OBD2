@@ -10,7 +10,7 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 | Araç profili | **Universal OBD-II** (`ATSP0`, runtime PID keşfi) |
 | UI sekmeleri | Connect · Dash · Grid · Settings (DTC kaldırıldı) |
 | Son flash | COM3 — `obd2_dashboard.bin` **0x135160** (~1.24 MB), 2026-06-18 |
-| Git | `376a485` pushed — `main` = `origin/main` |
+| Git | `main` = `origin/main` (feature `1b365e6`, HEAD `213d06e`) |
 
 ---
 
