@@ -7,6 +7,7 @@ static lv_obj_t *s_tabview;
 static lv_obj_t *s_dot_row;
 static lv_obj_t *s_dots[UI_TAB_COUNT];
 static lv_timer_t *s_update_timer;
+static lv_obj_t *s_splash_root;
 static int s_active_tab;
 static bool s_was_connected;
 
@@ -15,6 +16,21 @@ static bool adapter_connected(obd_state_t state)
     return state == OBD_STATE_ELM_INIT ||
            state == OBD_STATE_PID_DISCOVERY ||
            state == OBD_STATE_READY;
+}
+
+static void splash_finish_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_splash_root) {
+        lv_obj_del(s_splash_root);
+        s_splash_root = NULL;
+    }
+    if (s_tabview) {
+        lv_obj_clear_flag(s_tabview, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_dot_row) {
+        lv_obj_clear_flag(s_dot_row, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void update_dots(uint32_t active)
@@ -62,29 +78,27 @@ static void style_tabview(lv_obj_t *tabview)
 static void ui_update_cb(lv_timer_t *timer)
 {
     (void)timer;
-    vehicle_data_t *vd = vehicle_data_get();
-    bool connected = adapter_connected(vd->state);
+    vehicle_data_snapshot_t snap;
+    vehicle_data_snapshot(&snap);
+    bool connected = adapter_connected(snap.state);
 
     if (connected && !s_was_connected) {
         ui_show_dash();
     }
     s_was_connected = connected;
 
-    s_active_tab = (int)lv_tabview_get_tab_act(s_tabview);
-    update_dots(lv_tabview_get_tab_act(s_tabview));
-
     switch (s_active_tab) {
     case UI_TAB_CONNECT:
-        screen_connect_update();
+        screen_connect_update(&snap);
         break;
     case UI_TAB_DASH:
-        screen_dash_update(connected);
+        screen_dash_update(connected, &snap);
         break;
     case UI_TAB_GRID:
-        screen_grid_update();
+        screen_grid_update(&snap);
         break;
     case UI_TAB_SETTINGS:
-        screen_settings_update();
+        screen_settings_update(&snap);
         break;
     default:
         break;
@@ -103,6 +117,7 @@ void ui_init(void)
     lv_obj_align(s_tabview, LV_ALIGN_CENTER, 0, 0);
     style_tabview(s_tabview);
     lv_obj_add_event_cb(s_tabview, tab_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_flag(s_tabview, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *tab_conn = lv_tabview_add_tab(s_tabview, "conn");
     lv_obj_t *tab_dash = lv_tabview_add_tab(s_tabview, "dash");
@@ -139,13 +154,17 @@ void ui_init(void)
         lv_obj_set_style_border_width(s_dots[i], 0, 0);
     }
     update_dots(UI_TAB_CONNECT);
+    lv_obj_add_flag(s_dot_row, LV_OBJ_FLAG_HIDDEN);
+
+    s_splash_root = screen_splash_create(scr);
+    screen_splash_start(s_splash_root, splash_finish_cb);
 
     bsp_display_unlock();
 }
 
 void ui_start_update_timer(void)
 {
-    s_update_timer = lv_timer_create(ui_update_cb, 50, NULL);
+    s_update_timer = lv_timer_create(ui_update_cb, 16, NULL);
 }
 
 void ui_show_dash(void)

@@ -41,7 +41,7 @@ cd simulator
 |---------|----------|
 | Baglanti | Acilista otomatik simule baglanti (Tara butonu da calisir) |
 | Canli veri | RPM, hiz, sicaklik vb. sinüs dalgasiyla guncellenir |
-| DTC | Ariza sekmesinde **Tara** → P0420, P0171 |
+| DTC | Etkin degil (main projede DTC ekrani kaldirildi) |
 | BLE/OBD | Stub — gercek adaptore baglanmaz |
 
 ## Dosya yapisi

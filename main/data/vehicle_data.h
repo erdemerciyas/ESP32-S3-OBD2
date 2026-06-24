@@ -3,9 +3,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define VEHICLE_DTC_MAX  16
-#define VEHICLE_DTC_LEN  8
-
 typedef enum {
     OBD_STATE_DISCONNECTED = 0,
     OBD_STATE_SCANNING,
@@ -22,13 +19,6 @@ typedef enum {
     THRESHOLD_CRIT,
 } threshold_level_t;
 
-typedef enum {
-    DTC_SCAN_IDLE = 0,
-    DTC_SCAN_BUSY,
-    DTC_SCAN_DONE,
-    DTC_SCAN_ERROR,
-} dtc_scan_state_t;
-
 typedef struct {
     float rpm;
     float speed;
@@ -43,6 +33,7 @@ typedef struct {
     float fuel_trim_lt;
     float load;
     float fuel_pressure;
+    float fuel_level;       /* PID 0x2F — Fuel tank level 0-100% */
     float o2_voltage;
     float o2_b1s2;
     float fuel_system1;
@@ -56,25 +47,46 @@ typedef struct {
     char adapter_addr[18];
     char status_msg[64];
 
-    char dtcs[VEHICLE_DTC_MAX][VEHICLE_DTC_LEN];
-    int dtc_count;
-    int dtc_pending_count;
-    dtc_scan_state_t dtc_scan_state;
-    char dtc_scan_msg[48];
-
     bool metric_units;
     bool auto_connect;
     bool center_gauge_rpm;
     uint8_t theme_id;
 } vehicle_data_t;
 
+/* Atomic snapshot used by UI to read consistent values in a single frame. */
+typedef struct {
+    float rpm;
+    float speed;
+    float coolant;
+    float voltage;
+    float throttle;
+    float map;
+    float maf;
+    float iat;
+    float timing;
+    float fuel_trim_st;
+    float fuel_trim_lt;
+    float load;
+    float fuel_level;
+    float o2_voltage;
+    float o2_b1s2;
+
+    obd_state_t state;
+    char adapter_name[32];
+    char adapter_addr[18];
+    char status_msg[64];
+
+    bool metric_units;
+    bool center_gauge_rpm;
+} vehicle_data_snapshot_t;
+
 void vehicle_data_init(void);
+void vehicle_data_snapshot(vehicle_data_snapshot_t *snap);
 void vehicle_data_lock(void);
 void vehicle_data_unlock(void);
 vehicle_data_t *vehicle_data_get(void);
 
 void vehicle_data_set_state(obd_state_t state, const char *msg);
-void vehicle_data_set_dtc_scan(dtc_scan_state_t state, const char *msg);
 void vehicle_data_set_adapter(const char *name, const char *addr);
 void vehicle_data_set_pid_supported(int block, uint32_t mask);
 void vehicle_data_clear_supported_pids(void);

@@ -15,18 +15,39 @@ void vehicle_data_init(void)
     s_data.auto_connect = true;
     s_data.center_gauge_rpm = true;
     s_data.state = OBD_STATE_DISCONNECTED;
-    s_data.dtc_scan_state = DTC_SCAN_IDLE;
     strncpy(s_data.status_msg, "Ready", sizeof(s_data.status_msg) - 1);
 }
 
-void vehicle_data_set_dtc_scan(dtc_scan_state_t state, const char *msg)
+void vehicle_data_snapshot(vehicle_data_snapshot_t *snap)
 {
-    vehicle_data_lock();
-    s_data.dtc_scan_state = state;
-    if (msg) {
-        strncpy(s_data.dtc_scan_msg, msg, sizeof(s_data.dtc_scan_msg) - 1);
-        s_data.dtc_scan_msg[sizeof(s_data.dtc_scan_msg) - 1] = '\0';
+    if (!snap) {
+        return;
     }
+    vehicle_data_lock();
+    snap->rpm = s_data.rpm;
+    snap->speed = s_data.speed;
+    snap->coolant = s_data.coolant;
+    snap->voltage = s_data.voltage;
+    snap->throttle = s_data.throttle;
+    snap->map = s_data.map;
+    snap->maf = s_data.maf;
+    snap->iat = s_data.iat;
+    snap->timing = s_data.timing;
+    snap->fuel_trim_st = s_data.fuel_trim_st;
+    snap->fuel_trim_lt = s_data.fuel_trim_lt;
+    snap->load = s_data.load;
+    snap->fuel_level = s_data.fuel_level;
+    snap->o2_voltage = s_data.o2_voltage;
+    snap->o2_b1s2 = s_data.o2_b1s2;
+    snap->state = s_data.state;
+    snap->metric_units = s_data.metric_units;
+    snap->center_gauge_rpm = s_data.center_gauge_rpm;
+    strncpy(snap->adapter_name, s_data.adapter_name, sizeof(snap->adapter_name) - 1);
+    snap->adapter_name[sizeof(snap->adapter_name) - 1] = '\0';
+    strncpy(snap->adapter_addr, s_data.adapter_addr, sizeof(snap->adapter_addr) - 1);
+    snap->adapter_addr[sizeof(snap->adapter_addr) - 1] = '\0';
+    strncpy(snap->status_msg, s_data.status_msg, sizeof(snap->status_msg) - 1);
+    snap->status_msg[sizeof(snap->status_msg) - 1] = '\0';
     vehicle_data_unlock();
 }
 

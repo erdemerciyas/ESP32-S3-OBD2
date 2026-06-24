@@ -374,7 +374,7 @@ static void elm327_run_init(void)
     } else {
         cmds = full_cmds;
         cmd_count = sizeof(full_cmds) / sizeof(full_cmds[0]);
-        atz_delay_ms = 900;
+        atz_delay_ms = 500;
         vehicle_data_set_state(OBD_STATE_ELM_INIT, "Starting ELM327...");
     }
 
@@ -388,9 +388,9 @@ static void elm327_run_init(void)
         if (i == 0 && atz_delay_ms > 0) {
             vTaskDelay(pdMS_TO_TICKS(atz_delay_ms));
         } else {
-            vTaskDelay(pdMS_TO_TICKS(40));
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
-        if (!wait_response(2000)) {
+        if (!wait_response(1500)) {
             ESP_LOGW(TAG, "Timeout on %s", cmds[i]);
         }
     }

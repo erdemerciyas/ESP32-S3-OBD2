@@ -21,10 +21,10 @@ static const char *TAG = "ble_obd";
 static const char *NVS_NS = "obd_ble";
 static const char *NVS_KEY_ADDR = "addr";
 
-#define SCAN_DURATION_SEC  10
+#define SCAN_DURATION_SEC  8
 #define MAX_NAME_LEN       32
-#define RECONNECT_MS       2000
-#define CONNECT_TIMEOUT_MS 25000
+#define RECONNECT_MS       1500
+#define CONNECT_TIMEOUT_MS 15000
 
 static ble_obd_rx_cb_t s_rx_cb;
 static ble_obd_state_t s_state = BLE_OBD_DISCONNECTED;
@@ -32,6 +32,7 @@ static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_write_handle = 0;
 static uint16_t s_notify_handle = 0;
 static uint8_t s_saved_addr[6];
+static uint8_t s_saved_addr_type;   /* BLE_ADDR_PUBLIC or BLE_ADDR_RANDOM */
 static bool s_has_saved_addr;
 static bool s_scan_active;
 static bool s_connecting_saved;
@@ -117,17 +118,21 @@ static bool addr_matches_saved(const uint8_t *addr)
     return s_has_saved_addr && memcmp(addr, s_saved_addr, 6) == 0;
 }
 
-static void save_addr(const uint8_t *addr)
+static void save_addr(const uint8_t *addr, uint8_t addr_type)
 {
     if (!addr_is_valid(addr)) {
         return;
     }
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_blob(h, NVS_KEY_ADDR, addr, 6);
+        uint8_t blob[7];
+        memcpy(blob, addr, 6);
+        blob[6] = addr_type;
+        nvs_set_blob(h, NVS_KEY_ADDR, blob, 7);
         nvs_commit(h);
         nvs_close(h);
         memcpy(s_saved_addr, addr, 6);
+        s_saved_addr_type = addr_type;
         s_has_saved_addr = true;
     }
 }
@@ -141,6 +146,7 @@ static void clear_saved_addr(void)
         nvs_close(h);
     }
     memset(s_saved_addr, 0, sizeof(s_saved_addr));
+    s_saved_addr_type = BLE_ADDR_PUBLIC;
     s_has_saved_addr = false;
 }
 
@@ -230,10 +236,18 @@ static void try_auto_connect(void)
     }
     if (s_has_saved_addr && addr_is_valid(s_saved_addr)) {
         ble_addr_t addr = {0};
-        addr.type = BLE_ADDR_PUBLIC;
+        addr.type = s_saved_addr_type;
         memcpy(addr.val, s_saved_addr, 6);
         s_connecting_saved = true;
-        connect_peer(&addr, "Kayitli adaptor");
+        if (connect_peer(&addr, "Kayitli adaptor") == 0) {
+            return;
+        }
+        /* If random type failed, try public */
+        if (addr.type == BLE_ADDR_RANDOM) {
+            addr.type = BLE_ADDR_PUBLIC;
+            connect_peer(&addr, "Kayitli adaptor");
+            return;
+        }
     } else {
         if (s_has_saved_addr) {
             clear_saved_addr();
@@ -245,9 +259,13 @@ static void try_auto_connect(void)
 static void load_saved_addr(void)
 {
     nvs_handle_t h;
-    size_t len = 6;
+    size_t len = 7;
+    uint8_t blob[7] = {0};
     if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
-        if (nvs_get_blob(h, NVS_KEY_ADDR, s_saved_addr, &len) == ESP_OK && len == 6) {
+        esp_err_t err = nvs_get_blob(h, NVS_KEY_ADDR, blob, &len);
+        if (err == ESP_OK && len >= 6) {
+            memcpy(s_saved_addr, blob, 6);
+            s_saved_addr_type = (len >= 7) ? blob[6] : BLE_ADDR_RANDOM;
             s_has_saved_addr = true;
         }
         nvs_close(h);
@@ -359,8 +377,8 @@ static void start_scan(void)
     struct ble_gap_disc_params params = {
         .passive = 0,
         .filter_duplicates = 1,
-        .itvl = BLE_GAP_SCAN_FAST_INTERVAL_MIN,
-        .window = BLE_GAP_SCAN_FAST_WINDOW,
+        .itvl = 0x0010,               /* 10ms */
+        .window = 0x0010,             /* 10ms */
     };
 
     s_state = BLE_OBD_SCANNING;
@@ -373,12 +391,12 @@ static void start_scan(void)
 static int connect_peer(const ble_addr_t *addr, const char *name)
 {
     struct ble_gap_conn_params conn_params = {
-        .scan_itvl = BLE_GAP_SCAN_FAST_INTERVAL_MIN,
-        .scan_window = BLE_GAP_SCAN_FAST_WINDOW,
-        .itvl_min = BLE_GAP_INITIAL_CONN_ITVL_MIN,
-        .itvl_max = BLE_GAP_INITIAL_CONN_ITVL_MAX,
+        .scan_itvl = 0x0010,           /* 10ms */
+        .scan_window = 0x0010,         /* 10ms */
+        .itvl_min = 6,                 /* 7.5ms — min allowed by BLE spec */
+        .itvl_max = 12,                /* 15ms — tight for max throughput */
         .latency = 0,
-        .supervision_timeout = BLE_GAP_INITIAL_SUPERVISION_TIMEOUT,
+        .supervision_timeout = 300,    /* 3s — faster disconnect detection */
         .min_ce_len = 0,
         .max_ce_len = 0,
     };
@@ -448,7 +466,7 @@ static int ble_obd_gap_event(struct ble_gap_event *event, void *arg)
 
             struct ble_gap_conn_desc desc;
             if (ble_gap_conn_find(s_conn_handle, &desc) == 0) {
-                save_addr(desc.peer_ota_addr.val);
+                save_addr(desc.peer_ota_addr.val, desc.peer_ota_addr.type);
             }
             start_gatt_discovery(s_conn_handle);
             app_log_info(TAG, "Connected, discovering GATT");

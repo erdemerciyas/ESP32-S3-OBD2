@@ -3,6 +3,7 @@
 
 #include "bsp.h"
 #include "vehicle_data.h"
+#include "vehicle_profile.h"
 #include "ble_obd.h"
 #include "elm327.h"
 #include "obd_pids.h"
@@ -22,6 +23,7 @@ void app_main(void)
     ESP_LOGI(TAG, "ESP32-S3 OBD2 Dashboard starting");
 
     vehicle_data_init();
+    vehicle_profile_init();
 
     if (!bsp_display_init()) {
         ESP_LOGE(TAG, "Display init failed");

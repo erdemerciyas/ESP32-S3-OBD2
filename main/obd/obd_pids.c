@@ -15,19 +15,64 @@
 
 static const char *TAG = "obd_pids";
 
-#define VOLTAGE_POLL_MS    1000
+#define VOLTAGE_POLL_MS    400
 #define VOLTAGE_MIN_V      9.0f
-#define VOLTAGE_MAX_V      15.5f
-#define ATRV_TIMEOUT_MS    1200
+#define VOLTAGE_MAX_V      16.5f
+#define ATRV_TIMEOUT_MS    800
+/* Periyodik PID 0x42 re-probe: ATRV modundayken bile ara sıra dene
+ * (bazı araçlarda init sonrası 0x42 çalışır hale gelir). */
+#define PID42_REPROBE_MS   30000
+/* Out-of-range sayaç: ardışık OOR okumaları bu eşiği aşarsa ATRV'ye geç */
+#define PID42_OOR_FALLBACK 3
 
-/* EMA filter: lower = smoother (0.3 gives ~3-sample averaging effect) */
-#define VOLTAGE_EMA_ALPHA  0.30f
+/* EMA filter: higher = faster response (less latency) */
+#define VOLTAGE_EMA_ALPHA  0.40f
 /* Reject readings that deviate more than this from filtered value */
-#define VOLTAGE_SPIKE_MAX  0.60f
+#define VOLTAGE_SPIKE_MAX  0.50f
 /* Accept larger jump on first valid reading (cold start) */
 #define VOLTAGE_INIT_JUMP  3.0f
 #define POLL_TASK_STACK   4096
 #define POLL_TASK_PRIO    6
+
+/* Per-PID filter: EMA + spike rejection.
+ * Sıralı okumalarda diff > spike_max ise reddedilir; 3 ardışık spike'da
+ * filtre resetlenir (gerçek hızlı değişim kabul edilir). */
+typedef struct {
+    float    filtered;
+    bool     init;
+    uint8_t  spike_count;
+} pid_filter_t;
+
+/* Per-PID konfigürasyon: alpha (EMA) + spike_max.
+ * İndeks doğrudan PID değeridir (örn. RPM 0x0C → s_pid_filter_cfgs[0x0C]).
+ * Kullanılmayan PID'ler için alpha=0 ile raw kullanılır.
+ *
+ * Alpha: yüksek = daha hızlı tepki (düşük gecikme), düşük = daha yumuşak.
+ * spike_max: bu eşik üstü tek okuma reddedilir, 3 ardışık aşımda reset. */
+typedef struct {
+    float alpha;
+    float spike_max;
+} pid_filter_cfg_t;
+
+static const pid_filter_cfg_t s_pid_filter_cfgs[256] = {
+    /* 0x04 LOAD          */ [0x04] = { 0.65f,  30.0f },
+    /* 0x05 COOLANT       */ [0x05] = { 0.55f,  15.0f },
+    /* 0x06 STFT          */ [0x06] = { 0.40f,  15.0f },
+    /* 0x07 LTFT          */ [0x07] = { 0.40f,  15.0f },
+    /* 0x0A FUEL_PRESS    */ [0x0A] = { 0.40f,  80.0f },
+    /* 0x0B MAP           */ [0x0B] = { 0.70f,  30.0f },
+    /* 0x0C RPM           */ [0x0C] = { 0.92f, 1500.0f },
+    /* 0x0D SPEED         */ [0x0D] = { 0.88f,  40.0f },
+    /* 0x0E TIMING        */ [0x0E] = { 0.60f,  15.0f },
+    /* 0x0F IAT           */ [0x0F] = { 0.55f,  20.0f },
+    /* 0x10 MAF           */ [0x10] = { 0.60f,  30.0f },
+    /* 0x11 TPS           */ [0x11] = { 0.70f,  30.0f },
+    /* 0x14 O2 B1S1       */ [0x14] = { 0.50f,   0.8f },
+    /* 0x15 O2 B1S2       */ [0x15] = { 0.50f,   0.8f },
+    /* 0x2F FUEL LEVEL    */ [0x2F] = { 0.35f,  10.0f },
+    /* 0x42 VOLTAGE       */ [0x42] = { VOLTAGE_EMA_ALPHA, VOLTAGE_SPIKE_MAX },
+    /* Diğer PIDs: sıfır alpha → decode sonrası ham kullanılır (filtre yok) */
+};
 
 /* Value range limits for spike filtering */
 #define RPM_MIN            0.0f
@@ -53,9 +98,10 @@ typedef struct {
     char cmd[8];
     uint8_t pid;
     uint32_t interval_ms;
-    uint32_t last_poll;
+    uint32_t last_poll;    /* response alındığı anki zaman; pending false iken güncellenir */
     bool priority;
     bool live;
+    bool pending;          /* cevap beklenirken true; tekrar queue yapmayı engeller */
 } pid_entry_t;
 
 static TaskHandle_t s_poll_task;
@@ -68,11 +114,13 @@ static bool s_disc_complete;
 static uint32_t s_disc_sent_at;
 static bool s_use_atrv;
 static uint32_t s_voltage_last;
+static bool s_voltage_pending;      /* ATRV/0142 cevap beklerken true */
+static uint32_t s_042_reprobe_last;
+static uint8_t  s_voltage_oor_count;
 
-/* Voltage EMA filter state */
-static float s_voltage_filtered;
-static bool  s_voltage_filter_init;
-static uint8_t s_voltage_spike_count;
+/* Tüm PID'ler için EMA + spike rejection state. İndeks = PID değeri.
+ * Voltaj da dahil (s_pid_filter_cfgs[0x42] ile). */
+static pid_filter_t s_pid_filters[256];
 
 static pid_entry_t s_live_entries[8];
 static pid_entry_t s_fast_entries[12];
@@ -127,6 +175,7 @@ static void init_poll_entries(void)
         dst->last_poll = 0;
         dst->priority = src->priority;
         dst->live = src->live;
+        dst->pending = false;
     }
 
     s_fast_count = 0;
@@ -139,6 +188,7 @@ static void init_poll_entries(void)
         dst->last_poll = 0;
         dst->priority = src->priority;
         dst->live = src->live;
+        dst->pending = false;
     }
 
     s_slow_count = 0;
@@ -151,6 +201,7 @@ static void init_poll_entries(void)
         dst->last_poll = 0;
         dst->priority = src->priority;
         dst->live = src->live;
+        dst->pending = false;
     }
 
     s_use_atrv = profile->use_atrv_voltage;
@@ -239,43 +290,52 @@ static bool voltage_valid(float v)
 }
 
 /**
- * Apply EMA filter + spike rejection to raw voltage.
- * Returns true if the value was accepted and stored.
+ * Genel PID filtresi: EMA + spike rejection.
+ * İlk geçerli okumada direkt seed edilir (cold start).
+ * diff > spike_max ise reddedilir; 3 ardışık spike'da filtre resetlenir.
+ *
+ * Returns true → değer kabul edildi (filtered güncellendi, vehicle_data_set_float çağır)
+ * Returns false → spike, değer reddedildi (mevcut değer korunur)
  */
-static bool voltage_filter_apply(float raw)
+static bool pid_filter_apply(pid_filter_t *f, float raw, const pid_filter_cfg_t *cfg)
 {
-    if (!s_voltage_filter_init) {
-        /* First valid reading — seed the filter directly */
-        s_voltage_filtered = raw;
-        s_voltage_filter_init = true;
-        s_voltage_spike_count = 0;
+    if (cfg->alpha <= 0.0f) {
+        /* Filtre yok — ham değer kabul */
+        f->filtered = raw;
+        f->init = true;
+        f->spike_count = 0;
         return true;
     }
 
-    float diff = raw - s_voltage_filtered;
+    if (!f->init) {
+        /* Cold start: ilk geçerli okuma filtreyi direkt set eder */
+        f->filtered = raw;
+        f->init = true;
+        f->spike_count = 0;
+        return true;
+    }
+
+    float diff = raw - f->filtered;
     if (diff < 0) diff = -diff;
 
-    /* Spike rejection: if reading is too far from filtered, reject it.
-     * Allow up to 3 consecutive spikes before resetting the filter
-     * (handles genuine rapid changes like engine start). */
-    if (diff > VOLTAGE_SPIKE_MAX) {
-        s_voltage_spike_count++;
-        if (s_voltage_spike_count < 3) {
-            app_log_warn(TAG, "Voltage spike rejected: %.2fV (filtered=%.2fV, diff=%.2fV)",
-                         raw, s_voltage_filtered, diff);
+    if (diff > cfg->spike_max) {
+        f->spike_count++;
+        if (f->spike_count < 3) {
+            app_log_warn(TAG, "PID 0x%02X spike rejected: raw=%.2f filtered=%.2f (diff=%.2f)",
+                         (unsigned)(cfg - s_pid_filter_cfgs), raw, f->filtered, diff);
             return false;
         }
-        /* 3+ consecutive spikes: accept as real change, reset filter */
-        app_log_info(TAG, "Voltage filter reset: %.2fV -> %.2fV (forced)",
-                     s_voltage_filtered, raw);
-        s_voltage_filtered = raw;
-        s_voltage_spike_count = 0;
+        /* 3+ ardışık spike: gerçek hızlı değişim, reset */
+        app_log_info(TAG, "PID 0x%02X filter reset: %.2f -> %.2f (forced)",
+                     (unsigned)(cfg - s_pid_filter_cfgs), f->filtered, raw);
+        f->filtered = raw;
+        f->spike_count = 0;
         return true;
     }
 
     /* Normal EMA update */
-    s_voltage_filtered = s_voltage_filtered + VOLTAGE_EMA_ALPHA * (raw - s_voltage_filtered);
-    s_voltage_spike_count = 0;
+    f->filtered = f->filtered + cfg->alpha * (raw - f->filtered);
+    f->spike_count = 0;
     return true;
 }
 
@@ -285,18 +345,19 @@ static void set_voltage(float v, const char *source)
         app_log_warn(TAG, "Reject voltage %.2fV from %s (out of range)", v, source);
         return;
     }
-    if (!voltage_filter_apply(v)) {
-        return;
+    pid_filter_t *f = &s_pid_filters[0x42];
+    if (!pid_filter_apply(f, v, &s_pid_filter_cfgs[0x42])) {
+        return;  /* spike rejected */
     }
 
     vehicle_data_t *vd = vehicle_data_get();
     vehicle_data_lock();
     float prev = vd->voltage;
-    vd->voltage = s_voltage_filtered;
+    vd->voltage = f->filtered;
     vehicle_data_unlock();
 
-    if (prev < 0.1f || (s_voltage_filtered > prev + 0.03f) || (s_voltage_filtered < prev - 0.03f)) {
-        app_log_info(TAG, "Voltage %.2fV raw=%.2fV (%s)", s_voltage_filtered, v, source);
+    if (prev < 0.1f || (f->filtered > prev + 0.03f) || (f->filtered < prev - 0.03f)) {
+        app_log_info(TAG, "Voltage %.2fV raw=%.2fV (%s)", f->filtered, v, source);
     }
 }
 
@@ -353,6 +414,17 @@ static float parse_atrv_voltage(const char *resp)
     return voltage_valid(v) ? v : 0.0f;
 }
 
+/**
+ * Decode sonrası filtre uygula, kabul edilirse hedef alana yaz.
+ * Filter spike_max delta'sı aşılırsa mevcut değer korunur (ekranda pik görünmez).
+ */
+static void apply_filtered_float(uint8_t pid, float raw, float *target)
+{
+    if (pid_filter_apply(&s_pid_filters[pid], raw, &s_pid_filter_cfgs[pid])) {
+        vehicle_data_set_float(target, s_pid_filters[pid].filtered);
+    }
+}
+
 static void update_pid_value(uint8_t pid, const char *resp)
 {
     vehicle_data_t *vd = vehicle_data_get();
@@ -363,62 +435,89 @@ static void update_pid_value(uint8_t pid, const char *resp)
 
     switch (pid) {
     case 0x0C:
-        vehicle_data_set_float(&vd->rpm, decode_rpm(data));
+        apply_filtered_float(0x0C, decode_rpm(data), &vd->rpm);
         break;
     case 0x0D:
-        vehicle_data_set_float(&vd->speed, decode_speed(data));
+        apply_filtered_float(0x0D, decode_speed(data), &vd->speed);
         break;
     case 0x05:
-        vehicle_data_set_float(&vd->coolant, decode_temp(data));
+        apply_filtered_float(0x05, decode_temp(data), &vd->coolant);
         break;
     case 0x11:
-        vehicle_data_set_float(&vd->throttle, decode_pct(data));
+        apply_filtered_float(0x11, decode_pct(data), &vd->throttle);
         break;
     case 0x0B:
-        vehicle_data_set_float(&vd->map, decode_map(data));
+        apply_filtered_float(0x0B, decode_map(data), &vd->map);
         break;
     case 0x0F:
-        vehicle_data_set_float(&vd->iat, decode_temp(data));
+        apply_filtered_float(0x0F, decode_temp(data), &vd->iat);
         break;
     case 0x0E:
-        vehicle_data_set_float(&vd->timing, decode_timing(data));
+        apply_filtered_float(0x0E, decode_timing(data), &vd->timing);
         break;
     case 0x06:
-        vehicle_data_set_float(&vd->fuel_trim_st, decode_trim(data));
+        apply_filtered_float(0x06, decode_trim(data), &vd->fuel_trim_st);
         break;
     case 0x07:
-        vehicle_data_set_float(&vd->fuel_trim_lt, decode_trim(data));
+        apply_filtered_float(0x07, decode_trim(data), &vd->fuel_trim_lt);
         break;
     case 0x04:
-        vehicle_data_set_float(&vd->load, decode_pct(data));
+        apply_filtered_float(0x04, decode_pct(data), &vd->load);
         break;
-    case 0x03: {
-        int sys1 = 0, sys2 = 0;
-        sscanf(data, "%2x%2x", &sys1, &sys2);
-        vehicle_data_set_float(&vd->fuel_system1, (float)sys1);
-        vehicle_data_set_float(&vd->fuel_system2, (float)sys2);
+    case 0x0A: {
+        /* Fuel pressure — decode_map gibi 1-byte direkt değer */
+        int a = 0;
+        sscanf(data, "%2x", &a);
+        apply_filtered_float(0x0A, (float)a, &vd->fuel_pressure);
         break;
     }
-    case 0x12:
-        vehicle_data_set_float(&vd->secondary_air, decode_map(data));
+    case 0x03: {
+        /* Fuel system status — enum, ham kullanılır (alpha=0) */
+        int sys1 = 0, sys2 = 0;
+        sscanf(data, "%2x%2x", &sys1, &sys2);
+        apply_filtered_float(0x03, (float)sys1, &vd->fuel_system1);
+        apply_filtered_float(0x03, (float)sys2, &vd->fuel_system2);
         break;
+    }
+    case 0x12: {
+        /* Secondary air status — ham kullanılır */
+        int a = 0;
+        sscanf(data, "%2x", &a);
+        apply_filtered_float(0x12, (float)a, &vd->secondary_air);
+        break;
+    }
     case 0x14:
-        vehicle_data_set_float(&vd->o2_voltage, decode_o2_voltage(data));
+        apply_filtered_float(0x14, decode_o2_voltage(data), &vd->o2_voltage);
         break;
     case 0x15:
-        vehicle_data_set_float(&vd->o2_b1s2, decode_o2_voltage(data));
+        apply_filtered_float(0x15, decode_o2_voltage(data), &vd->o2_b1s2);
+        break;
+    case 0x2F:
+        /* Fuel Level Input — A * 100 / 255  (same as decode_pct) */
+        apply_filtered_float(0x2F, decode_pct(data), &vd->fuel_level);
         break;
     case 0x10:
-        vehicle_data_set_float(&vd->maf, decode_maf(data));
+        apply_filtered_float(0x10, decode_maf(data), &vd->maf);
         break;
     default:
         break;
     }
 }
 
+static pid_entry_t *find_entry_by_pid(uint8_t pid);
+
 static void pid_response_cb(const char *resp, void *user_data)
 {
     uint8_t pid = (uint8_t)(uintptr_t)user_data;
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    /* pending temizle ve last_poll'u cevap zamanına güncelle */
+    pid_entry_t *e = find_entry_by_pid(pid);
+    if (e) {
+        e->pending = false;
+        e->last_poll = now;
+    }
+
     if (response_is_error(resp)) {
         return;
     }
@@ -428,32 +527,52 @@ static void pid_response_cb(const char *resp, void *user_data)
 static void voltage_pid_cb(const char *resp, void *user_data)
 {
     (void)user_data;
+    s_voltage_pending = false;
     if (response_is_error(resp)) {
         s_use_atrv = true;
-        app_log_info(TAG, "PID 0x42 unavailable, using ATRV");
+        s_voltage_oor_count = 0;
+        app_log_info(TAG, "PID 0x42 unsupported (NO DATA/ERROR), using ATRV");
         return;
     }
     const char *data = extract_data_bytes(resp, 0x42);
     if (!data) {
         s_use_atrv = true;
+        s_voltage_oor_count = 0;
+        app_log_warn(TAG, "PID 0x42 parse failed, using ATRV");
         return;
     }
     float v = decode_voltage_ecu(data);
     if (voltage_valid(v)) {
         set_voltage(v, "PID 0x42");
         s_use_atrv = false;
+        s_voltage_oor_count = 0;
+        return;
+    }
+    /* Geçerli format ama aralık dışı değer — clone yanlış encoding kullanıyor
+     * olabilir ya da ECU geçici olarak absürt değer göndermiş olabilir.
+     * Eşiği aşan ardışık OOR'larda ATRV'ye düş. */
+    s_voltage_oor_count++;
+    if (s_voltage_oor_count >= PID42_OOR_FALLBACK && !s_use_atrv) {
+        s_use_atrv = true;
+        app_log_warn(TAG, "PID 0x42 returning invalid %.2fV (x%u) — falling back to ATRV",
+                     v, s_voltage_oor_count);
+    } else if (!s_use_atrv) {
+        app_log_info(TAG, "PID 0x42 OOR %.2fV (x%u/%d) — keeping 0x42",
+                     v, s_voltage_oor_count, PID42_OOR_FALLBACK);
     }
 }
 
 static void atrv_response_cb(const char *resp, void *user_data)
 {
     (void)user_data;
+    s_voltage_pending = false;
     float v = parse_atrv_voltage(resp);
     if (voltage_valid(v)) {
         set_voltage(v, "ATRV");
         return;
     }
-    app_log_warn(TAG, "ATRV parse failed resp=%s", resp ? resp : "(null)");
+    app_log_warn(TAG, "ATRV parse failed: resp='%s' parsed=%.2fV",
+                 resp ? resp : "(null)", v);
 }
 
 static void parse_supported_pids(const char *resp, int block)
@@ -483,6 +602,7 @@ static void parse_supported_pids(const char *resp, int block)
 }
 
 #define DASH_PID_RPM      0x0C
+#define DASH_PID_SPEED    0x0D
 
 #define PID_DISC_BLOCK_COUNT 7
 static const char *const s_disc_cmds[PID_DISC_BLOCK_COUNT] = {
@@ -601,20 +721,39 @@ static bool send_pid_poll(pid_entry_t *e, uint32_t now, bool high_priority)
     if (!elm327_can_queue(high_priority)) {
         return false;
     }
+    if (e->pending) {
+        return false;  /* önceki sorgu halen cevap bekliyor */
+    }
     const vehicle_profile_t *profile = vehicle_profile_get();
     if (!elm327_send_cmd_prio(e->cmd, pid_response_cb, (void *)(uintptr_t)e->pid,
                               e->live ? profile->live_timeout_ms : profile->slow_timeout_ms,
                               high_priority)) {
         return false;
     }
-    e->last_poll = now;
+    e->pending = true;
+    /* last_poll cevap gelince pid_response_cb'de güncellenir */
     return true;
 }
 
 static bool poll_entry_by_pid(uint8_t pid, uint32_t now, bool high_priority)
 {
     pid_entry_t *e = find_entry_by_pid(pid);
-    if (!e || !should_poll_pid(e) || !poll_due(e, now)) {
+    if (!e || !should_poll_pid(e)) {
+        return false;
+    }
+
+    /* Cevap bekleyen PID timeout olmuşsa pending'i temizle */
+    if (e->pending) {
+        const vehicle_profile_t *profile = vehicle_profile_get();
+        uint32_t timeout = e->live ? profile->live_timeout_ms : profile->slow_timeout_ms;
+        if (now - e->last_poll > timeout + 500) {
+            e->pending = false;
+        } else {
+            return false;  /* halen cevap bekleniyor */
+        }
+    }
+
+    if (!poll_due(e, now)) {
         return false;
     }
     return send_pid_poll(e, now, high_priority);
@@ -624,6 +763,14 @@ static bool poll_voltage(uint32_t now)
 {
     const vehicle_profile_t *profile = vehicle_profile_get();
 
+    if (s_voltage_pending) {
+        /* Önceki voltaj sorgusu halen cevap bekliyor — timeout kontrolü */
+        if (now - s_voltage_last < (uint32_t)ATRV_TIMEOUT_MS + 500) {
+            return false;
+        }
+        s_voltage_pending = false;  /* timeout, tekrar dene */
+    }
+
     if (now - s_voltage_last < VOLTAGE_POLL_MS) {
         return false;
     }
@@ -631,10 +778,25 @@ static bool poll_voltage(uint32_t now)
         return false;
     }
 
+    /* Periyodik 0x42 re-probe: ATRV modundayken bile ara sıra 0x42 dene.
+     * Bazı araçlarda init sonrası 0x42 çalışmaya başlar. Callback s_use_atrv'i
+     * tekrar false'a çekebilir. */
+    if (s_use_atrv && (now - s_042_reprobe_last > PID42_REPROBE_MS)) {
+        if (elm327_send_cmd_prio("0142", voltage_pid_cb, NULL,
+                                 profile->slow_timeout_ms, true)) {
+            s_042_reprobe_last = now;
+            s_voltage_last = now;
+            s_voltage_pending = true;
+            s_use_atrv = false;
+            return true;
+        }
+    }
+
     /* Try PID 0x42 first; fall back to ATRV when ECU or profile requires it. */
     if (!profile->use_atrv_voltage && !s_use_atrv) {
         if (elm327_send_cmd_prio("0142", voltage_pid_cb, NULL, profile->slow_timeout_ms, true)) {
             s_voltage_last = now;
+            s_voltage_pending = true;
             return true;
         }
         /* queue full; try ATRV as immediate fallback */
@@ -643,6 +805,7 @@ static bool poll_voltage(uint32_t now)
     if (profile->use_atrv_voltage || s_use_atrv) {
         if (elm327_send_cmd_prio("ATRV", atrv_response_cb, NULL, ATRV_TIMEOUT_MS, true)) {
             s_voltage_last = now;
+            s_voltage_pending = true;
             return true;
         }
     }
@@ -651,15 +814,22 @@ static bool poll_voltage(uint32_t now)
 
 static bool run_dash_poll(uint32_t now)
 {
-    /* Dashboard mode: RPM always wins when due for smooth gauge. */
-    if (poll_entry_by_pid(DASH_PID_RPM, now, true)) {
+    /* Dashboard mode: poll RPM and Speed as a pair so both stay in sync. */
+    bool rpm_queued = poll_entry_by_pid(DASH_PID_RPM, now, true);
+    bool speed_queued = poll_entry_by_pid(DASH_PID_SPEED, now, true);
+    if (rpm_queued || speed_queued) {
+        return true;
+    }
+
+    /* Voltage is the next highest priority on the dashboard. */
+    if (poll_voltage(now)) {
         return true;
     }
 
     for (size_t n = 0; n < s_live_count; n++) {
         size_t idx = (s_dash_slot + n) % s_live_count;
         uint8_t pid = s_live_entries[idx].pid;
-        if (pid == DASH_PID_RPM) {
+        if (pid == DASH_PID_RPM || pid == DASH_PID_SPEED) {
             continue;
         }
         if (poll_entry_by_pid(pid, now, true)) {
@@ -704,10 +874,11 @@ static void poll_task(void *arg)
             s_disc_ready = false;
             s_disc_complete = false;
             s_use_atrv = profile->use_atrv_voltage;
-            s_voltage_filter_init = false;
-            s_voltage_filtered = 0.0f;
-            s_voltage_spike_count = 0;
-            init_poll_entries();
+            s_voltage_oor_count = 0;
+            s_042_reprobe_last = 0;
+            s_voltage_pending = false;
+            memset(s_pid_filters, 0, sizeof(s_pid_filters));  /* tüm PID filtreleri reset */
+            init_poll_entries();  /* init tüm pending flag'leri false yapar */
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -739,7 +910,7 @@ static void poll_task(void *arg)
             try_send_disc_block(false);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(queued ? 1 : 4));
+        vTaskDelay(pdMS_TO_TICKS(queued ? 1 : 2));
     }
 }
 

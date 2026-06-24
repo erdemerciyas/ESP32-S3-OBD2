@@ -6,47 +6,56 @@
 
 A real-time automotive OBD-II (On-Board Diagnostics) dashboard built on the **ESP32-S3** with a **480×480 round LCD**, running **ESP-IDF v5.3.5** and **LVGL v8.4**. It connects to a vehicle's ECU via a **BLE ELM327 adapter**, reads dozens of PIDs, and displays them on a touch-interactive gauge user interface.
 
+Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) let you switch between different cars or engines instantly.
+
 ---
 
 ## Features
 
 ### Dashboard (Main Gauge)
-- **Center gauge** — 420px arc gauge with 270° sweep displaying either **RPM** or **Speed**
-- **Double-tap** to toggle between RPM and Speed in the center gauge
+- **Center gauge** — large 270° sweep arc that fills the round LCD, displaying either **RPM** or **Speed**
+- **Gauge is centered** on the 480×480 round panel; the status bar and data strip are overlaid on top of the arc
+- **Double-tap** the gauge to toggle between RPM and Speed
+- **Active profile name** centered at the top of the gauge; **Bluetooth status** icon on the top-right
+- **9-segment shift-light strip** above the RPM value, lighting up as the engine approaches redline
+- **Redline zone** rendered as a subtle arc band past the profile's `rpm_redline`
 - **Gradient arc coloring**: arc color changes smoothly based on value:
-  - **RPM**: Green → Yellow → Orange → Red (3000/4000/6000/7000 thresholds)
-  - **Speed**: Green → Yellow → Orange → Red (80/100/120/160 kmh thresholds)
+  - **RPM**: Cyan → Orange → Red (3000/5000/6500 thresholds)
+  - **Speed**: Cyan → Orange → Red (80/120/180 km/h thresholds)
 - **94px bold** center value display with custom-generated Montserrat Bold font
-- **3 bottom stat cells** showing live values that swap contextually with center gauge
+- **3 bottom stat cards** with colored top-accent borders and separate value/unit labels:
+  - Left card toggles opposite to the center gauge (shows **Speed** in RPM mode and **RPM** in Speed mode)
+  - Center and right cards show **Coolant** and **Voltage**
+  - Coolant and voltage cards tint automatically on warning/critical thresholds
 
 ### Live Data Grid
-- 3×3 grid displaying **9 real-time OBD-II PIDs**:
+- 3×3 grid of **card-style cells** displaying **9 real-time OBD-II PIDs**
+- Each cell has a colored **left-accent border** and separate value/unit labels
+- Displayed PIDs:
   - Throttle Position (TPS %)
   - Manifold Absolute Pressure (MAP kPa)
   - Engine Load (%)
-  - Intake Air Temperature (IAT)
+  - Intake Air Temperature (IAT °C/°F)
   - Ignition Timing (°)
   - Short Term Fuel Trim (STFT %)
   - Long Term Fuel Trim (LTFT %)
   - Oxygen Sensor 1 Voltage (O2 V)
   - Oxygen Sensor 2 Voltage (O2 V)
 
-### Fault Codes (DTC)
-- Read active and pending Diagnostic Trouble Codes from the ECU
-- Clear stored fault codes
-- Auto-scan when navigating to the DTC tab (with 8s debounce)
-- Supports up to **16 DTCs** with pending code tracking
-
 ### Connection Screen
 - BLE device scanning and connection management
-- Animated status arc showing connection progress
+- Animated status arc showing connection progress with color-coded states
+- Status text color reflects state: ready (green), error (red), progress (blue)
+- Full-width primary **Scan for adapter** button
 - Status display for OBD states: Scanning, Connecting, ELM Init, PID Discovery, Ready, Error
 
 ### Settings
+- **Vehicle profile** dropdown to switch between saved profiles instantly
 - **Metric/Imperial units** toggle (km/h ↔ mph, °C ↔ °F)
 - **Auto-connect** toggle for BLE adapter
 - **Center gauge source** toggle (RPM ↔ Speed)
-- System info display: profile, protocol, adapter, voltage, DTC count
+- Setting rows styled with colored left-accent borders and themed switches
+- System info display: profile, protocol, adapter, voltage
 
 ### Temperature Critical Alert
 - **Buzzer beeps** immediately when coolant temperature reaches critical threshold
@@ -96,19 +105,18 @@ A real-time automotive OBD-II (On-Board Diagnostics) dashboard built on the **ES
 app_main()
 ├── nvs_flash_init()
 ├── vehicle_data_init()          ← Thread-safe shared data store
+├── vehicle_profile_init()       ← Load saved profiles + default profile
 ├── bsp_display_init()           ← Board, LCD, touch, LVGL init
 │   └── bsp_buzzer_init()        ← IO expander + buzzer setup
 ├── ui_init()                    ← Create all screens
 │   ├── screen_connect_create()  ← BLE connection UI
 │   ├── screen_dash_create()     ← Main gauge + stats
 │   ├── screen_grid_create()     ← Live data 3×3 grid
-│   ├── screen_dtc_create()      ← Fault code viewer
 │   └── screen_settings_create() ← Configuration
-├── ui_start_update_timer()      ← 50ms periodic update
+├── ui_start_update_timer()      ← 16ms periodic update (60 fps)
 ├── ble_obd_init/start()         ← BLE GATT client
 ├── elm327_init/start()          ← ELM327 command processor
-├── obd_pids_init/start()        ← PID polling scheduler
-└── obd_dtc_init()               ← DTC read/clear
+└── obd_pids_init/start()        ← PID polling scheduler
 ```
 
 ### Module Breakdown
@@ -116,7 +124,7 @@ app_main()
 - **`main/`** — Entry point, component registration
 - **`main/bsp/`** — Board support: display init, LVGL port, buzzer (C++ with `esp_display_panel`)
 - **`main/data/`** — Vehicle data model, vehicle profile system, application logging
-- **`main/obd/`** — BLE ELM327 communication, PID polling engine, DTC read/clear
+- **`main/obd/`** — BLE ELM327 communication and PID polling engine
 - **`main/ui/`** — LVGL screens, theme system, custom fonts
 
 ### Screens (Tab Navigation)
@@ -126,8 +134,7 @@ Navigation uses an LVGL TabView with hidden tab buttons. Screen switching is don
 1. **Connection** — BLE scan, connect, status
 2. **Dashboard** — Main arc gauge + stats row
 3. **Live Data** — 3×3 PID grid
-4. **Fault Codes** — DTC list with scan/clear
-5. **Settings** — Toggles and system info
+4. **Settings** — Toggles and system info
 
 ---
 
@@ -150,38 +157,37 @@ These are compiled directly into the firmware (no external file system required)
 
 | Token | Color | HEX |
 |-------|-------|-----|
-| Background | Dark blue-black | `#04080C` |
-| Surface | Dark navy | `#0C141E` |
-| Surface Highlight | Lighter navy | `#141E2C` |
-| Primary (teal) | Teal | `#00D4AA` |
-| Secondary (blue) | Light blue | `#38BDF8` |
-| Text | Off-white | `#F1F5F9` |
-| Text Dim | Gray-blue | `#8B9AB0` |
-| OK / Good | Green | `#22C55E` |
-| Warning | Yellow | `#FACC15` |
-| Critical | Red | `#EF4444` |
-| Arc Background | Deep navy | `#162030` |
-| Border | Border blue | `#203044` |
+| Background | Near black | `#02060A` |
+| Surface | Dark navy | `#0A1018` |
+| Surface Highlight | Lighter navy | `#121C28` |
+| Primary | Cyan | `#00F0FF` |
+| Secondary | Orange | `#FF9100` |
+| Accent | Racing red | `#FF2A2A` |
+| Text | Off-white | `#F0F0F0` |
+| Text Dim | Gray-blue | `#6B7A8F` |
+| OK / Good | Green | `#00E676` |
+| Warning | Amber | `#FFC400` |
+| Critical | Racing red | `#FF2A2A` |
+| Arc Background | Deep navy | `#08121C` |
+| Border | Border blue | `#1C2A3C` |
 
 ### Speed Gradient
 
 | Speed (km/h) | Arc Color |
 |--------------|-----------|
-| 0 – 80 | Green → Green |
-| 80 – 100 | Green → Yellow (lerp) |
-| 100 – 120 | Yellow → Orange (lerp) |
-| 120 – 160 | Orange → Red (lerp) |
-| 160+ | Red |
+| 0 – 80 | Cyan |
+| 80 – 120 | Cyan → Orange (lerp) |
+| 120 – 180 | Orange → Red (lerp) |
+| 180+ | Red |
 
 ### RPM Gradient
 
 | RPM | Arc Color |
 |-----|-----------|
-| 0 – 3000 | Green |
-| 3000 – 4000 | Green → Yellow (lerp) |
-| 4000 – 6000 | Yellow → Orange (lerp) |
-| 6000 – 7000 | Orange → Red (lerp) |
-| 7000+ | Red |
+| 0 – 3000 | Cyan |
+| 3000 – 5000 | Cyan → Orange (lerp) |
+| 5000 – 6500 | Orange → Red (lerp) |
+| 6500+ | Red |
 
 ---
 

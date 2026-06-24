@@ -3,20 +3,23 @@
 #include <math.h>
 
 extern const lv_font_t lv_font_montserrat_56;
+extern const lv_font_t lv_font_montserrat_72_bold;
 extern const lv_font_t lv_font_montserrat_94_bold;
+extern const lv_font_t lv_font_montserrat_120_bold;
 
 static ui_theme_t s_theme = {
     .bg         = LV_COLOR_MAKE(0x02, 0x06, 0x0A),
-    .surface    = LV_COLOR_MAKE(0x0A, 0x12, 0x1C),
-    .surface_hi = LV_COLOR_MAKE(0x12, 0x1C, 0x2A),
-    .primary    = LV_COLOR_MAKE(0x00, 0xD4, 0xAA),
-    .secondary  = LV_COLOR_MAKE(0x38, 0xBD, 0xF8),
-    .text       = LV_COLOR_MAKE(0xF8, 0xFA, 0xFC),
-    .text_dim   = LV_COLOR_MAKE(0x7A, 0x8A, 0xA2),
-    .ok         = LV_COLOR_MAKE(0x22, 0xC5, 0x5E),
-    .warn       = LV_COLOR_MAKE(0xFA, 0xCC, 0x15),
-    .crit       = LV_COLOR_MAKE(0xEF, 0x44, 0x44),
-    .arc_bg     = LV_COLOR_MAKE(0x0E, 0x18, 0x24),
+    .surface    = LV_COLOR_MAKE(0x0A, 0x10, 0x18),
+    .surface_hi = LV_COLOR_MAKE(0x12, 0x1C, 0x28),
+    .primary    = LV_COLOR_MAKE(0x00, 0xF0, 0xFF),  /* Cyan */
+    .secondary  = LV_COLOR_MAKE(0xFF, 0x91, 0x00),  /* Orange */
+    .accent     = LV_COLOR_MAKE(0xFF, 0x2A, 0x2A),  /* Racing red */
+    .text       = LV_COLOR_MAKE(0xF0, 0xF0, 0xF0),
+    .text_dim   = LV_COLOR_MAKE(0x6B, 0x7A, 0x8F),
+    .ok         = LV_COLOR_MAKE(0x00, 0xE6, 0x76),
+    .warn       = LV_COLOR_MAKE(0xFF, 0xC4, 0x00),
+    .crit       = LV_COLOR_MAKE(0xFF, 0x2A, 0x2A),
+    .arc_bg     = LV_COLOR_MAKE(0x08, 0x12, 0x1C),
     .border     = LV_COLOR_MAKE(0x1C, 0x2A, 0x3C),
     .font_sm    = &lv_font_montserrat_16,
     .font_md    = &lv_font_montserrat_20,
@@ -88,31 +91,41 @@ static lv_color_t lerp_color(lv_color_t c1, lv_color_t c2, float t)
 
 lv_color_t theme_rpm_gradient_color(float rpm)
 {
-    /* Smooth gradient: green -> yellow -> orange -> red */
-    static const lv_color_t c_green  = LV_COLOR_MAKE(0x22, 0xC5, 0x5E);
-    static const lv_color_t c_yellow = LV_COLOR_MAKE(0xFA, 0xCC, 0x15);
-    static const lv_color_t c_orange = LV_COLOR_MAKE(0xFF, 0x98, 0x00);
-    static const lv_color_t c_red    = LV_COLOR_MAKE(0xEF, 0x44, 0x44);
+    /* Racing gradient: cyan -> orange -> red */
+    static const lv_color_t c_cyan   = LV_COLOR_MAKE(0x00, 0xF0, 0xFF);
+    static const lv_color_t c_orange = LV_COLOR_MAKE(0xFF, 0x91, 0x00);
+    static const lv_color_t c_red    = LV_COLOR_MAKE(0xFF, 0x2A, 0x2A);
 
-    if (rpm <= 3000.0f) return c_green;
-    if (rpm <= 4000.0f) return lerp_color(c_green,  c_yellow, (rpm - 3000.0f) / 1000.0f);
-    if (rpm <= 6000.0f) return lerp_color(c_yellow, c_orange, (rpm - 4000.0f) / 2000.0f);
-    if (rpm <= 7000.0f) return lerp_color(c_orange, c_red,    (rpm - 6000.0f) / 1000.0f);
+    if (rpm <= 3000.0f) return c_cyan;
+    if (rpm <= 5000.0f) return lerp_color(c_cyan,   c_orange, (rpm - 3000.0f) / 2000.0f);
+    if (rpm <= 6500.0f) return lerp_color(c_orange, c_red,    (rpm - 5000.0f) / 1500.0f);
     return c_red;
 }
 
 lv_color_t theme_speed_gradient_color(float kmh)
 {
-    /* Smooth gradient: green (0-80) -> yellow (80-100) -> orange (100-120) -> red (120+) */
-    static const lv_color_t c_green  = LV_COLOR_MAKE(0x22, 0xC5, 0x5E);
-    static const lv_color_t c_yellow = LV_COLOR_MAKE(0xFA, 0xCC, 0x15);
-    static const lv_color_t c_orange = LV_COLOR_MAKE(0xFF, 0x98, 0x00);
-    static const lv_color_t c_red    = LV_COLOR_MAKE(0xEF, 0x44, 0x44);
+    /* Racing gradient: cyan -> orange -> red */
+    static const lv_color_t c_cyan   = LV_COLOR_MAKE(0x00, 0xF0, 0xFF);
+    static const lv_color_t c_orange = LV_COLOR_MAKE(0xFF, 0x91, 0x00);
+    static const lv_color_t c_red    = LV_COLOR_MAKE(0xFF, 0x2A, 0x2A);
 
-    if (kmh <= 80.0f)  return c_green;
-    if (kmh <= 100.0f) return lerp_color(c_green,  c_yellow, (kmh - 80.0f)  / 20.0f);
-    if (kmh <= 120.0f) return lerp_color(c_yellow, c_orange, (kmh - 100.0f) / 20.0f);
-    if (kmh <= 160.0f) return lerp_color(c_orange, c_red,    (kmh - 120.0f) / 40.0f);
+    if (kmh <= 80.0f)  return c_cyan;
+    if (kmh <= 120.0f) return lerp_color(c_cyan,   c_orange, (kmh - 80.0f)  / 40.0f);
+    if (kmh <= 180.0f) return lerp_color(c_orange, c_red,    (kmh - 120.0f) / 60.0f);
+    return c_red;
+}
+
+lv_color_t theme_shift_light_color(float rpm_ratio)
+{
+    static const lv_color_t c_dim    = LV_COLOR_MAKE(0x20, 0x30, 0x40);
+    static const lv_color_t c_cyan   = LV_COLOR_MAKE(0x00, 0xF0, 0xFF);
+    static const lv_color_t c_orange = LV_COLOR_MAKE(0xFF, 0x91, 0x00);
+    static const lv_color_t c_red    = LV_COLOR_MAKE(0xFF, 0x2A, 0x2A);
+
+    if (rpm_ratio < 0.70f) return c_dim;
+    if (rpm_ratio < 0.80f) return c_cyan;
+    if (rpm_ratio < 0.90f) return lerp_color(c_cyan, c_orange, (rpm_ratio - 0.80f) / 0.10f);
+    if (rpm_ratio < 0.95f) return c_orange;
     return c_red;
 }
 
@@ -199,26 +212,32 @@ lv_obj_t *theme_create_header(lv_obj_t *parent, const char *title)
     return lbl;
 }
 
-lv_obj_t *theme_create_metric_cell(lv_obj_t *parent, const char *label, lv_obj_t **value_out)
+lv_obj_t *theme_create_metric_cell(lv_obj_t *parent, const char *label,
+                                    lv_color_t accent, lv_obj_t **value_out,
+                                    lv_obj_t **unit_out)
 {
     const ui_theme_t *t = theme_get();
 
     lv_obj_t *cell = lv_obj_create(parent);
     theme_apply_card(cell);
-    lv_obj_set_size(cell, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_border_color(cell, accent, 0);
+    lv_obj_set_style_border_width(cell, 3, 0);
+    lv_obj_set_style_border_opa(cell, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(cell, LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_set_size(cell, LV_PCT(33), LV_PCT(100));
     lv_obj_set_flex_grow(cell, 1);
     lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_hor(cell, 6, 0);
-    lv_obj_set_style_pad_ver(cell, 8, 0);
-    lv_obj_set_style_pad_row(cell, 5, 0);
+    lv_obj_set_style_pad_hor(cell, UI_GAP_SM, 0);
+    lv_obj_set_style_pad_ver(cell, UI_GAP_MD, 0);
+    lv_obj_set_style_pad_row(cell, UI_GAP_SM, 0);
 
     lv_obj_t *name = lv_label_create(cell);
     lv_label_set_text(name, label);
     lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_obj_set_width(name, LV_PCT(100));
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(name, t->font_sm, 0);
+    lv_obj_set_style_text_font(name, t->font_sm,  0);
     lv_obj_set_style_text_color(name, t->text_dim, 0);
 
     lv_obj_t *val = lv_label_create(cell);
@@ -229,9 +248,97 @@ lv_obj_t *theme_create_metric_cell(lv_obj_t *parent, const char *label, lv_obj_t
     lv_obj_set_style_text_font(val, t->font_data, 0);
     lv_obj_set_style_text_color(val, t->text, 0);
 
+    lv_obj_t *unit = lv_label_create(cell);
+    lv_label_set_text(unit, "");
+    lv_label_set_long_mode(unit, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(unit, LV_PCT(100));
+    lv_obj_set_style_text_align(unit, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(unit, t->font_sm, 0);
+    lv_obj_set_style_text_color(unit, t->text_dim, 0);
+
     if (value_out) {
         *value_out = val;
     }
+    if (unit_out) {
+        *unit_out = unit;
+    }
 
     return cell;
+}
+
+/* Compact stat cell for dashboard bottom row — top accent + value/unit pair */
+lv_obj_t *theme_create_stat_cell(lv_obj_t *parent, const char *label,
+                                  lv_obj_t **value_out, lv_obj_t **unit_out)
+{
+    const ui_theme_t *t = theme_get();
+
+    lv_obj_t *cell = lv_obj_create(parent);
+    theme_apply_card(cell);
+    theme_apply_card_topline(cell, t->border);
+    lv_obj_set_size(cell, LV_PCT(33), LV_PCT(100));
+    lv_obj_set_flex_grow(cell, 1);
+    lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(cell, 3, 0);
+    lv_obj_set_style_pad_ver(cell, 5, 0);
+    lv_obj_set_style_pad_row(cell, 2, 0);
+
+    lv_obj_t *name = lv_label_create(cell);
+    lv_label_set_text(name, label);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(name, LV_PCT(100));
+    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(name, t->font_sm, 0);
+    lv_obj_set_style_text_color(name, t->text_dim, 0);
+
+    lv_obj_t *val_row = lv_obj_create(cell);
+    lv_obj_set_width(val_row, LV_PCT(100));
+    lv_obj_set_style_bg_opa(val_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(val_row, 0, 0);
+    lv_obj_set_style_pad_all(val_row, 0, 0);
+    lv_obj_set_flex_flow(val_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(val_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(val_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *val = lv_label_create(val_row);
+    lv_label_set_text(val, "--");
+    lv_label_set_long_mode(val, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(val, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(val, t->font_data, 0);
+    lv_obj_set_style_text_color(val, t->text, 0);
+
+    lv_obj_t *unit = lv_label_create(val_row);
+    lv_label_set_text(unit, "");
+    lv_obj_set_style_text_align(unit, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(unit, t->font_sm, 0);
+    lv_obj_set_style_text_color(unit, t->text_dim, 0);
+    lv_obj_set_style_pad_left(unit, 3, 0);
+
+    if (value_out) {
+        *value_out = val;
+    }
+    if (unit_out) {
+        *unit_out = unit;
+    }
+
+    return cell;
+}
+
+void theme_apply_card_topline(lv_obj_t *obj, lv_color_t color)
+{
+    lv_obj_set_style_border_color(obj, color, 0);
+    lv_obj_set_style_border_width(obj, 2, 0);
+    lv_obj_set_style_border_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(obj, LV_BORDER_SIDE_TOP, 0);
+}
+
+void theme_apply_setting_row(lv_obj_t *obj, lv_color_t accent)
+{
+    theme_apply_card(obj);
+    lv_obj_set_style_border_color(obj, accent, 0);
+    lv_obj_set_style_border_width(obj, 3, 0);
+    lv_obj_set_style_border_opa(obj, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(obj, LV_BORDER_SIDE_LEFT, 0);
+    lv_obj_set_style_pad_left(obj, 10, 0);
+    lv_obj_set_style_pad_right(obj, 8, 0);
 }

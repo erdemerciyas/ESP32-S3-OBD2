@@ -5,7 +5,9 @@
 #include <string.h>
 
 static lv_obj_t *s_values[9];
-static char s_prev_grid[9][24];
+static lv_obj_t *s_units[9];
+static char s_prev_grid_val[9][16];
+static char s_prev_grid_unit[9][8];
 
 static const char *s_names[] = {
     "TPS", "MAP", "Load",
@@ -13,26 +15,31 @@ static const char *s_names[] = {
     "LTFT", "O2-1", "O2-2"
 };
 
+/* Static left-accent colors for each metric group */
+static lv_color_t s_accents[9];
+
 void screen_grid_create(lv_obj_t *parent)
 {
-    const lv_coord_t y_top = UI_PAD_TOP + 34;
-    const lv_coord_t y_bottom = UI_VIEWPORT_SZ - UI_STAT_BOTTOM_OFF;
-    const lv_coord_t safe_w = theme_safe_width(y_top, y_bottom);
+    const ui_theme_t *t = theme_get();
 
-    lv_obj_t *wrap = lv_obj_create(parent);
-    lv_obj_set_width(wrap, safe_w);
-    lv_obj_set_height(wrap, y_bottom - y_top);
-    lv_obj_align(wrap, LV_ALIGN_TOP_MID, 0, y_top);
-    lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(wrap, 0, 0);
-    lv_obj_set_style_pad_all(wrap, 0, 0);
-    lv_obj_set_style_pad_row(wrap, UI_GAP, 0);
-    lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+    s_accents[0] = t->primary;   /* TPS */
+    s_accents[1] = t->secondary; /* MAP */
+    s_accents[2] = t->primary;   /* Load */
+    s_accents[3] = t->warn;      /* IAT (temperature group) */
+    s_accents[4] = t->secondary; /* Timing */
+    s_accents[5] = t->ok;        /* STFT */
+    s_accents[6] = t->ok;        /* LTFT */
+    s_accents[7] = t->secondary; /* O2-1 */
+    s_accents[8] = t->secondary; /* O2-2 */
 
-    theme_create_header(wrap, "Live Data");
+    lv_obj_t *body = theme_create_flex_col(parent, true);
+    lv_obj_set_width(body, LV_PCT(100));
+    lv_obj_set_style_pad_row(body, UI_GAP_MD, 0);
 
-    lv_obj_t *grid = theme_create_flex_col(wrap, true);
+    theme_create_header(body, "Live Data");
+
+    lv_obj_t *grid = theme_create_flex_col(body, true);
+    lv_obj_set_style_pad_row(grid, UI_GAP, 0);
 
     int idx = 0;
     for (int r = 0; r < 3; r++) {
@@ -40,37 +47,124 @@ void screen_grid_create(lv_obj_t *parent)
         lv_obj_set_flex_grow(row, 1);
 
         for (int c = 0; c < 3; c++) {
-            theme_create_metric_cell(row, s_names[idx], &s_values[idx]);
+            theme_create_metric_cell(row, s_names[idx], s_accents[idx],
+                                     &s_values[idx], &s_units[idx]);
             idx++;
         }
     }
 }
 
-void screen_grid_update(void)
+void screen_grid_update(const vehicle_data_snapshot_t *snap)
 {
-    vehicle_data_t *vd = vehicle_data_get();
-    char buf[24];
+    char val_buf[16];
+    char unit_buf[8];
 
-#define GRID_SET(idx, fmt, ...)                          \
-    do {                                                  \
-        snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__);  \
-        if (strcmp(buf, s_prev_grid[idx]) != 0) {         \
-            strncpy(s_prev_grid[idx], buf, sizeof(s_prev_grid[idx])); \
-            lv_label_set_text(s_values[idx], buf);        \
-        }                                                 \
-    } while (0)
+    /* 0: TPS */
+    snprintf(val_buf, sizeof(val_buf), "%.0f", snap->throttle);
+    strncpy(unit_buf, "%", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[0]) != 0) {
+        strncpy(s_prev_grid_val[0], val_buf, sizeof(s_prev_grid_val[0]));
+        lv_label_set_text(s_values[0], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[0]) != 0) {
+        strncpy(s_prev_grid_unit[0], unit_buf, sizeof(s_prev_grid_unit[0]));
+        lv_label_set_text(s_units[0], unit_buf);
+    }
 
-    GRID_SET(0, "%.0f%%", vd->throttle);
-    GRID_SET(1, "%.0fkPa", vd->map);
-    GRID_SET(2, "%.0f%%", vd->load);
-    GRID_SET(3, "%.0f%s",
-             vehicle_data_convert_temp(vd->iat, vd->metric_units),
-             vehicle_data_temp_unit(vd->metric_units));
-    GRID_SET(4, "%.1f", vd->timing);
-    GRID_SET(5, "%+.1f%%", vd->fuel_trim_st);
-    GRID_SET(6, "%+.1f%%", vd->fuel_trim_lt);
-    GRID_SET(7, "%.2fV", vd->o2_voltage);
-    GRID_SET(8, "%.2fV", vd->o2_b1s2);
+    /* 1: MAP */
+    snprintf(val_buf, sizeof(val_buf), "%.0f", snap->map);
+    strncpy(unit_buf, "kPa", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[1]) != 0) {
+        strncpy(s_prev_grid_val[1], val_buf, sizeof(s_prev_grid_val[1]));
+        lv_label_set_text(s_values[1], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[1]) != 0) {
+        strncpy(s_prev_grid_unit[1], unit_buf, sizeof(s_prev_grid_unit[1]));
+        lv_label_set_text(s_units[1], unit_buf);
+    }
 
-#undef GRID_SET
+    /* 2: Load */
+    snprintf(val_buf, sizeof(val_buf), "%.0f", snap->load);
+    strncpy(unit_buf, "%", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[2]) != 0) {
+        strncpy(s_prev_grid_val[2], val_buf, sizeof(s_prev_grid_val[2]));
+        lv_label_set_text(s_values[2], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[2]) != 0) {
+        strncpy(s_prev_grid_unit[2], unit_buf, sizeof(s_prev_grid_unit[2]));
+        lv_label_set_text(s_units[2], unit_buf);
+    }
+
+    /* 3: IAT */
+    snprintf(val_buf, sizeof(val_buf), "%.0f",
+             vehicle_data_convert_temp(snap->iat, snap->metric_units));
+    strncpy(unit_buf, vehicle_data_temp_unit(snap->metric_units), sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[3]) != 0) {
+        strncpy(s_prev_grid_val[3], val_buf, sizeof(s_prev_grid_val[3]));
+        lv_label_set_text(s_values[3], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[3]) != 0) {
+        strncpy(s_prev_grid_unit[3], unit_buf, sizeof(s_prev_grid_unit[3]));
+        lv_label_set_text(s_units[3], unit_buf);
+    }
+
+    /* 4: Timing */
+    snprintf(val_buf, sizeof(val_buf), "%.1f", snap->timing);
+    strncpy(unit_buf, "°", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[4]) != 0) {
+        strncpy(s_prev_grid_val[4], val_buf, sizeof(s_prev_grid_val[4]));
+        lv_label_set_text(s_values[4], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[4]) != 0) {
+        strncpy(s_prev_grid_unit[4], unit_buf, sizeof(s_prev_grid_unit[4]));
+        lv_label_set_text(s_units[4], unit_buf);
+    }
+
+    /* 5: STFT */
+    snprintf(val_buf, sizeof(val_buf), "%+.1f", snap->fuel_trim_st);
+    strncpy(unit_buf, "%", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[5]) != 0) {
+        strncpy(s_prev_grid_val[5], val_buf, sizeof(s_prev_grid_val[5]));
+        lv_label_set_text(s_values[5], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[5]) != 0) {
+        strncpy(s_prev_grid_unit[5], unit_buf, sizeof(s_prev_grid_unit[5]));
+        lv_label_set_text(s_units[5], unit_buf);
+    }
+
+    /* 6: LTFT */
+    snprintf(val_buf, sizeof(val_buf), "%+.1f", snap->fuel_trim_lt);
+    strncpy(unit_buf, "%", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[6]) != 0) {
+        strncpy(s_prev_grid_val[6], val_buf, sizeof(s_prev_grid_val[6]));
+        lv_label_set_text(s_values[6], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[6]) != 0) {
+        strncpy(s_prev_grid_unit[6], unit_buf, sizeof(s_prev_grid_unit[6]));
+        lv_label_set_text(s_units[6], unit_buf);
+    }
+
+    /* 7: O2-1 */
+    snprintf(val_buf, sizeof(val_buf), "%.2f", snap->o2_voltage);
+    strncpy(unit_buf, "V", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[7]) != 0) {
+        strncpy(s_prev_grid_val[7], val_buf, sizeof(s_prev_grid_val[7]));
+        lv_label_set_text(s_values[7], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[7]) != 0) {
+        strncpy(s_prev_grid_unit[7], unit_buf, sizeof(s_prev_grid_unit[7]));
+        lv_label_set_text(s_units[7], unit_buf);
+    }
+
+    /* 8: O2-2 */
+    snprintf(val_buf, sizeof(val_buf), "%.2f", snap->o2_b1s2);
+    strncpy(unit_buf, "V", sizeof(unit_buf));
+    if (strcmp(val_buf, s_prev_grid_val[8]) != 0) {
+        strncpy(s_prev_grid_val[8], val_buf, sizeof(s_prev_grid_val[8]));
+        lv_label_set_text(s_values[8], val_buf);
+    }
+    if (strcmp(unit_buf, s_prev_grid_unit[8]) != 0) {
+        strncpy(s_prev_grid_unit[8], unit_buf, sizeof(s_prev_grid_unit[8]));
+        lv_label_set_text(s_units[8], unit_buf);
+    }
 }

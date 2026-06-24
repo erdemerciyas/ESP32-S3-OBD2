@@ -11,11 +11,13 @@ idf_component_register(
         "obd/obd_pids.c"
         "ui/theme.c"
         "ui/ui.c"
+        "ui/screen_splash.c"
         "ui/screen_connect.c"
         "ui/screen_dash.c"
         "ui/screen_grid.c"
         "ui/screen_settings.c"
         "ui/lv_font_montserrat_56.c"
+        "ui/lv_font_montserrat_72_bold.c"
         "ui/lv_font_montserrat_94_bold.c"
     INCLUDE_DIRS
         "."

@@ -729,14 +729,15 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\data\vehicle_profile.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\obd2_dashboard\stubs\bsp.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\obd2_dashboard\stubs\ble_obd_stub.c" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)..\obd2_dashboard\stubs\obd_dtc_stub.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\ui.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\theme.c" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_splash.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_connect.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_dash.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_grid.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_settings.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_56.c" />
+    <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_72_bold.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_94_bold.c" />
   </ItemGroup>
   <ItemGroup>
