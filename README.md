@@ -6,7 +6,7 @@
 
 A real-time automotive OBD-II (On-Board Diagnostics) dashboard built on the **ESP32-S3** with a **480×480 round LCD**, running **ESP-IDF v5.3.5** and **LVGL v8.4**. It connects to a vehicle's ECU via a **BLE ELM327 adapter**, reads dozens of PIDs, and displays them on a touch-interactive gauge user interface.
 
-Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) let you switch between different cars or engines instantly.
+**Universal OBD-II profile** with automatic protocol detection (`ATSP0`) and runtime PID discovery works with any ELM327-compatible vehicle. Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) let you switch between different cars or engines instantly.
 
 ---
 
@@ -71,6 +71,20 @@ Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) le
 - Maximum 1 simultaneous connection
 - PSRAM-based memory allocation for BLE stack
 
+### IMU Off-Road Screen (QMI8658)
+- **6-axis IMU** (accelerometer + gyroscope) via I2C
+- Displays **pitch** and **roll** angles with twin arc gauges
+- **Yaw** (heading) display with gyro integration
+- Real-time sensor diagnostics (accel XYZ, gyro XYZ, temperature)
+- **Gyro calibration** on startup (vehicle must be stationary)
+- NVS storage for pitch/roll offset calibration
+- 100 Hz polling task for smooth updates
+
+### Splash Screen
+- Animated loading screen with spinning arc
+- 3-second duration before transitioning to main UI
+- Smooth fade-in animation
+
 ---
 
 ## Hardware Requirements
@@ -79,7 +93,8 @@ Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) le
 |-----------|---------------|
 | **MCU** | ESP32-S3 (Xtensa LX7 dual-core @ 240 MHz) |
 | **Display** | 480×480 round LCD (ST7701) via RGB interface |
-| **Touch** | Capacitive touch panel |
+| **Touch** | Capacitive touch panel (CST226SE) |
+| **IMU** | QMI8658 6-axis (accel ±8g + gyro ±512 dps) |
 | **PSRAM** | Octal PSRAM @ 80 MHz (required for LVGL buffers) |
 | **Flash** | 16 MB |
 | **BLE** | Built-in BLE (NimBLE stack) |
@@ -94,6 +109,7 @@ Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) le
 |--------|------|-------|
 | LCD RGB | RGB565 | Parallel RGB interface via `esp_display_panel` |
 | Touch I2C | GPIO 19 (SDA), GPIO 20 (SCL) | CST226SE or similar |
+| IMU I2C | GPIO 19 (SDA), GPIO 20 (SCL) | QMI8658, address 0x6A (shared with touch) |
 | IO Expander I2C | Same I2C bus | TCA9554, address 0x27 |
 | Buzzer (EXIO8) | TCA9554 pin 7 | Active high via IO expander |
 
@@ -105,15 +121,19 @@ Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) le
 app_main()
 ├── nvs_flash_init()
 ├── vehicle_data_init()          ← Thread-safe shared data store
-├── vehicle_profile_init()       ← Load saved profiles + default profile
+├── vehicle_profile_init()       ← Load saved profiles + universal profile
 ├── bsp_display_init()           ← Board, LCD, touch, LVGL init
 │   └── bsp_buzzer_init()        ← IO expander + buzzer setup
+├── imu_init()                   ← QMI8658 IMU driver + gyro calibration
 ├── ui_init()                    ← Create all screens
+│   ├── screen_splash_create()   ← Animated loading screen
 │   ├── screen_connect_create()  ← BLE connection UI
 │   ├── screen_dash_create()     ← Main gauge + stats
 │   ├── screen_grid_create()     ← Live data 3×3 grid
+│   ├── screen_gyro_create()     ← IMU pitch/roll/yaw display
 │   └── screen_settings_create() ← Configuration
 ├── ui_start_update_timer()      ← 16ms periodic update (60 fps)
+├── imu_start()                  ← Start IMU polling task
 ├── ble_obd_init/start()         ← BLE GATT client
 ├── elm327_init/start()          ← ELM327 command processor
 └── obd_pids_init/start()        ← PID polling scheduler
@@ -125,26 +145,30 @@ app_main()
 - **`main/bsp/`** — Board support: display init, LVGL port, buzzer (C++ with `esp_display_panel`)
 - **`main/data/`** — Vehicle data model, vehicle profile system, application logging
 - **`main/obd/`** — BLE ELM327 communication and PID polling engine
+- **`main/imu/`** — QMI8658 6-axis IMU driver, gyro calibration, sensor fusion
 - **`main/ui/`** — LVGL screens, theme system, custom fonts
 
 ### Screens (Tab Navigation)
 
 Navigation uses an LVGL TabView with hidden tab buttons. Screen switching is done via **swipe gesture** (horizontal) and visual indicator dots at the bottom:
 
-1. **Connection** — BLE scan, connect, status
-2. **Dashboard** — Main arc gauge + stats row
-3. **Live Data** — 3×3 PID grid
-4. **Settings** — Toggles and system info
+1. **Splash** — Animated loading screen (3 seconds)
+2. **Connection** — BLE scan, connect, status
+3. **Dashboard** — Main arc gauge + stats row
+4. **Live Data** — 3×3 PID grid
+5. **Gyro** — IMU pitch/roll/yaw off-road display
+6. **Settings** — Toggles and system info
 
 ---
 
 ## Custom Fonts
 
-Two custom Montserrat fonts were generated using `lv_font_conv` for the gauge display:
+Three custom Montserrat fonts were generated using `lv_font_conv` for the gauge display:
 
 | Font | Size | Weight | Usage |
 |------|------|--------|-------|
 | `lv_font_montserrat_56` | 56px | Regular | Larger labels |
+| `lv_font_montserrat_72_bold` | 72px | Bold | Alternative gauge value |
 | `lv_font_montserrat_94_bold` | 94px | Bold | Center gauge value |
 
 These are compiled directly into the firmware (no external file system required).
@@ -193,26 +217,29 @@ These are compiled directly into the firmware (no external file system required)
 
 ## OBD-II PID Support
 
-The system supports dynamic PID discovery and polling. The following PIDs are polled:
+The system supports dynamic PID discovery and polling with **EMA + spike filtering** for all PIDs. The following PIDs are polled:
 
-| PID | Description | Priority |
-|-----|-------------|----------|
-| 0x0C | RPM (engine speed) | High (live) |
-| 0x0D | Vehicle speed | High (live) |
-| 0x05 | Coolant temperature | High (live) |
-| 0x42 | Battery voltage | High (live) |
-| 0x11 | Throttle position | Medium |
-| 0x0B | MAP (intake pressure) | Medium |
-| 0x0F | Intake air temperature | Medium |
-| 0x0E | Timing advance | Medium |
-| 0x04 | Engine load | Medium |
-| 0x06 | Short term fuel trim | Medium |
-| 0x07 | Long term fuel trim | Medium |
-| 0x14 | O2 sensor 1 voltage | Medium |
-| 0x15 | O2 sensor 2 voltage | Medium |
-| 0x03 | Fuel system status | Slow |
-| 0x12 | Secondary air status | Slow |
-| 0x0A | Fuel pressure | Slow |
+| PID | Description | Priority | Filter Alpha | Spike Max |
+|-----|-------------|----------|--------------|-----------|
+| 0x0C | RPM (engine speed) | High (live) | 0.50 | 250 RPM |
+| 0x0D | Vehicle speed | High (live) | 0.40 | 25 km/h |
+| 0x05 | Coolant temperature | High (live) | 0.15 | 20°C |
+| 0x42 | Battery voltage | High (live) | 0.30 | 0.6V |
+| 0x11 | Throttle position | Medium | 0.50 | 30% |
+| 0x0B | MAP (intake pressure) | Medium | 0.40 | 30 kPa |
+| 0x0F | Intake air temperature | Medium | 0.20 | 20°C |
+| 0x0E | Timing advance | Medium | 0.30 | 15° |
+| 0x04 | Engine load | Medium | 0.40 | 30% |
+| 0x06 | Short term fuel trim | Medium | 0.20 | 15% |
+| 0x07 | Long term fuel trim | Medium | 0.20 | 15% |
+| 0x14 | O2 sensor 1 voltage | Medium | 0.30 | 0.8V |
+| 0x15 | O2 sensor 2 voltage | Medium | 0.30 | 0.8V |
+| 0x10 | MAF (air flow) | Medium | 0.40 | 30 g/s |
+| 0x03 | Fuel system status | Slow | 0.00 | — |
+| 0x12 | Secondary air status | Slow | 0.00 | — |
+| 0x0A | Fuel pressure | Slow | 0.30 | 80 kPa |
+
+**Filtering**: Each PID uses an Exponential Moving Average (EMA) filter with spike rejection. Cold-start seeding provides instant initial values. After 3 consecutive spikes, the filter resets to track rapid real changes.
 
 ---
 
