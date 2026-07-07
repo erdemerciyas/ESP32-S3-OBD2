@@ -11,7 +11,7 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 | UI sekmeleri | Connect · Dash · Grid · Gyro · Settings (DTC kaldırıldı) |
 | Son build | `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
 | Son flash | COM3 — `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
-| Git | `main` = `origin/main` (HEAD `e51d60e`) |
+| Git | `main` = `origin/main` (HEAD `d8a9be7`) |
 
 ---
 
