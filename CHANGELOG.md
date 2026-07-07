@@ -2,18 +2,102 @@
 
 Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce burayı oku;** anlamlı değişiklik yaptıktan sonra güncelle.
 
-## Mevcut durum (2026-06-23)
+## Mevcut durum (2026-07-07)
 
 | Alan | Değer |
 |------|-------|
 | Hedef cihaz | ESP32-S3, 480×480 yuvarlak LCD (görünür 460 px), 8MB PSRAM |
 | Araç profili | **Universal OBD-II** (`ATSP0`, runtime PID keşfi) |
-| UI sekmeleri | Connect · Dash · Grid · Settings (DTC kaldırıldı) |
-| Son build | `obd2_dashboard.bin` **0x137850** (~1.24 MB), 2026-06-23 |
-| Son flash | COM4 — `obd2_dashboard.bin` **0x137850** (~1.24 MB), 2026-06-23 (hub gizli, alt sol hücre toggle)
-| Git | `main` üzerinde commit bekleyen değişiklikler var (HEAD `3338fd5-dirty`)
+| UI sekmeleri | Connect · Dash · Grid · Gyro · Settings (DTC kaldırıldı) |
+| Son build | `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
+| Son flash | COM3 — `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
+| Git | `main` = `origin/main` (HEAD `e51d60e`) |
 
 ---
+
+## 2026-07-07 — Dashboard görsel yenileme geri alındı
+
+**Neden:** Kalın arc / cyan bezel / büyük data pill tasarımı beğenilmedi; bir önceki dashboard görünümüne dönüldü.
+
+- `theme.h`, `theme.c`, `screen_dash.c`: arc 18→8 px, dış halka/glow/profil rozeti/cyan metin/48 px data fontu kaldırıldı; glass pill ve orijinal layout geri yüklendi.
+- OBD düzeltmeleri (`ble_obd.c`, `obd_pids.c`, `elm327.c`) **korundu**.
+
+---
+
+## 2026-07-07 — BLE otomatik bağlantı + Temp/Volt starvation + volt re-probe + RPM/Speed batch + performans UI
+
+**Neden:** Otomatik bağlantı bazen kurulmuyor/çok geç kuruluyor (elle tetikleme gerekiyordu), RPM/Speed gecikmeli ve Temp/Volt aralıklı/hiç gelmiyordu.
+
+### BLE bağlantı güvenilirliği (`main/obd/ble_obd.c`)
+
+- **NVS MAC artık silinmiyor:** connect timeout / connect-fail durumunda kayıtlı adres korunuyor. Ardışık `DIRECT_FAIL_MAX (3)` hatadan sonra geçici `s_prefer_scan` ile scan'e düşülüyor (scan adaptörün yayında olduğunu doğrular), adres korunuyor. Başarılı GATT'ta sayaçlar sıfırlanıp direkt bağlantıya geri dönülüyor.
+- **GATT keşfi watchdog'u:** `BLE_GAP_EVENT_CONNECT` sonrası watchdog iptal edilmeyip `GATT_DISCOVERY_TIMEOUT_MS (6s)` ile yeniden başlatılıyor; keşif asılırsa terminate + reconnect. `start_connect_watchdog(timeout_ms)` parametreli hale getirildi, `s_gatt_phase` bayrağı eklendi.
+- **Scan backoff:** adaptör bulunamayınca artan gecikme (üst sınır `BACKOFF_MAX_MS 10s`), `s_scan_fail_count`; eşleşme bulununca sıfırlanıyor.
+
+### PID polling — Temp/Volt starvation (`main/obd/obd_pids.c`)
+
+- `run_dash_poll`: Tier 2 (Coolant `0x05` + Voltage) artık RPM/Speed'e kapı KOYMUYOR. 60 ms'lik RPM/Speed turları Temp/Volt'u aç bırakıyordu; her PID zaten kendi `poll_due` + `pending` ile sınırlı, kuyruk sığ kalıyor.
+
+### Voltage re-probe kurtarma (`main/obd/obd_pids.c`)
+
+- **Bug:** ATRV modunda periyodik `0142` re-probe `s_use_atrv=false` yapıyor; o `0142` timeout olursa mod ATRV'ye dönmüyor, adaptör kalıcı `0142` timeout döngüsüne girip voltaj hiç gelmiyordu.
+- **Fix:** `s_reprobe_inflight` bayrağı eklendi; `poll_voltage` timeout'unda re-probe uçuştaysa `s_use_atrv=true`'ya geri dönülüyor. Bayrak her iki callback'te ve disconnect reset'inde temizleniyor.
+
+### Filtre notu
+
+- EMA konvansiyonu `filtered += alpha*(raw-filtered)` → yüksek alpha = hızlı tepki. RPM 0.90 / Speed 0.94 zaten hızlı; algılanan gecikme filtreden değil polling starvation'ından kaynaklanıyordu (yukarıda düzeltildi). Filtre değerleri değiştirilmedi.
+
+### RPM+Speed batch — tek komut senkron okuma (`main/obd/obd_pids.c`, `main/obd/elm327.c`)
+
+- **`elm327.c` expect-token:** çoklu-PID komutunda (`010C0D`) yalnızca ilk PID (`410C`) eşleştiriliyor; aksi halde `410C..0D..` yanıtı "stale" diye atılıyordu. Tek-PID davranışı değişmedi.
+- **`obd_pids.c` batch:** `010C0D` ile RPM+Speed tek BLE round-trip'te senkron geliyor. **Varsayılan kapalı**; başarılı probe sonrası açılıyor, 3 başarısızlıkta (parse/timeout) kalıcı olarak ayrı polling'e dönüyor (regresyonsuz). Batch yanıtı sentetik tek-PID dizesine çevrilip mevcut `update_pid_value()` decode+filtre yolunu tekrar kullanıyor.
+
+### UI — performans tako (`main/ui/screen_dash.c`, `main/ui/theme.h`)
+
+- Majör tick'ler arasına **minör tick** graduation eklendi (250 rpm'de bir, `TICK_MINORS_PER_INTERVAL=4`); dairesel ekranda yoğun spor-tako görünümü.
+- Majör tick'ler belirginleştirildi: kalınlık 2→3, opaklık %60→tam, boy 6→10 px; minör tick'ler 5 px / %40 dim.
+- Not: Gauge animasyonu zaten 80 ms (snappy) — algılanan RPM/Speed gecikmesi animasyondan değil polling starvation'ından geliyordu (Faz 2'de düzeldi).
+
+### Teşhis (`main/obd/ble_obd.c`)
+
+- GATT hazır olduğunda **bağlantı süresi (ms)** loglanıyor; GATT/connect timeout faz bilgisiyle, batch fallback ve voltage revert olayları loglanıyor — "neden geç bağlandı / veri gelmedi" sahada izlenebilir.
+
+### Build
+
+- **Build:** Başarılı — `obd2_dashboard.bin` **0x13a610** (~1.29 MB), partition'da **%59** boş.
+- **Flash:** COM3 üzerinden ESP32-S3'e başarıyla yüklendi; MAC `dc:b4:d9:23:18:04`.
+
+---
+
+## 2026-07-06 — ELM327 desync düzeltmesi + DTC tamamen kaldırıldı
+
+**Neden:** Cihazda BLE ELM327'ye geç bağlanıyor, RPM/Speed anlık gelip donuyordu; DTC sekmesi yeniden eklenmişti ve PID polling'i duraklatıyordu.
+
+### ELM327 komut/yanıt eşleştirme (`main/obd/elm327.c`)
+
+- Her komut için beklenen yanıt token'ı türetiliyor (`010C` → `410C`, `03` → `43`); eşleşmeyen geç yanıtlar atılıyor.
+- Timeout sonrası 60 ms flush penceresi: RX buffer + pending + semafor temizliği.
+- Init döngüsünde komut başına stale semafor drenajı; sabit 20 ms gecikme kaldırıldı (ATZ 500 ms korundu).
+
+### PID polling (`main/obd/obd_pids.c`)
+
+- `pid_response_cb`: yanlış PID yanıtında `last_poll=0` ile anında yeniden sorgu.
+- Filtre: RPM alpha 0.96→**0.90**, Speed spike_max 40→**30**.
+- DTC pause/resume (`s_paused`, `obd_pids_pause/resume`) kaldırıldı.
+
+### DTC kaldırma
+
+- Silindi: `main/obd/obd_dtc.c/.h`, `main/ui/screen_dtc.c`, `docs/OBD2_DTC_IMPLEMENTATION.md`
+- `main/main.c`, `main/ui/ui.c/.h`, `main/CMakeLists.txt` güncellendi — 5 sekme (Connect/Dash/Grid/Gyro/Settings)
+
+### Build
+
+- **Build:** Başarılı — `obd2_dashboard.bin` **0x139fd0** (~1.26 MB), partition'da **%59** boş.
+- **Flash:** COM3 üzerinden ESP32-S3'e başarıyla yüklendi; MAC `dc:b4:d9:23:18:04`.
+
+---
+
+## Mevcut durum (2026-06-23) — arşiv
 
 ## 2026-06-23 — Motorsporları temalı dashboard yenilemesi + veri senkronizasyonu
 

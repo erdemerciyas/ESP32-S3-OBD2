@@ -21,9 +21,11 @@ static const char *TAG = "elm327";
 #define ELM_QUEUE_MAX    8
 #define ELM_TASK_STACK   4096
 #define ELM_TASK_PRIO    5
+#define TIMEOUT_FLUSH_MS 60
 
 typedef struct {
     char cmd[64];
+    char expect[8];
     elm327_response_cb_t cb;
     void *user_data;
     uint32_t timeout_ms;
@@ -37,6 +39,7 @@ static SemaphoreHandle_t s_sync_sem;
 static SemaphoreHandle_t s_elm_mutex;
 static char s_sync_response[256];
 static char s_pending_response[256];
+static char s_inflight_expect[8];
 static TaskHandle_t s_task_handle;
 
 static void elm_lock(void) { xSemaphoreTake(s_elm_mutex, portMAX_DELAY); }
@@ -47,6 +50,10 @@ static bool s_elm_configured;
 static void elm327_run_init(void);
 static bool send_raw(const char *cmd);
 static bool wait_response(uint32_t timeout_ms);
+static void drain_stale_sync(void);
+static void flush_rx_after_timeout(void);
+static void derive_expect_token(const char *cmd, char *expect, size_t expect_len);
+static void set_inflight_expect(const char *cmd);
 
 static void trim_response(char *s)
 {
@@ -98,6 +105,7 @@ static bool pending_has_obd_mode(void)
 {
     return strstr(s_pending_response, "41") != NULL ||
            strstr(s_pending_response, "43") != NULL ||
+           strstr(s_pending_response, "44") != NULL ||
            strstr(s_pending_response, "47") != NULL;
 }
 
@@ -119,6 +127,7 @@ static bool obd_line_complete(const char *line)
     }
     if (strstr(line, "41") == NULL &&
         strstr(line, "43") == NULL &&
+        strstr(line, "44") == NULL &&
         strstr(line, "47") == NULL) {
         return false;
     }
@@ -155,6 +164,7 @@ static bool is_final_response(const char *line)
     }
     if (strstr(line, "41") != NULL ||
         strstr(line, "43") != NULL ||
+        strstr(line, "44") != NULL ||
         strstr(line, "47") != NULL) {
         return true;
     }
@@ -187,10 +197,91 @@ static void clear_pending_response(void)
     s_pending_response[0] = '\0';
 }
 
+static void drain_stale_sync(void)
+{
+    if (!s_sync_sem) {
+        return;
+    }
+    while (xSemaphoreTake(s_sync_sem, 0) == pdTRUE) {
+    }
+}
+
+static void flush_rx_after_timeout(void)
+{
+    vTaskDelay(pdMS_TO_TICKS(TIMEOUT_FLUSH_MS));
+    elm_lock();
+    s_rx_len = 0;
+    s_rx_buf[0] = '\0';
+    s_pending_response[0] = '\0';
+    s_sync_response[0] = '\0';
+    elm_unlock();
+    drain_stale_sync();
+}
+
+static void derive_expect_token(const char *cmd, char *expect, size_t expect_len)
+{
+    if (!expect || expect_len == 0) {
+        return;
+    }
+    expect[0] = '\0';
+    if (!cmd || cmd[0] == '\0') {
+        return;
+    }
+
+    /* AT commands: accept OK/ELM/voltage/error via empty expect filter. */
+    if ((cmd[0] == 'A' || cmd[0] == 'a') && (cmd[1] == 'T' || cmd[1] == 't')) {
+        return;
+    }
+
+    if (!isxdigit((unsigned char)cmd[0]) || !isxdigit((unsigned char)cmd[1])) {
+        return;
+    }
+
+    int mode = 0;
+    if (sscanf(cmd, "%2x", &mode) != 1) {
+        return;
+    }
+
+    size_t pos = 0;
+    pos += (size_t)snprintf(expect, expect_len, "%02X", mode + 0x40);
+    /* Yalnızca İLK PID'i eşleştir (mode + ilk 2 hex). Çoklu-PID isteklerinde
+     * (örn. "010C0D") yanıt "410C..0D.." biçiminde döner; tam "410C0D" dizisi
+     * yanıtta ardışık bulunmaz. İlk PID'e göre eşleştirmek tek-PID davranışını
+     * değiştirmez, çoklu-PID yanıtının geçerli sayılmasını sağlar. */
+    int hex_taken = 0;
+    for (const char *p = cmd + 2; *p && pos < expect_len - 1 && hex_taken < 2; p++) {
+        if (isxdigit((unsigned char)*p)) {
+            expect[pos++] = (char)toupper((unsigned char)*p);
+            hex_taken++;
+        }
+    }
+    expect[pos] = '\0';
+}
+
+static void set_inflight_expect(const char *cmd)
+{
+    derive_expect_token(cmd, s_inflight_expect, sizeof(s_inflight_expect));
+}
+
+static bool pending_matches_inflight(void)
+{
+    if (s_inflight_expect[0] == '\0') {
+        return true;
+    }
+    if (strstr(s_pending_response, s_inflight_expect) != NULL) {
+        return true;
+    }
+    return strstr(s_pending_response, "NO DATA") != NULL ||
+           strstr(s_pending_response, "UNABLE") != NULL ||
+           strstr(s_pending_response, "ERROR") != NULL ||
+           strstr(s_pending_response, "STOPPED") != NULL;
+}
+
 static int response_priority(const char *line)
 {
     if (strstr(line, "41") != NULL ||
         strstr(line, "43") != NULL ||
+        strstr(line, "44") != NULL ||
         strstr(line, "47") != NULL) {
         return 3;
     }
@@ -225,6 +316,12 @@ static void consider_response_line(const char *line)
         s_pending_response[sizeof(s_pending_response) - 1] = '\0';
         return;
     }
+    /* Multi-frame OBD response: accumulate hex continuation data */
+    if (pending_has_obd_mode() && is_hex_data_line(line)) {
+        append_hex_line(line);
+        return;
+    }
+
     if (response_priority(line) >= response_priority(s_pending_response)) {
         strncpy(s_pending_response, line, sizeof(s_pending_response) - 1);
         s_pending_response[sizeof(s_pending_response) - 1] = '\0';
@@ -234,6 +331,12 @@ static void consider_response_line(const char *line)
 static void deliver_pending_response(void)
 {
     if (s_pending_response[0] == '\0') {
+        return;
+    }
+    if (!pending_matches_inflight()) {
+        ESP_LOGW(TAG, "Discarding stale response (expected %s): %.48s",
+                 s_inflight_expect, s_pending_response);
+        clear_pending_response();
         return;
     }
     if (s_sync_sem) {
@@ -301,7 +404,7 @@ static void process_rx_buffer(void)
             looks_like_voltage(line) ||
             (strchr(line, 'V') != NULL && strchr(line, '.') != NULL)) {
             deliver_pending_response();
-        } else if (obd_line_complete(s_pending_response)) {
+        } else if (!pending_has_obd_mode() && obd_line_complete(s_pending_response)) {
             deliver_pending_response();
         }
     }
@@ -379,7 +482,14 @@ static void elm327_run_init(void)
     }
 
     for (size_t i = 0; i < cmd_count; i++) {
+        drain_stale_sync();
+        elm_lock();
+        clear_pending_response();
+        set_inflight_expect(cmds[i]);
+        elm_unlock();
+
         if (!send_raw(cmds[i])) {
+            s_inflight_expect[0] = '\0';
             s_state = ELM_STATE_ERROR;
             vehicle_data_set_state(OBD_STATE_ERROR, "ELM327 send failed");
             app_log_error(TAG, "Send failed during init: %s", cmds[i]);
@@ -387,12 +497,12 @@ static void elm327_run_init(void)
         }
         if (i == 0 && atz_delay_ms > 0) {
             vTaskDelay(pdMS_TO_TICKS(atz_delay_ms));
-        } else {
-            vTaskDelay(pdMS_TO_TICKS(20));
         }
         if (!wait_response(1500)) {
             ESP_LOGW(TAG, "Timeout on %s", cmds[i]);
+            flush_rx_after_timeout();
         }
+        s_inflight_expect[0] = '\0';
     }
 
     s_elm_configured = true;
@@ -412,6 +522,8 @@ static void elm327_task(void *arg)
             s_elm_configured = false;
             s_rx_len = 0;
             s_rx_buf[0] = '\0';
+            s_inflight_expect[0] = '\0';
+            clear_pending_response();
             vehicle_data_clear_supported_pids();
             vTaskDelay(pdMS_TO_TICKS(200));
             continue;
@@ -433,7 +545,15 @@ static void elm327_task(void *arg)
 
         s_state = ELM_STATE_BUSY;
         app_log_info(TAG, "TX %s", cmd.cmd);
+
+        drain_stale_sync();
+        elm_lock();
+        clear_pending_response();
+        set_inflight_expect(cmd.cmd);
+        elm_unlock();
+
         if (!send_raw(cmd.cmd)) {
+            s_inflight_expect[0] = '\0';
             app_log_warn(TAG, "Send failed: %s", cmd.cmd);
             s_state = ELM_STATE_READY;
             continue;
@@ -444,15 +564,11 @@ static void elm327_task(void *arg)
                 cmd.cb(s_sync_response, cmd.user_data);
             }
         } else {
-            elm_lock();
             ESP_LOGW(TAG, "Timeout: %s", cmd.cmd);
-            s_rx_len = 0;
-            s_rx_buf[0] = '\0';
-            s_sync_response[0] = '\0';
-            s_pending_response[0] = '\0';
-            elm_unlock();
+            flush_rx_after_timeout();
         }
 
+        s_inflight_expect[0] = '\0';
         s_state = ELM_STATE_READY;
     }
 }
@@ -502,14 +618,24 @@ bool elm327_send_cmd_prio(const char *cmd, elm327_response_cb_t cb, void *user_d
 
 bool elm327_send_cmd_sync(const char *cmd, char *response, size_t response_len, uint32_t timeout_ms)
 {
+    drain_stale_sync();
+    elm_lock();
+    clear_pending_response();
+    set_inflight_expect(cmd);
+    elm_unlock();
+
     if (!send_raw(cmd)) {
+        s_inflight_expect[0] = '\0';
         return false;
     }
     if (!wait_response(timeout_ms)) {
+        flush_rx_after_timeout();
+        s_inflight_expect[0] = '\0';
         return false;
     }
     strncpy(response, s_sync_response, response_len - 1);
     response[response_len - 1] = '\0';
+    s_inflight_expect[0] = '\0';
     return true;
 }
 

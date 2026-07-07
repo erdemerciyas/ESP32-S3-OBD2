@@ -167,6 +167,24 @@ void theme_apply_card(lv_obj_t *obj)
     lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
 }
 
+/* Glass morphism data pill: semi-transparent surface, subtle gradient border,
+ * soft shadow for depth, larger radius. Used for the dashboard data strip. */
+void theme_apply_glass_card(lv_obj_t *obj)
+{
+    lv_obj_set_style_bg_color(obj, s_theme.surface, 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_80, 0);
+    lv_obj_set_style_border_color(obj, s_theme.border, 0);
+    lv_obj_set_style_border_width(obj, 1, 0);
+    lv_obj_set_style_border_opa(obj, LV_OPA_60, 0);
+    lv_obj_set_style_radius(obj, UI_DATA_RADIUS, 0);
+    lv_obj_set_style_shadow_width(obj, 8, 0);
+    lv_obj_set_style_shadow_ofs_y(obj, 2, 0);
+    lv_obj_set_style_shadow_color(obj, s_theme.bg, 0);
+    lv_obj_set_style_shadow_opa(obj, LV_OPA_30, 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
 lv_obj_t *theme_create_flex_row(lv_obj_t *parent)
 {
     lv_obj_t *row = lv_obj_create(parent);

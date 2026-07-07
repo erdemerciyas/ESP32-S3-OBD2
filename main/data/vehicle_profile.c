@@ -32,9 +32,9 @@ static const char *PROFILE_KEY_PREFIX = "p_";
  */
 
 static const vehicle_pid_poll_t s_univ_live[] = {
-    { 0x0C,  35, true, true  },  /* RPM        — ultra-responsive gauge */
-    { 0x0D,  50, true, true  },  /* Speed      — frequent updates */
-    { 0x05, 150, true, true  },  /* Coolant    — lively sub-cell */
+    { 0x0C,  60, true, true  },  /* RPM        — batched with Speed (~16 Hz) */
+    { 0x0D,  60, true, true  },  /* Speed      — batched with RPM  (~16 Hz) */
+    { 0x05, 150, true, true  },  /* Coolant    — lively sub-cell (~6.7 Hz) */
 };
 
 static const vehicle_pid_poll_t s_univ_fast[] = {

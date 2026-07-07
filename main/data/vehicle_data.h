@@ -40,6 +40,19 @@ typedef struct {
     float fuel_system2;
     float secondary_air;
 
+    /* Timestamps (lv_tick_get() ms) of the last valid update per key value.
+     * Used by the UI to detect stale data and show "--" for values that have
+     * not refreshed within a few seconds. */
+    uint32_t rpm_ts;
+    uint32_t speed_ts;
+    uint32_t coolant_ts;
+    uint32_t voltage_ts;
+
+    /* Pair timestamp: set when RPM and Speed are received together via a
+     * multi-PID batch request, so the UI knows they are from the same ECU
+     * sample. Zero means they were polled individually. */
+    uint32_t dash_pair_ts;
+
     uint32_t supported_pids[4];
 
     obd_state_t state;
@@ -71,6 +84,15 @@ typedef struct {
     float o2_voltage;
     float o2_b1s2;
 
+    /* Timestamps (lv_tick_get() ms) for stale-value detection in the UI. */
+    uint32_t rpm_ts;
+    uint32_t speed_ts;
+    uint32_t coolant_ts;
+    uint32_t voltage_ts;
+
+    /* Pair timestamp from batch RPM+Speed request (0 = individual poll). */
+    uint32_t dash_pair_ts;
+
     obd_state_t state;
     char adapter_name[32];
     char adapter_addr[18];
@@ -93,6 +115,24 @@ void vehicle_data_clear_supported_pids(void);
 bool vehicle_data_is_pid_supported(uint8_t pid);
 
 void vehicle_data_set_float(float *field, float value);
+
+/* Update a key value together with its freshness timestamp. Callers in the OBD
+ * layer should prefer these over vehicle_data_set_float for rpm/speed/coolant/
+ * voltage so the UI can detect stale readings. */
+void vehicle_data_set_rpm(float value);
+void vehicle_data_set_speed(float value);
+void vehicle_data_set_coolant(float value);
+void vehicle_data_set_voltage(float value);
+
+/* Atomically set both RPM and Speed with a single timestamp (batch poll).
+ * When the ECU returns both PIDs in one response this guarantees the UI sees
+ * them as a coherent pair from the same sample instant. */
+void vehicle_data_set_dash_pair(float rpm, float speed);
+
+/* Returns true if a value last updated at ts is still fresh (within max_age_ms
+ * of now). now is typically lv_tick_get(); pass 0 to use the stored value. */
+bool vehicle_data_is_fresh(uint32_t ts, uint32_t now, uint32_t max_age_ms);
+
 threshold_level_t vehicle_data_coolant_level(float c);
 threshold_level_t vehicle_data_voltage_level(float v);
 threshold_level_t vehicle_data_rpm_level(float rpm);

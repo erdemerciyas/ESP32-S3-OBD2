@@ -11,6 +11,10 @@
 #define M_PI 3.14159265358979323846f
 #endif
 
+/* Gauge sweep geometry: 270 degrees, rotation 135 (from 7:30 to 4:30 clockwise) */
+#define GAUGE_ROTATION_DEG    135.0f
+#define GAUGE_SWEEP_DEG       270.0f
+
 static lv_obj_t *s_bt_icon;
 static lv_obj_t *s_profile_lbl;
 static lv_obj_t *s_main_arc;
@@ -28,6 +32,17 @@ static lv_obj_t *s_data_units[3];
 static lv_point_t s_needle_points[2];
 static uint32_t  s_last_click_ms;
 
+/* Tick marks: array of line objects drawn just inside the main arc */
+#define TICK_MAJOR_COUNT   9   /* 0..8000 step 1000 = 9 ticks */
+static lv_obj_t *s_ticks[TICK_MAJOR_COUNT];
+static lv_point_t s_tick_points[TICK_MAJOR_COUNT][2];
+
+/* Minor tick marks between majors — denser performance-tacho graduation. */
+#define TICK_MINORS_PER_INTERVAL 4   /* every 250 rpm on a 0..8000 dial */
+#define TICK_MINOR_COUNT   ((TICK_MAJOR_COUNT - 1) * TICK_MINORS_PER_INTERVAL)
+static lv_obj_t *s_minor_ticks[TICK_MINOR_COUNT];
+static lv_point_t s_minor_tick_points[TICK_MINOR_COUNT][2];
+
 /* Previous state caches to skip redundant LVGL updates */
 static int32_t  s_prev_max_val = -1;
 static float    s_prev_main_val = -1.0f;
@@ -39,6 +54,26 @@ static char     s_prev_data_val[3][16];
 static char     s_prev_data_unit[3][8];
 static threshold_level_t s_prev_data_lvl[3] = { THRESHOLD_OK, THRESHOLD_OK, THRESHOLD_OK };
 static lv_color_t s_prev_arc_color;
+static bool     s_prev_rpm_mode_for_color = true;
+
+/* --- LVGL gauge animation state ---
+ * The arc/needle/value animate from s_anim_cur toward the latest target value
+ * over GAUGE_ANIM_MS, giving a smooth ease-out motion with no jitter.
+ * The animation is bound to s_main_arc (a stable LVGL object) so LVGL can
+ * track and replace it across frames; the snapshot pointer is passed via the
+ * exec callback's var (unused for value, used only for color lookup mode). */
+static int32_t  s_anim_cur;       /* current displayed (interpolated) value */
+static int32_t  s_anim_target;    /* latest target value from data */
+static int32_t  s_anim_max;       /* arc range max while animating */
+static bool     s_anim_init;      /* first-value seed (no animation on cold start) */
+static bool     s_anim_mode_rpm;  /* current mode for gradient color lookup */
+static uint32_t s_anim_period_ms; /* animation duration, mode-dependent */
+
+/* --- Data pill text smoothing (mini EMA) ---
+ * Prevents the numeric labels from flickering ±1 each frame. */
+static float    s_smooth_speed = -1.0f;
+static float    s_smooth_temp  = -1.0f;
+static float    s_smooth_volt  = -1.0f;
 
 /* Buzzer alert state */
 #define ALERT_BEEP_MS     400
@@ -94,6 +129,160 @@ static void gauge_double_tap_cb(lv_event_t *e)
     }
 }
 
+/* Compute needle tip position for a given value ratio (0..1) within the arc.
+ * The needle runs from the gauge center toward the inner edge of the arc. */
+static void update_needle_for_value(int32_t val, int32_t max_val)
+{
+    float ratio = (max_val > 0) ? (float)val / (float)max_val : 0.0f;
+    if (ratio < 0.0f) ratio = 0.0f;
+    if (ratio > 1.0f) ratio = 1.0f;
+    float angle_deg = GAUGE_ROTATION_DEG + ratio * GAUGE_SWEEP_DEG;
+    float angle_rad = angle_deg * M_PI / 180.0f;
+    lv_coord_t cx = UI_GAUGE_SZ / 2;
+    lv_coord_t cy = UI_GAUGE_SZ / 2 + UI_GAUGE_VALUE_Y_OFF;
+    /* Needle tip sits just inside the arc so it visually points to the value. */
+    lv_coord_t len = (UI_GAUGE_SZ / 2) - UI_GAUGE_ARC_W - 14;
+    s_needle_points[1].x = cx + (lv_coord_t)(len * cosf(angle_rad));
+    s_needle_points[1].y = cy + (lv_coord_t)(len * sinf(angle_rad));
+    lv_line_set_points(s_needle, s_needle_points, 2);
+}
+
+/* Update the arc indicator color, needle color and hub border together so the
+ * whole gauge shifts color smoothly with the value. The mode is taken from the
+ * animation state (set when the animation is launched). */
+static void update_arc_color_for_value(int32_t val, int32_t max_val, bool rpm_mode,
+                                        const vehicle_data_snapshot_t *snap)
+{
+    lv_color_t arc_color;
+    if (rpm_mode) {
+        arc_color = theme_rpm_gradient_color((float)val);
+    } else {
+        /* In speed mode the displayed value is the converted speed; look up
+         * the speed gradient directly with it. */
+        arc_color = theme_speed_gradient_color((float)val);
+    }
+    if (arc_color.full != s_prev_arc_color.full) {
+        s_prev_arc_color = arc_color;
+        lv_obj_set_style_arc_color(s_main_arc, arc_color, LV_PART_INDICATOR);
+        lv_obj_set_style_line_color(s_needle, arc_color, 0);
+        lv_obj_set_style_border_color(s_hub, arc_color, 0);
+    }
+    (void)max_val;
+    (void)snap;
+}
+
+/* LVGL animation callback: each frame sets arc value, digital readout, needle
+ * and color so the entire gauge moves in lockstep with no jitter. The color
+ * lookup uses the animation's mode (s_anim_mode_rpm). */
+static void gauge_anim_cb(void *var, int32_t v)
+{
+    (void)var;
+    s_anim_cur = v;
+    lv_arc_set_value(s_main_arc, v);
+    lv_label_set_text_fmt(s_main_value, "%d", (int)v);
+    update_needle_for_value(v, s_anim_max);
+    update_arc_color_for_value(v, s_anim_max, s_anim_mode_rpm, NULL);
+}
+
+/* Kick off (or retarget) the gauge animation toward a new target value.
+ * On the very first reading we snap instantly to avoid a long sweep from 0. */
+static void gauge_anim_goto(int32_t target, int32_t max_val, bool rpm_mode,
+                             const vehicle_data_snapshot_t *snap)
+{
+    (void)snap;
+    s_anim_max       = max_val;
+    s_anim_mode_rpm  = rpm_mode;
+    s_anim_target    = target;
+    s_anim_period_ms = rpm_mode ? UI_GAUGE_ANIM_RPM : UI_GAUGE_ANIM_SPEED;
+
+    if (!s_anim_init) {
+        /* Cold start: snap directly to the value, no animation. */
+        s_anim_init = true;
+        s_anim_cur  = target;
+        lv_arc_set_value(s_main_arc, target);
+        lv_label_set_text_fmt(s_main_value, "%d", (int)target);
+        update_needle_for_value(target, max_val);
+        update_arc_color_for_value(target, max_val, rpm_mode, NULL);
+        return;
+    }
+
+    if (target == s_anim_cur) {
+        return;
+    }
+
+    /* Replace any in-flight gauge animation so the newest reading always wins. */
+    lv_anim_del(s_main_arc, gauge_anim_cb);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_main_arc);
+    lv_anim_set_values(&a, s_anim_cur, target);
+    lv_anim_set_time(&a, s_anim_period_ms);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a, gauge_anim_cb);
+    lv_anim_set_ready_cb(&a, NULL);
+    lv_anim_start(&a);
+}
+
+/* Build the major tick marks around the inside of the arc. Called once during
+ * screen creation; positioned for the RPM max of the active profile.
+ * Ticks are drawn after the arcs so they sit on top of the arc background. */
+static void build_tick_marks(lv_obj_t *parent, const ui_theme_t *t)
+{
+    int32_t max_val = vehicle_profile_get()->rpm_max;
+    lv_coord_t cx = UI_GAUGE_SZ / 2;
+    lv_coord_t cy = UI_GAUGE_SZ / 2 + UI_GAUGE_VALUE_Y_OFF;
+    /* Ticks sit on the inner side of the arc track, pointing inward. */
+    float r_outer = (UI_GAUGE_SZ / 2) - UI_GAUGE_ARC_W - 1;
+    float r_inner = r_outer - UI_TICK_MARK_LEN;
+    float r_minor_inner = r_outer - UI_TICK_MINOR_LEN;
+
+    /* Minor ticks first so majors render on top of them. */
+    for (int i = 0; i < TICK_MINOR_COUNT; i++) {
+        int major_idx = i / TICK_MINORS_PER_INTERVAL;
+        int sub = (i % TICK_MINORS_PER_INTERVAL) + 1;   /* 1..N within interval */
+        float ratio = ((float)major_idx +
+                       (float)sub / (float)(TICK_MINORS_PER_INTERVAL + 1)) /
+                      (float)(TICK_MAJOR_COUNT - 1);
+        float angle_deg = GAUGE_ROTATION_DEG + ratio * GAUGE_SWEEP_DEG;
+        float angle_rad = angle_deg * M_PI / 180.0f;
+        s_minor_tick_points[i][0].x = cx + (lv_coord_t)(r_minor_inner * cosf(angle_rad));
+        s_minor_tick_points[i][0].y = cy + (lv_coord_t)(r_minor_inner * sinf(angle_rad));
+        s_minor_tick_points[i][1].x = cx + (lv_coord_t)(r_outer * cosf(angle_rad));
+        s_minor_tick_points[i][1].y = cy + (lv_coord_t)(r_outer * sinf(angle_rad));
+
+        s_minor_ticks[i] = lv_line_create(parent);
+        lv_line_set_points(s_minor_ticks[i], s_minor_tick_points[i], 2);
+        lv_obj_set_style_line_width(s_minor_ticks[i], 1, 0);
+        lv_obj_set_style_line_color(s_minor_ticks[i], t->text_dim, 0);
+        lv_obj_set_style_line_opa(s_minor_ticks[i], LV_OPA_40, 0);
+        lv_obj_set_style_line_rounded(s_minor_ticks[i], false, 0);
+        lv_obj_move_foreground(s_minor_ticks[i]);
+    }
+
+    for (int i = 0; i < TICK_MAJOR_COUNT; i++) {
+        float ratio = (TICK_MAJOR_COUNT > 1) ? (float)i / (float)(TICK_MAJOR_COUNT - 1) : 0.0f;
+        float angle_deg = GAUGE_ROTATION_DEG + ratio * GAUGE_SWEEP_DEG;
+        float angle_rad = angle_deg * M_PI / 180.0f;
+        s_tick_points[i][0].x = cx + (lv_coord_t)(r_inner * cosf(angle_rad));
+        s_tick_points[i][0].y = cy + (lv_coord_t)(r_inner * sinf(angle_rad));
+        s_tick_points[i][1].x = cx + (lv_coord_t)(r_outer * cosf(angle_rad));
+        s_tick_points[i][1].y = cy + (lv_coord_t)(r_outer * sinf(angle_rad));
+
+        s_ticks[i] = lv_line_create(parent);
+        lv_line_set_points(s_ticks[i], s_tick_points[i], 2);
+        lv_obj_set_style_line_width(s_ticks[i], 3, 0);
+        /* Crisp full-opacity primary cyan majors for a performance-instrument
+         * look, standing out above the finer minor graduation. */
+        lv_obj_set_style_line_color(s_ticks[i], t->primary, 0);
+        lv_obj_set_style_line_opa(s_ticks[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_line_rounded(s_ticks[i], false, 0);
+        /* Ensure ticks render above the arc widgets. */
+        lv_obj_move_foreground(s_ticks[i]);
+    }
+    (void)max_val;
+}
+
 static void data_pill_update(int idx, const char *name, const char *val,
                              const char *unit, threshold_level_t lvl,
                              const ui_theme_t *t)
@@ -123,27 +312,23 @@ static lv_obj_t *create_data_pill(lv_obj_t *parent, const char *name,
                                    const ui_theme_t *t)
 {
     lv_obj_t *pill = lv_obj_create(parent);
-    theme_apply_card(pill);
-    lv_obj_set_style_bg_color(pill, t->surface, 0);
-    lv_obj_set_style_border_width(pill, 2, 0);
-    lv_obj_set_style_border_color(pill, t->border, 0);
-    lv_obj_set_style_border_opa(pill, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(pill, 8, 0);
+    /* Glass morphism: semi-transparent surface, soft shadow, rounded corners */
+    theme_apply_glass_card(pill);
     lv_obj_set_width(pill, LV_SIZE_CONTENT);
     lv_obj_set_height(pill, LV_PCT(100));
     lv_obj_set_flex_grow(pill, 1);
     lv_obj_set_flex_flow(pill, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(pill, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_ver(pill, 6, 0);
-    lv_obj_set_style_pad_hor(pill, 6, 0);
-    lv_obj_set_style_pad_row(pill, 4, 0);
+	lv_obj_set_style_pad_ver(pill, 6, 0);
+	lv_obj_set_style_pad_hor(pill, 4, 0);
+	lv_obj_set_style_pad_row(pill, 3, 0);
 
     lv_obj_t *nm = lv_label_create(pill);
     lv_label_set_text(nm, name);
     lv_obj_set_style_text_font(nm, t->font_sm, 0);
     lv_obj_set_style_text_color(nm, t->text_dim, 0);
 
-    /* Keep value and unit on one row so the pill fits in 48 px. */
+    /* Keep value and unit on one row so the pill fits in the strip. */
     lv_obj_t *val_row = lv_obj_create(pill);
     lv_obj_set_width(val_row, LV_PCT(100));
     lv_obj_set_height(val_row, LV_SIZE_CONTENT);
@@ -154,16 +339,17 @@ static lv_obj_t *create_data_pill(lv_obj_t *parent, const char *name,
     lv_obj_set_flex_align(val_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(val_row, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *val = lv_label_create(val_row);
-    lv_label_set_text(val, "--");
-    lv_obj_set_style_text_font(val, t->font_data, 0);
-    lv_obj_set_style_text_color(val, t->primary, 0);
+	lv_obj_t *val = lv_label_create(val_row);
+	lv_label_set_text(val, "--");
+	lv_label_set_long_mode(val, LV_LABEL_LONG_DOT);
+	lv_obj_set_style_text_font(val, t->font_data, 0);
+	lv_obj_set_style_text_color(val, t->text, 0);
 
-    lv_obj_t *unit = lv_label_create(val_row);
-    lv_label_set_text(unit, "");
-    lv_obj_set_style_text_font(unit, t->font_sm, 0);
-    lv_obj_set_style_text_color(unit, t->text_dim, 0);
-    lv_obj_set_style_pad_left(unit, 4, 0);
+	lv_obj_t *unit = lv_label_create(val_row);
+	lv_label_set_text(unit, "");
+	lv_obj_set_style_text_font(unit, t->font_sm, 0);
+	lv_obj_set_style_text_color(unit, t->primary, 0);
+	lv_obj_set_style_pad_left(unit, 2, 0);
 
     if (value_out) {
         *value_out = val;
@@ -261,11 +447,11 @@ void screen_dash_create(lv_obj_t *parent)
         }
     }
 
-    /* Background arc */
+    /* Background arc — thin minimal racing arc */
     s_main_arc = lv_arc_create(gauge_wrap);
     lv_obj_set_size(s_main_arc, UI_GAUGE_SZ, UI_GAUGE_SZ);
-    lv_arc_set_rotation(s_main_arc, 135);
-    lv_arc_set_bg_angles(s_main_arc, 0, 270);
+    lv_arc_set_rotation(s_main_arc, (int16_t)GAUGE_ROTATION_DEG);
+    lv_arc_set_bg_angles(s_main_arc, 0, (int16_t)GAUGE_SWEEP_DEG);
     lv_arc_set_range(s_main_arc, 0, vehicle_profile_get()->rpm_max);
     lv_arc_set_value(s_main_arc, 0);
     lv_obj_remove_style(s_main_arc, NULL, LV_PART_KNOB);
@@ -282,7 +468,7 @@ void screen_dash_create(lv_obj_t *parent)
     /* Redline zone arc */
     s_redline_arc = lv_arc_create(gauge_wrap);
     lv_obj_set_size(s_redline_arc, UI_GAUGE_SZ, UI_GAUGE_SZ);
-    lv_arc_set_rotation(s_redline_arc, 135);
+    lv_arc_set_rotation(s_redline_arc, (int16_t)GAUGE_ROTATION_DEG);
     lv_arc_set_bg_angles(s_redline_arc, 270, 270);
     lv_arc_set_range(s_redline_arc, 0, 100);
     lv_arc_set_value(s_redline_arc, 100);
@@ -295,7 +481,10 @@ void screen_dash_create(lv_obj_t *parent)
     lv_obj_set_style_arc_rounded(s_redline_arc, false, LV_PART_INDICATOR);
     lv_obj_align(s_redline_arc, LV_ALIGN_CENTER, 0, UI_GAUGE_VALUE_Y_OFF);
 
-    /* Needle line */
+    /* Major tick marks (drawn after arcs, before needle so they sit beneath) */
+    build_tick_marks(gauge_wrap, t);
+
+    /* Needle line — thin, matches arc color */
     s_needle = lv_line_create(gauge_wrap);
     lv_obj_set_style_line_width(s_needle, UI_NEEDLE_W, 0);
     lv_obj_set_style_line_color(s_needle, t->secondary, 0);
@@ -307,11 +496,10 @@ void screen_dash_create(lv_obj_t *parent)
     lv_line_set_points(s_needle, s_needle_points, 2);
     lv_obj_add_flag(s_needle, LV_OBJ_FLAG_FLOATING);
 
-    /* Central value disc: invisible mask that hides the needle behind the
-     * large RPM digits so the value stays readable. Same color as the
-     * screen background, no border, so it does not look like an extra circle. */
+    /* Central value disc: smaller mask (35% of gauge) hiding the needle behind
+     * the large RPM digits. Same color as the screen background. */
     s_value_disc = lv_obj_create(gauge_wrap);
-    lv_coord_t disc_sz = (UI_GAUGE_SZ * 50) / 100;
+    lv_coord_t disc_sz = (UI_GAUGE_SZ * 35) / 100;
     lv_obj_set_size(s_value_disc, disc_sz, disc_sz);
     lv_obj_align(s_value_disc, LV_ALIGN_CENTER, 0, UI_GAUGE_VALUE_Y_OFF);
     lv_obj_set_style_radius(s_value_disc, LV_RADIUS_CIRCLE, 0);
@@ -353,9 +541,9 @@ void screen_dash_create(lv_obj_t *parent)
     {
         const lv_coord_t row_b = UI_VIEWPORT_SZ - UI_STAT_BOTTOM_OFF;
         const lv_coord_t row_t = row_b - UI_DASH_DATA_H;
-        const lv_coord_t row_w = theme_safe_width(row_t, row_b);
+	const lv_coord_t row_w = theme_safe_width(row_t, row_b);
         lv_obj_set_width(data_row, row_w);
-        lv_obj_set_style_pad_column(data_row, UI_GAP_MD, 0);
+        lv_obj_set_style_pad_column(data_row, UI_GAP_SM, 0);
     }
     lv_obj_set_height(data_row, UI_DASH_DATA_H);
     lv_obj_add_flag(data_row, LV_OBJ_FLAG_FLOATING);
@@ -430,42 +618,32 @@ void screen_dash_update(bool connected, const vehicle_data_snapshot_t *snap)
         }
     }
 
-    /* Value arc, color, label, needle */
+    /* Value arc, color, label, needle — all driven by the LVGL animation so
+     * the gauge sweeps smoothly between readings instead of snapping. */
     if (main_val != s_prev_main_val) {
         s_prev_main_val = main_val;
         int main_int = (int)main_val;
-        lv_arc_set_value(s_main_arc, main_int);
-        lv_label_set_text_fmt(s_main_value, "%d", main_int);
-
-        /* Needle angle: 135deg at min, 405deg (45deg) at max */
-        float ratio = (max_val > 0) ? main_val / (float)max_val : 0.0f;
-        if (ratio < 0.0f) ratio = 0.0f;
-        if (ratio > 1.0f) ratio = 1.0f;
-        float angle_deg = 135.0f + ratio * 270.0f;
-        float angle_rad = angle_deg * M_PI / 180.0f;
-        lv_coord_t cx = UI_GAUGE_SZ / 2;
-        lv_coord_t cy = UI_GAUGE_SZ / 2 + UI_GAUGE_VALUE_Y_OFF;
-        lv_coord_t len = (UI_GAUGE_SZ / 2) - UI_GAUGE_ARC_W - 18;
-        s_needle_points[1].x = cx + (lv_coord_t)(len * cosf(angle_rad));
-        s_needle_points[1].y = cy + (lv_coord_t)(len * sinf(angle_rad));
-        lv_line_set_points(s_needle, s_needle_points, 2);
+        gauge_anim_goto(main_int, max_val, rpm_mode, snap);
     }
 
-    /* Arc color */
-    lv_color_t arc_color = rpm_mode
-        ? theme_rpm_gradient_color(snap->rpm)
-        : theme_speed_gradient_color(snap->speed);
-    if (arc_color.full != s_prev_arc_color.full) {
-        s_prev_arc_color = arc_color;
-        lv_obj_set_style_arc_color(s_main_arc, arc_color, LV_PART_INDICATOR);
-        lv_obj_set_style_line_color(s_needle, arc_color, 0);
-        lv_obj_set_style_border_color(s_hub, arc_color, 0);
-        lv_obj_set_style_border_color(s_value_disc, arc_color, 0);
+    /* Arc color — keep current color cache fresh even between value changes.
+     * The animation callback updates the live color; this handles the case
+     * where the value is steady but mode/units changed. */
+    if (rpm_mode != s_prev_rpm_mode_for_color) {
+        s_prev_rpm_mode_for_color = rpm_mode;
+        update_arc_color_for_value(s_anim_cur, max_val, rpm_mode, snap);
     }
 
-    /* Shift light segments */
+    /* Shift light segments.
+     * Use the animated gauge value (s_anim_cur) instead of the raw snapshot
+     * RPM so the shift lights track the visible needle exactly — they never
+     * light ahead of or behind the arc the user sees. Falls back to snap RPM
+     * when the center gauge is in Speed mode (no RPM animation running). */
     {
-        float rpm_ratio = (profile->rpm_max > 0) ? snap->rpm / (float)profile->rpm_max : 0.0f;
+        int32_t anim_rpm = rpm_mode ? s_anim_cur : (int32_t)snap->rpm;
+        float rpm_ratio = (profile->rpm_max > 0)
+                              ? (float)anim_rpm / (float)profile->rpm_max
+                              : 0.0f;
         uint32_t now = lv_tick_get();
         bool blink = (rpm_ratio >= 0.95f) && ((now / 120) & 1);
         for (int i = 0; i < UI_SHIFT_LIGHT_SEGS; i++) {
@@ -483,13 +661,19 @@ void screen_dash_update(bool connected, const vehicle_data_snapshot_t *snap)
         }
     }
 
-    /* Bottom data strip */
+    /* Bottom data strip — values are smoothed with a mini EMA to suppress
+     * per-frame ±1 flicker while still tracking real changes promptly. */
     char buf[24];
 
-    /* Bottom-left cell toggles with the center gauge */
+    /* Speed pill (or RPM when center gauge is in speed mode) */
     if (rpm_mode) {
         float speed = vehicle_data_convert_speed(snap->speed, snap->metric_units);
-        snprintf(buf, sizeof(buf), "%.0f", speed);
+        if (s_smooth_speed < 0.0f) {
+            s_smooth_speed = speed;
+        } else {
+            s_smooth_speed += UI_TEXT_SMOOTH_ALPHA * (speed - s_smooth_speed);
+        }
+        snprintf(buf, sizeof(buf), "%.0f", s_smooth_speed);
         data_pill_update(0, "Speed", buf,
                          vehicle_data_speed_unit(snap->metric_units),
                          THRESHOLD_OK, t);
@@ -499,16 +683,28 @@ void screen_dash_update(bool connected, const vehicle_data_snapshot_t *snap)
                          THRESHOLD_OK, t);
     }
 
-    /* Coolant */
-    snprintf(buf, sizeof(buf), "%.0f",
-             vehicle_data_convert_temp(snap->coolant, snap->metric_units));
-    data_pill_update(1, "Temp", buf,
-                     vehicle_data_temp_unit(snap->metric_units),
-                     vehicle_data_coolant_level(snap->coolant), t);
+    /* Coolant temp */
+    {
+        float temp_c = vehicle_data_convert_temp(snap->coolant, snap->metric_units);
+        if (s_smooth_temp < 0.0f) {
+            s_smooth_temp = temp_c;
+        } else {
+            s_smooth_temp += UI_TEXT_SMOOTH_ALPHA * (temp_c - s_smooth_temp);
+        }
+        snprintf(buf, sizeof(buf), "%.0f", s_smooth_temp);
+        data_pill_update(1, "Temp", buf,
+                         vehicle_data_temp_unit(snap->metric_units),
+                         vehicle_data_coolant_level(snap->coolant), t);
+    }
 
     /* Voltage */
     if (snap->voltage > 0.1f) {
-        snprintf(buf, sizeof(buf), "%.1f", snap->voltage);
+        if (s_smooth_volt < 0.0f) {
+            s_smooth_volt = snap->voltage;
+        } else {
+            s_smooth_volt += UI_TEXT_SMOOTH_ALPHA * (snap->voltage - s_smooth_volt);
+        }
+        snprintf(buf, sizeof(buf), "%.1f", s_smooth_volt);
         data_pill_update(2, "Volt", buf, "V",
                          vehicle_data_voltage_level(snap->voltage), t);
     } else {

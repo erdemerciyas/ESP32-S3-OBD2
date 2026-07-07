@@ -25,6 +25,9 @@ static const char *NVS_KEY_ADDR = "addr";
 #define MAX_NAME_LEN       32
 #define RECONNECT_MS       1500
 #define CONNECT_TIMEOUT_MS 15000
+#define GATT_DISCOVERY_TIMEOUT_MS 6000  /* servis keşfi asılı kalırsa kurtar */
+#define DIRECT_FAIL_MAX    3            /* bu kadar direkt hatadan sonra scan'e düş (adres korunur) */
+#define BACKOFF_MAX_MS     10000        /* scan bulunamayınca üst sınır bekleme */
 
 static ble_obd_rx_cb_t s_rx_cb;
 static ble_obd_state_t s_state = BLE_OBD_DISCONNECTED;
@@ -38,6 +41,11 @@ static bool s_scan_active;
 static bool s_connecting_saved;
 static esp_timer_handle_t s_reconnect_timer;
 static esp_timer_handle_t s_connect_timer;
+static int64_t s_connect_start_us; /* bağlantı denemesi başlangıcı (teşhis) */
+static int s_direct_fail_count;   /* ardışık direkt bağlantı hataları */
+static bool s_prefer_scan;        /* geçici olarak scan'i tercih et (adres silinmez) */
+static int s_scan_fail_count;     /* ardışık "adaptör bulunamadı" — backoff için */
+static bool s_gatt_phase;         /* watchdog GATT keşfi mi bağlantı mı bekliyor */
 
 static const char *s_name_filters[] = {
     "OBD", "OBDII", "OBD2", "ELM", "VLINK", "IOS-Vlink", "Android-Vlink", "vlink", "Car",
@@ -63,7 +71,7 @@ static void ble_obd_on_reset(int reason);
 static void ble_obd_host_task(void *param);
 static void schedule_reconnect(uint32_t delay_ms);
 static void cancel_connect_watchdog(void);
-static void start_connect_watchdog(void);
+static void start_connect_watchdog(uint32_t timeout_ms);
 static bool addr_is_valid(const uint8_t *addr);
 static void clear_saved_addr(void);
 static void try_auto_connect(void);
@@ -195,16 +203,22 @@ static void connect_timeout_cb(void *arg)
     if (s_state != BLE_OBD_CONNECTING) {
         return;
     }
-    app_log_warn(TAG, "Connect timeout, retrying");
+    /* GATT keşfi de asılabilir; her iki fazı da burada kurtarıyoruz.
+     * Kayıtlı adresi ASLA silmeyiz — adaptör sadece o an uyanmamış olabilir.
+     * Bunun yerine ardışık hataları sayıp bir süre scan'i tercih ederiz. */
+    app_log_warn(TAG, "Connect/GATT timeout (phase=%s), retrying",
+                 s_gatt_phase ? "gatt" : "conn");
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     } else {
         ble_gap_conn_cancel();
     }
     s_state = BLE_OBD_DISCONNECTED;
-    if (s_connecting_saved) {
-        clear_saved_addr();
-        s_connecting_saved = false;
+    s_gatt_phase = false;
+    s_connecting_saved = false;
+    if (++s_direct_fail_count >= DIRECT_FAIL_MAX) {
+        s_prefer_scan = true;   /* adres korunur; scan adaptörün gerçekten yayında olduğunu doğrular */
+        s_direct_fail_count = 0;
     }
     vehicle_data_set_state(OBD_STATE_DISCONNECTED, "Reconnecting...");
     schedule_reconnect(RECONNECT_MS);
@@ -217,13 +231,13 @@ static void cancel_connect_watchdog(void)
     }
 }
 
-static void start_connect_watchdog(void)
+static void start_connect_watchdog(uint32_t timeout_ms)
 {
     if (!s_connect_timer) {
         return;
     }
     esp_timer_stop(s_connect_timer);
-    esp_timer_start_once(s_connect_timer, (uint64_t)CONNECT_TIMEOUT_MS * 1000ULL);
+    esp_timer_start_once(s_connect_timer, (uint64_t)timeout_ms * 1000ULL);
 }
 
 static void try_auto_connect(void)
@@ -234,7 +248,9 @@ static void try_auto_connect(void)
     if (ble_obd_is_connected() || s_scan_active || s_state == BLE_OBD_CONNECTING) {
         return;
     }
-    if (s_has_saved_addr && addr_is_valid(s_saved_addr)) {
+    /* Kayıtlı adres varsa doğrudan bağlan; ancak arka arkaya hata sonrası
+     * geçici olarak scan'i tercih et (adres silinmez, scan doğrular). */
+    if (s_has_saved_addr && addr_is_valid(s_saved_addr) && !s_prefer_scan) {
         ble_addr_t addr = {0};
         addr.type = s_saved_addr_type;
         memcpy(addr.val, s_saved_addr, 6);
@@ -249,9 +265,6 @@ static void try_auto_connect(void)
             return;
         }
     } else {
-        if (s_has_saved_addr) {
-            clear_saved_addr();
-        }
         start_scan();
     }
 }
@@ -299,7 +312,15 @@ static int subscribe_notify(uint16_t conn_handle)
 static void on_gatt_ready(uint16_t conn_handle)
 {
     if (s_notify_handle && s_write_handle) {
-        app_log_info(TAG, "GATT ready notify=0x%04X write=0x%04X", s_notify_handle, s_write_handle);
+        cancel_connect_watchdog();
+        s_gatt_phase = false;
+        s_direct_fail_count = 0;
+        s_scan_fail_count = 0;
+        s_prefer_scan = false;   /* başarılı: bir sonraki sefer tekrar direkt bağlan */
+        int32_t ms = s_connect_start_us ?
+                     (int32_t)((esp_timer_get_time() - s_connect_start_us) / 1000) : -1;
+        app_log_info(TAG, "GATT ready notify=0x%04X write=0x%04X (connect took %ld ms)",
+                     s_notify_handle, s_write_handle, (long)ms);
         s_state = BLE_OBD_CONNECTED;
     } else {
         app_log_error(TAG, "Required characteristics not found");
@@ -402,13 +423,15 @@ static int connect_peer(const ble_addr_t *addr, const char *name)
     };
 
     s_state = BLE_OBD_CONNECTING;
+    s_connect_start_us = esp_timer_get_time();
     vehicle_data_set_state(OBD_STATE_CONNECTING, "Connecting...");
 
     char addr_str[18];
     addr_to_str(addr->val, addr_str, sizeof(addr_str));
     vehicle_data_set_adapter(name ? name : "OBD", addr_str);
 
-    start_connect_watchdog();
+    s_gatt_phase = false;
+    start_connect_watchdog(CONNECT_TIMEOUT_MS);
     return ble_gap_connect(BLE_OWN_ADDR_PUBLIC, addr, 30000, &conn_params,
                            ble_obd_gap_event, NULL);
 }
@@ -441,6 +464,8 @@ static int ble_obd_gap_event(struct ble_gap_event *event, void *arg)
 
         if (match) {
             app_log_info(TAG, "Found OBD device: %s", name[0] ? name : "(no name)");
+            s_scan_fail_count = 0;
+            s_prefer_scan = false;   /* adaptör yayında; sonraki sefer direkt bağlanılabilir */
             s_connecting_saved = false;
             ble_gap_disc_cancel();
             s_scan_active = false;
@@ -453,11 +478,18 @@ static int ble_obd_gap_event(struct ble_gap_event *event, void *arg)
         if (s_state == BLE_OBD_SCANNING) {
             s_state = BLE_OBD_DISCONNECTED;
             vehicle_data_set_state(OBD_STATE_DISCONNECTED, "Adapter not found");
-            schedule_reconnect(RECONNECT_MS * 2);
+            /* Bulunamadıkça artan (exponential-ish) backoff, üst sınır 10 sn. */
+            uint32_t delay = RECONNECT_MS * (1u << (s_scan_fail_count < 3 ? s_scan_fail_count : 3));
+            if (delay > BACKOFF_MAX_MS) {
+                delay = BACKOFF_MAX_MS;
+            }
+            if (s_scan_fail_count < 8) {
+                s_scan_fail_count++;
+            }
+            schedule_reconnect(delay);
         }
         break;
     case BLE_GAP_EVENT_CONNECT:
-        cancel_connect_watchdog();
         if (event->connect.status == 0) {
             s_conn_handle = event->connect.conn_handle;
             s_state = BLE_OBD_CONNECTING;
@@ -468,15 +500,21 @@ static int ble_obd_gap_event(struct ble_gap_event *event, void *arg)
             if (ble_gap_conn_find(s_conn_handle, &desc) == 0) {
                 save_addr(desc.peer_ota_addr.val, desc.peer_ota_addr.type);
             }
+            /* Watchdog'u GATT keşfi fazı için yeniden başlat; keşif asılırsa
+             * connect_timeout_cb terminate + reconnect yapar. */
+            s_gatt_phase = true;
+            start_connect_watchdog(GATT_DISCOVERY_TIMEOUT_MS);
             start_gatt_discovery(s_conn_handle);
             app_log_info(TAG, "Connected, discovering GATT");
         } else {
+            cancel_connect_watchdog();
             s_state = BLE_OBD_DISCONNECTED;
             vehicle_data_set_state(OBD_STATE_ERROR, "Connection failed");
             app_log_error(TAG, "Connect failed status=%d", event->connect.status);
-            if (s_connecting_saved) {
-                clear_saved_addr();
-                s_connecting_saved = false;
+            s_connecting_saved = false;
+            if (++s_direct_fail_count >= DIRECT_FAIL_MAX) {
+                s_prefer_scan = true;   /* adres korunur */
+                s_direct_fail_count = 0;
             }
             schedule_reconnect(RECONNECT_MS);
         }

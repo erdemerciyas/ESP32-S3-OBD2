@@ -2,12 +2,14 @@
 
 #include "lvgl.h"
 #include "vehicle_data.h"
+#include "imu_data.h"
 #include <stdbool.h>
 
 enum {
     UI_TAB_CONNECT = 0,
     UI_TAB_DASH,
     UI_TAB_GRID,
+    UI_TAB_GYRO,
     UI_TAB_SETTINGS,
     UI_TAB_COUNT,
 };
@@ -25,8 +27,10 @@ void screen_connect_create(lv_obj_t *parent);
 void screen_dash_create(lv_obj_t *parent);
 void screen_grid_create(lv_obj_t *parent);
 void screen_settings_create(lv_obj_t *parent);
+void screen_gyro_create(lv_obj_t *parent);
 
 void screen_connect_update(const vehicle_data_snapshot_t *snap);
 void screen_dash_update(bool connected, const vehicle_data_snapshot_t *snap);
 void screen_grid_update(const vehicle_data_snapshot_t *snap);
 void screen_settings_update(const vehicle_data_snapshot_t *snap);
+void screen_gyro_update(const imu_snapshot_t *snap);

@@ -6,6 +6,8 @@ idf_component_register(
         "data/vehicle_data.c"
         "data/vehicle_profile.c"
         "data/app_log.c"
+        "imu/qmi8658.c"
+        "imu/imu_data.c"
         "obd/ble_obd.c"
         "obd/elm327.c"
         "obd/obd_pids.c"
@@ -16,6 +18,7 @@ idf_component_register(
         "ui/screen_dash.c"
         "ui/screen_grid.c"
         "ui/screen_settings.c"
+        "ui/screen_gyro.c"
         "ui/lv_font_montserrat_56.c"
         "ui/lv_font_montserrat_72_bold.c"
         "ui/lv_font_montserrat_94_bold.c"
@@ -23,6 +26,7 @@ idf_component_register(
         "."
         "bsp"
         "data"
+        "imu"
         "obd"
         "ui"
     REQUIRES
@@ -30,6 +34,7 @@ idf_component_register(
         bt
         esp_timer
         freertos
+        driver
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)

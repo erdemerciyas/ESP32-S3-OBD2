@@ -8,6 +8,7 @@
 #include "elm327.h"
 #include "obd_pids.h"
 #include "ui.h"
+#include "imu_data.h"
 
 static const char *TAG = "main";
 
@@ -30,6 +31,9 @@ void app_main(void)
         return;
     }
     bsp_buzzer_init();
+
+    imu_init();
+    imu_start();
 
     ui_init();
     ui_start_update_timer();

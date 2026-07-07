@@ -39,6 +39,11 @@ void vehicle_data_snapshot(vehicle_data_snapshot_t *snap)
     snap->fuel_level = s_data.fuel_level;
     snap->o2_voltage = s_data.o2_voltage;
     snap->o2_b1s2 = s_data.o2_b1s2;
+    snap->rpm_ts = s_data.rpm_ts;
+    snap->speed_ts = s_data.speed_ts;
+    snap->coolant_ts = s_data.coolant_ts;
+    snap->voltage_ts = s_data.voltage_ts;
+    snap->dash_pair_ts = s_data.dash_pair_ts;
     snap->state = s_data.state;
     snap->metric_units = s_data.metric_units;
     snap->center_gauge_rpm = s_data.center_gauge_rpm;
@@ -124,6 +129,70 @@ void vehicle_data_set_float(float *field, float value)
     vehicle_data_lock();
     *field = value;
     vehicle_data_unlock();
+}
+
+/* Timestamp source: lv_tick_get() when available (LVGL), else a portable
+ * monotonic millisecond counter. Defined weak so the simulator or ESP32 can
+ * supply their own. */
+#if defined(CONFIG_IDF_TARGET) || 1
+extern uint32_t lv_tick_get(void);
+static uint32_t data_now_ms(void) { return lv_tick_get(); }
+#else
+static uint32_t data_now_ms(void) { return 0; }
+#endif
+
+void vehicle_data_set_rpm(float value)
+{
+    vehicle_data_lock();
+    s_data.rpm = value;
+    s_data.rpm_ts = data_now_ms();
+    vehicle_data_unlock();
+}
+
+void vehicle_data_set_speed(float value)
+{
+    vehicle_data_lock();
+    s_data.speed = value;
+    s_data.speed_ts = data_now_ms();
+    vehicle_data_unlock();
+}
+
+void vehicle_data_set_coolant(float value)
+{
+    vehicle_data_lock();
+    s_data.coolant = value;
+    s_data.coolant_ts = data_now_ms();
+    vehicle_data_unlock();
+}
+
+void vehicle_data_set_voltage(float value)
+{
+    vehicle_data_lock();
+    s_data.voltage = value;
+    s_data.voltage_ts = data_now_ms();
+    vehicle_data_unlock();
+}
+
+void vehicle_data_set_dash_pair(float rpm, float speed)
+{
+    vehicle_data_lock();
+    s_data.rpm = rpm;
+    s_data.speed = speed;
+    uint32_t ts = data_now_ms();
+    s_data.rpm_ts = ts;
+    s_data.speed_ts = ts;
+    s_data.dash_pair_ts = ts;   /* non-zero: batch sample */
+    vehicle_data_unlock();
+}
+
+bool vehicle_data_is_fresh(uint32_t ts, uint32_t now, uint32_t max_age_ms)
+{
+    if (ts == 0) {
+        return false;  /* never updated */
+    }
+    uint32_t cur = (now != 0) ? now : data_now_ms();
+    uint32_t age = cur - ts;
+    return age <= max_age_ms;
 }
 
 threshold_level_t vehicle_data_coolant_level(float c)

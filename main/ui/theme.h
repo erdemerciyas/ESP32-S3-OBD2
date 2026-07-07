@@ -49,7 +49,8 @@
 #define UI_DATA_TOP           (UI_VIEWPORT_SZ - UI_DASH_BOTTOM_RES - UI_DASH_DATA_H)
 #define UI_GAUGE_SZ           UI_VIEWPORT_SZ
 
-#define UI_GAUGE_ARC_W        20
+#define UI_GAUGE_ARC_W        8    /* Main indicator arc width */
+#define UI_GAUGE_ACCENT_W     3    /* Outer accent ring width */
 #define UI_GAUGE_VALUE_Y_OFF  0
 #define UI_GAUGE_Y_OFF        0
 #define UI_STAT_H             UI_DASH_DATA_H
@@ -64,7 +65,20 @@
 #define UI_SHIFT_LIGHT_H      10
 #define UI_SHIFT_LIGHT_GAP    4
 #define UI_SHIFT_LIGHT_SEGS   9
-#define UI_NEEDLE_W           4
+#define UI_NEEDLE_W           3
+#define UI_TICK_MARK_LEN      10
+#define UI_TICK_MINOR_LEN     5
+#define UI_DATA_RADIUS        12
+
+/* Gauge animation timing (ms) — LVGL ease-out interpolation.
+ * RPM and Speed use the same duration so the center gauge and shift lights
+ * always move in lockstep regardless of mode. */
+#define UI_GAUGE_ANIM_RPM     80
+#define UI_GAUGE_ANIM_SPEED   80
+
+/* Data pill text smoothing — mini EMA alpha in UI layer.
+ * 0.75 tracks real changes slightly faster than the old 0.70. */
+#define UI_TEXT_SMOOTH_ALPHA  0.75f
 
 lv_coord_t ui_chord_width_at_y(lv_coord_t y_tab);
 lv_coord_t theme_safe_width(lv_coord_t y_top, lv_coord_t y_bottom);
@@ -104,6 +118,7 @@ void theme_apply_screen(lv_obj_t *obj);
 void theme_apply_bg(lv_obj_t *obj);
 void theme_apply_content(lv_obj_t *obj);
 void theme_apply_card(lv_obj_t *obj);
+void theme_apply_glass_card(lv_obj_t *obj);   /* Glass morphism data pill */
 lv_obj_t *theme_create_header(lv_obj_t *parent, const char *title);
 lv_obj_t *theme_create_metric_cell(lv_obj_t *parent, const char *label,
                                     lv_color_t accent, lv_obj_t **value_out,

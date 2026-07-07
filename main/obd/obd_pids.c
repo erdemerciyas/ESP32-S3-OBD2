@@ -15,10 +15,13 @@
 
 static const char *TAG = "obd_pids";
 
-#define VOLTAGE_POLL_MS    400
+#define VOLTAGE_POLL_MS    200
 #define VOLTAGE_MIN_V      9.0f
 #define VOLTAGE_MAX_V      16.5f
-#define ATRV_TIMEOUT_MS    800
+/* ATRV timeout: previously 800 ms — a single stuck ATRV blocked the ELM327
+ * for 800 ms starving all other PIDs (coolant, RPM, Speed).
+ * 300 ms is still generous for a local AT command response. */
+#define ATRV_TIMEOUT_MS    150
 /* Periyodik PID 0x42 re-probe: ATRV modundayken bile ara sıra dene
  * (bazı araçlarda init sonrası 0x42 çalışır hale gelir). */
 #define PID42_REPROBE_MS   30000
@@ -26,7 +29,7 @@ static const char *TAG = "obd_pids";
 #define PID42_OOR_FALLBACK 3
 
 /* EMA filter: higher = faster response (less latency) */
-#define VOLTAGE_EMA_ALPHA  0.40f
+#define VOLTAGE_EMA_ALPHA  0.70f
 /* Reject readings that deviate more than this from filtered value */
 #define VOLTAGE_SPIKE_MAX  0.50f
 /* Accept larger jump on first valid reading (cold start) */
@@ -61,8 +64,8 @@ static const pid_filter_cfg_t s_pid_filter_cfgs[256] = {
     /* 0x07 LTFT          */ [0x07] = { 0.40f,  15.0f },
     /* 0x0A FUEL_PRESS    */ [0x0A] = { 0.40f,  80.0f },
     /* 0x0B MAP           */ [0x0B] = { 0.70f,  30.0f },
-    /* 0x0C RPM           */ [0x0C] = { 0.92f, 1500.0f },
-    /* 0x0D SPEED         */ [0x0D] = { 0.88f,  40.0f },
+    /* 0x0C RPM           */ [0x0C] = { 0.90f, 1500.0f },
+    /* 0x0D SPEED         */ [0x0D] = { 0.94f,  30.0f },
     /* 0x0E TIMING        */ [0x0E] = { 0.60f,  15.0f },
     /* 0x0F IAT           */ [0x0F] = { 0.55f,  20.0f },
     /* 0x10 MAF           */ [0x10] = { 0.60f,  30.0f },
@@ -115,7 +118,20 @@ static uint32_t s_disc_sent_at;
 static bool s_use_atrv;
 static uint32_t s_voltage_last;
 static bool s_voltage_pending;      /* ATRV/0142 cevap beklerken true */
+static bool s_reprobe_inflight;     /* ATRV modunda geçici 0142 re-probe uçuşta mı */
 static uint32_t s_042_reprobe_last;
+
+/* RPM+Speed tek komut batch ("010C0D") — RPM ve Speed'i tek BLE round-trip'te
+ * senkron getirir. Varsayılan KAPALI; başarılı probe'dan sonra açılır, 3
+ * başarısızlıkta ayrı polling'e geri döner (regresyonsuz). */
+#define DASH_BATCH_CMD    "010C0D"
+#define BATCH_INTERVAL_MS 60
+#define BATCH_PROBE_MS    1000
+#define BATCH_FAIL_MAX    3
+static int8_t   s_batch_state;      /* 0=bilinmiyor(probe), 1=açık, -1=kapalı */
+static uint8_t  s_batch_fail;
+static bool     s_batch_pending;
+static uint32_t s_batch_last;
 static uint8_t  s_voltage_oor_count;
 
 /* Tüm PID'ler için EMA + spike rejection state. İndeks = PID değeri.
@@ -350,13 +366,11 @@ static void set_voltage(float v, const char *source)
         return;  /* spike rejected */
     }
 
-    vehicle_data_t *vd = vehicle_data_get();
-    vehicle_data_lock();
-    float prev = vd->voltage;
-    vd->voltage = f->filtered;
-    vehicle_data_unlock();
+    vehicle_data_set_voltage(f->filtered);
 
-    if (prev < 0.1f || (f->filtered > prev + 0.03f) || (f->filtered < prev - 0.03f)) {
+    static float s_prev_log_v = -999.0f;
+    if (s_prev_log_v < 0.0f || (f->filtered > s_prev_log_v + 0.03f) || (f->filtered < s_prev_log_v - 0.03f)) {
+        s_prev_log_v = f->filtered;
         app_log_info(TAG, "Voltage %.2fV raw=%.2fV (%s)", f->filtered, v, source);
     }
 }
@@ -421,7 +435,14 @@ static float parse_atrv_voltage(const char *resp)
 static void apply_filtered_float(uint8_t pid, float raw, float *target)
 {
     if (pid_filter_apply(&s_pid_filters[pid], raw, &s_pid_filter_cfgs[pid])) {
-        vehicle_data_set_float(target, s_pid_filters[pid].filtered);
+        /* Key dashboard PIDs use timestamp-aware setters so the UI can
+         * detect stale values. Others use the generic pointer-based setter. */
+        switch (pid) {
+        case 0x0C: vehicle_data_set_rpm(s_pid_filters[pid].filtered);     break;
+        case 0x0D: vehicle_data_set_speed(s_pid_filters[pid].filtered);   break;
+        case 0x05: vehicle_data_set_coolant(s_pid_filters[pid].filtered); break;
+        default:   vehicle_data_set_float(target, s_pid_filters[pid].filtered); break;
+        }
     }
 }
 
@@ -511,15 +532,29 @@ static void pid_response_cb(const char *resp, void *user_data)
     uint8_t pid = (uint8_t)(uintptr_t)user_data;
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
-    /* pending temizle ve last_poll'u cevap zamanına güncelle */
     pid_entry_t *e = find_entry_by_pid(pid);
     if (e) {
         e->pending = false;
-        e->last_poll = now;
     }
 
     if (response_is_error(resp)) {
+        if (e) {
+            e->last_poll = now;
+        }
         return;
+    }
+
+    const char *data = extract_data_bytes(resp, pid);
+    if (!data) {
+        app_log_warn(TAG, "PID 0x%02X response mismatch, re-polling", pid);
+        if (e) {
+            e->last_poll = 0;
+        }
+        return;
+    }
+
+    if (e) {
+        e->last_poll = now;
     }
     update_pid_value(pid, resp);
 }
@@ -528,6 +563,7 @@ static void voltage_pid_cb(const char *resp, void *user_data)
 {
     (void)user_data;
     s_voltage_pending = false;
+    s_reprobe_inflight = false;
     if (response_is_error(resp)) {
         s_use_atrv = true;
         s_voltage_oor_count = 0;
@@ -566,6 +602,7 @@ static void atrv_response_cb(const char *resp, void *user_data)
 {
     (void)user_data;
     s_voltage_pending = false;
+    s_reprobe_inflight = false;
     float v = parse_atrv_voltage(resp);
     if (voltage_valid(v)) {
         set_voltage(v, "ATRV");
@@ -748,6 +785,7 @@ static bool poll_entry_by_pid(uint8_t pid, uint32_t now, bool high_priority)
         uint32_t timeout = e->live ? profile->live_timeout_ms : profile->slow_timeout_ms;
         if (now - e->last_poll > timeout + 500) {
             e->pending = false;
+            e->last_poll = now;  /* anchor interval to timeout recovery */
         } else {
             return false;  /* halen cevap bekleniyor */
         }
@@ -769,6 +807,14 @@ static bool poll_voltage(uint32_t now)
             return false;
         }
         s_voltage_pending = false;  /* timeout, tekrar dene */
+        /* Re-probe 0142 timeout oldu: adaptör 0142'ye hiç yanıt vermiyor.
+         * ATRV moduna geri dön, aksi halde kalıcı olarak 0142'de takılıp
+         * voltaj hiç gelmez. */
+        if (s_reprobe_inflight) {
+            s_use_atrv = true;
+            s_reprobe_inflight = false;
+            app_log_warn(TAG, "0142 re-probe timed out — reverting to ATRV");
+        }
     }
 
     if (now - s_voltage_last < VOLTAGE_POLL_MS) {
@@ -787,6 +833,7 @@ static bool poll_voltage(uint32_t now)
             s_042_reprobe_last = now;
             s_voltage_last = now;
             s_voltage_pending = true;
+            s_reprobe_inflight = true;
             s_use_atrv = false;
             return true;
         }
@@ -812,32 +859,155 @@ static bool poll_voltage(uint32_t now)
     return false;
 }
 
+/* Batch "010C0D" yanıtını çöz: RPM (0x0C, 2 bayt) + Speed (0x0D, 1 bayt).
+ * Yanıttaki boşlukları temizleyip pozisyonel olarak ayrıştırır; her PID için
+ * sentetik tek-PID dizesi kurup mevcut update_pid_value() yolunu (decode +
+ * filtre) yeniden kullanır. Böylece decode/filtre mantığı tek yerde kalır. */
+static void batch_rpm_speed_cb(const char *resp, void *user_data)
+{
+    (void)user_data;
+    s_batch_pending = false;
+
+    pid_entry_t *er = find_entry_by_pid(DASH_PID_RPM);
+    pid_entry_t *es = find_entry_by_pid(DASH_PID_SPEED);
+    if (er) er->pending = false;
+    if (es) es->pending = false;
+
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    bool got_rpm = false, got_spd = false;
+
+    if (resp && !response_is_error(resp)) {
+        char hex[80];
+        size_t hi = 0;
+        for (const char *p = resp; *p && hi < sizeof(hex) - 1; p++) {
+            if (isxdigit((unsigned char)*p)) {
+                hex[hi++] = (char)toupper((unsigned char)*p);
+            }
+        }
+        hex[hi] = '\0';
+
+        char *m = strstr(hex, "410C");
+        if (m && strlen(m) >= 8) {          /* "410C" + 4 hex RPM verisi */
+            char tmp[16];
+            snprintf(tmp, sizeof(tmp), "410C%.4s", m + 4);
+            update_pid_value(0x0C, tmp);
+            got_rpm = true;
+            if (er) er->last_poll = now;
+
+            const char *after = m + 8;      /* RPM verisinden sonra "0D" + 2 hex */
+            if (strncmp(after, "0D", 2) == 0 && strlen(after) >= 4) {
+                char tmp2[16];
+                snprintf(tmp2, sizeof(tmp2), "410D%.2s", after + 2);
+                update_pid_value(0x0D, tmp2);
+                got_spd = true;
+                if (es) es->last_poll = now;
+            }
+        }
+    }
+
+    if (got_rpm && got_spd) {
+        s_batch_state = 1;
+        s_batch_fail = 0;
+    } else if (++s_batch_fail >= BATCH_FAIL_MAX) {
+        s_batch_state = -1;             /* kalıcı olarak ayrı polling'e dön */
+        app_log_warn(TAG, "RPM+Speed batch unsupported — using separate polls");
+    }
+}
+
+/* Batch komutunu (010C0D) kuyruğa atar. probe=true iken düşük frekanslı
+ * yoklama (mod bilinmiyor), false iken açık moddaki normal cadence. */
+static bool poll_batch_rpm_speed(uint32_t now, bool probe)
+{
+    const vehicle_profile_t *profile = vehicle_profile_get();
+
+    if (s_batch_pending) {
+        if (now - s_batch_last < (uint32_t)profile->live_timeout_ms + 500) {
+            return false;
+        }
+        s_batch_pending = false;        /* timeout */
+        if (!probe && ++s_batch_fail >= BATCH_FAIL_MAX) {
+            s_batch_state = -1;
+            app_log_warn(TAG, "RPM+Speed batch timing out — using separate polls");
+        }
+    }
+
+    uint32_t interval = probe ? BATCH_PROBE_MS : BATCH_INTERVAL_MS;
+    if (now - s_batch_last < interval) {
+        return false;
+    }
+    if (!elm327_can_queue(true)) {
+        return false;
+    }
+    if (!elm327_send_cmd_prio(DASH_BATCH_CMD, batch_rpm_speed_cb, NULL,
+                              profile->live_timeout_ms, true)) {
+        return false;
+    }
+    s_batch_last = now;
+    s_batch_pending = true;
+    /* Açık modda ayrı RPM/Speed poll'u çalışmıyor; yine de emniyet için
+     * pending işaretle ki live-loop bunları atlasın. */
+    if (!probe) {
+        pid_entry_t *er = find_entry_by_pid(DASH_PID_RPM);
+        pid_entry_t *es = find_entry_by_pid(DASH_PID_SPEED);
+        if (er) er->pending = true;
+        if (es) es->pending = true;
+    }
+    return true;
+}
+
 static bool run_dash_poll(uint32_t now)
 {
-    /* Dashboard mode: poll RPM and Speed as a pair so both stay in sync. */
-    bool rpm_queued = poll_entry_by_pid(DASH_PID_RPM, now, true);
-    bool speed_queued = poll_entry_by_pid(DASH_PID_SPEED, now, true);
-    if (rpm_queued || speed_queued) {
-        return true;
+    /* Dashboard mode: two-tier polling prioritizes RPM/Speed for lowest
+     * latency.  Tier 1 (RPM+Speed) is always attempted.  Tier 2 (Voltage
+     * +Coolant) is deferred when Tier 1 commands are in-flight, keeping
+     * the ELM327 queue shallow (max 2) for faster BLE round-trips. */
+    bool any_queued = false;
+
+    /* Tier 1: RPM + Speed.
+     * - Batch açık (state==1): tek "010C0D" komutu ile senkron + düşük gecikme.
+     * - Bilinmiyor (state==0): ayrı poll (veri akmaya devam eder) + arka planda
+     *   düşük frekanslı batch probe.
+     * - Kapalı (state==-1): ayrı poll. */
+    if (s_batch_state == 1) {
+        if (poll_batch_rpm_speed(now, false)) {
+            any_queued = true;
+        }
+    } else {
+        bool rpm_queued = poll_entry_by_pid(DASH_PID_RPM, now, true);
+        bool spd_queued = poll_entry_by_pid(DASH_PID_SPEED, now, true);
+        any_queued = rpm_queued || spd_queued;
+        if (s_batch_state == 0) {
+            poll_batch_rpm_speed(now, true);  /* probe; cadence'i bozmamak için sayılmaz */
+        }
     }
 
-    /* Voltage is the next highest priority on the dashboard. */
+    /* Tier 2: Coolant + Voltage — kendi interval'leri (poll_due) ve pending
+     * bayrakları sıklığı zaten sınırlar; RPM/Speed'e kapı KOYMUYORUZ, aksi
+     * halde 60 ms'lik RPM/Speed turları Temp/Volt'u aç bırakıyordu.
+     * Kuyruk RESP-REQ + pending sayesinde sığ kalır (en çok ~1'er in-flight). */
+    if (poll_entry_by_pid(0x05, now, true)) {
+        any_queued = true;
+    }
     if (poll_voltage(now)) {
-        return true;
+        any_queued = true;
     }
 
+    /* Remaining live PIDs (none currently — RPM/Speed/Coolant are all
+     * handled above).  Round-robin for future expansion. */
     for (size_t n = 0; n < s_live_count; n++) {
         size_t idx = (s_dash_slot + n) % s_live_count;
         uint8_t pid = s_live_entries[idx].pid;
-        if (pid == DASH_PID_RPM || pid == DASH_PID_SPEED) {
+        if (pid == DASH_PID_RPM || pid == DASH_PID_SPEED || pid == 0x05) {
             continue;
         }
         if (poll_entry_by_pid(pid, now, true)) {
             s_dash_slot = (idx + 1) % s_live_count;
-            return true;
+            any_queued = true;
+            break;
         }
     }
-    return false;
+
+    return any_queued;
 }
 
 static bool run_grid_poll(uint32_t now)
@@ -877,6 +1047,11 @@ static void poll_task(void *arg)
             s_voltage_oor_count = 0;
             s_042_reprobe_last = 0;
             s_voltage_pending = false;
+            s_reprobe_inflight = false;
+            s_batch_state = 0;   /* her bağlantıda batch yeteneğini yeniden probe et */
+            s_batch_fail = 0;
+            s_batch_pending = false;
+            s_batch_last = 0;
             memset(s_pid_filters, 0, sizeof(s_pid_filters));  /* tüm PID filtreleri reset */
             init_poll_entries();  /* init tüm pending flag'leri false yapar */
             vTaskDelay(pdMS_TO_TICKS(50));
