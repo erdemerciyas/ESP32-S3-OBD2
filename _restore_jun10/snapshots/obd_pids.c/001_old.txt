@@ -1,8 +1,0 @@
-static void set_voltage(float v, const char *source)
-{
-    if (!voltage_valid(v)) {
-        app_log_warn(TAG, "Reject voltage %.2fV from %s", v, source);
-        return;
-    }
-    vehicle_data_set_float(&vehicle_data_get()->voltage, v);
-}

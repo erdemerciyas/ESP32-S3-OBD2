@@ -1,7 +1,0 @@
-    if (error->status == BLE_HS_EDONE) {
-        if (s_notify_handle) {
-            subscribe_notify(conn_handle);
-        }
-        on_gatt_ready(conn_handle);
-        return 0;
-    }

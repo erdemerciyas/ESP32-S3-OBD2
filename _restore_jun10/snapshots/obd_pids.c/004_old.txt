@@ -1,4 +1,0 @@
-        if (dtc_focus) {
-            if (!obd_dtc_is_busy()) {
-                poll_voltage(now);
-            }

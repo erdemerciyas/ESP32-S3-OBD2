@@ -1,7 +1,0 @@
-void elm327_query_vehicle_info(void)
-{
-    if (!elm327_is_ready() || elm327_is_busy()) {
-        return;
-    }
-    query_vehicle_info();
-}

@@ -1,4 +1,0 @@
-        if (s_discovery_done && !s_vehicle_info_done) {
-            s_vehicle_info_done = true;
-            elm327_query_vehicle_info();
-        }

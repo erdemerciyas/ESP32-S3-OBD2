@@ -148,27 +148,43 @@ app_main()
 - **`main/imu/`** — QMI8658 6-axis IMU driver, gyro calibration, sensor fusion
 - **`main/ui/`** — LVGL screens, theme system, custom fonts
 
+### Project Structure
+
+```
+├── main/                  # ESP32-S3 firmware (OBD, UI, BSP, IMU)
+├── simulator/             # LVGL PC simulator (Visual Studio, shared UI sources)
+├── scripts/               # verify_round_lcd_layout.py — round LCD geometry check
+├── docs/                  # GELISTIRME_KURALLARI.md — development rules
+├── rebuild.bat            # Windows: fullclean + build + flash
+├── CHANGELOG.md           # Dated project history and current status
+├── partitions.csv         # Flash partition table
+├── sdkconfig.defaults     # Default ESP-IDF configuration
+└── dependencies.lock      # Managed component versions
+```
+
+Reference snapshots, build logs, and duplicate scripts were removed in the 2026-07 cleanup (~1500 files). See `CHANGELOG.md` for details.
+
 ### Screens (Tab Navigation)
 
 Navigation uses an LVGL TabView with hidden tab buttons. Screen switching is done via **swipe gesture** (horizontal) and visual indicator dots at the bottom:
 
-1. **Splash** — Animated loading screen (3 seconds)
-2. **Connection** — BLE scan, connect, status
-3. **Dashboard** — Main arc gauge + stats row
-4. **Live Data** — 3×3 PID grid
-5. **Gyro** — IMU pitch/roll/yaw off-road display
-6. **Settings** — Toggles and system info
+1. **Connection** — BLE scan, connect, status
+2. **Dashboard** — Main arc gauge + stats row
+3. **Live Data** — 3×3 PID grid
+4. **Gyro** — IMU pitch/roll/yaw off-road display
+5. **Settings** — Toggles and system info
+
+A **splash screen** plays for 3 seconds at startup, then transitions to the main UI.
 
 ---
 
 ## Custom Fonts
 
-Three custom Montserrat fonts were generated using `lv_font_conv` for the gauge display:
+Two custom Montserrat fonts were generated using `lv_font_conv` for the gauge display:
 
 | Font | Size | Weight | Usage |
 |------|------|--------|-------|
 | `lv_font_montserrat_56` | 56px | Regular | Larger labels |
-| `lv_font_montserrat_72_bold` | 72px | Bold | Alternative gauge value |
 | `lv_font_montserrat_94_bold` | 94px | Bold | Center gauge value |
 
 These are compiled directly into the firmware (no external file system required).
@@ -221,23 +237,23 @@ The system supports dynamic PID discovery and polling with **EMA + spike filteri
 
 | PID | Description | Priority | Filter Alpha | Spike Max |
 |-----|-------------|----------|--------------|-----------|
-| 0x0C | RPM (engine speed) | High (live) | 0.50 | 250 RPM |
-| 0x0D | Vehicle speed | High (live) | 0.40 | 25 km/h |
-| 0x05 | Coolant temperature | High (live) | 0.15 | 20°C |
+| 0x0C | RPM (engine speed) | High (live) | 0.90 | 1500 RPM |
+| 0x0D | Vehicle speed | High (live) | 0.94 | 30 km/h |
+| 0x05 | Coolant temperature | High (live) | 0.55 | 15°C |
 | 0x42 | Battery voltage | High (live) | 0.30 | 0.6V |
-| 0x11 | Throttle position | Medium | 0.50 | 30% |
-| 0x0B | MAP (intake pressure) | Medium | 0.40 | 30 kPa |
-| 0x0F | Intake air temperature | Medium | 0.20 | 20°C |
-| 0x0E | Timing advance | Medium | 0.30 | 15° |
-| 0x04 | Engine load | Medium | 0.40 | 30% |
-| 0x06 | Short term fuel trim | Medium | 0.20 | 15% |
-| 0x07 | Long term fuel trim | Medium | 0.20 | 15% |
-| 0x14 | O2 sensor 1 voltage | Medium | 0.30 | 0.8V |
-| 0x15 | O2 sensor 2 voltage | Medium | 0.30 | 0.8V |
-| 0x10 | MAF (air flow) | Medium | 0.40 | 30 g/s |
+| 0x11 | Throttle position | Medium | 0.70 | 30% |
+| 0x0B | MAP (intake pressure) | Medium | 0.70 | 30 kPa |
+| 0x0F | Intake air temperature | Medium | 0.55 | 20°C |
+| 0x0E | Timing advance | Medium | 0.60 | 15° |
+| 0x04 | Engine load | Medium | 0.65 | 30% |
+| 0x06 | Short term fuel trim | Medium | 0.40 | 15% |
+| 0x07 | Long term fuel trim | Medium | 0.40 | 15% |
+| 0x14 | O2 sensor 1 voltage | Medium | 0.50 | 0.8V |
+| 0x15 | O2 sensor 2 voltage | Medium | 0.50 | 0.8V |
+| 0x10 | MAF (air flow) | Medium | 0.60 | 30 g/s |
 | 0x03 | Fuel system status | Slow | 0.00 | — |
 | 0x12 | Secondary air status | Slow | 0.00 | — |
-| 0x0A | Fuel pressure | Slow | 0.30 | 80 kPa |
+| 0x0A | Fuel pressure | Slow | 0.40 | 80 kPa |
 
 **Filtering**: Each PID uses an Exponential Moving Average (EMA) filter with spike rejection. Cold-start seeding provides instant initial values. After 3 consecutive spikes, the filter resets to track rapid real changes.
 
@@ -252,6 +268,14 @@ The system supports dynamic PID discovery and polling with **EMA + spike filteri
 - Git
 
 ### Build & Flash
+
+**Windows (recommended):** use `rebuild.bat` for a full clean, reconfigure, build, and flash in one step. Edit the COM port in the script if needed (default: `COM4`).
+
+```powershell
+.\rebuild.bat
+```
+
+**Manual (any platform):**
 
 ```bash
 # Clone the repository
@@ -275,6 +299,30 @@ idf.py -p COM3 monitor
 ```
 
 > **Note**: This project is configured for the **Waveshare ESP32-S3-Touch-LCD-2.1** board. If using a different board, update the panel configuration in `menuconfig` under `Component config > ESP Panel`.
+
+### PC Simulator
+
+UI changes can be tested on Windows without flashing hardware. The simulator shares `main/ui/` sources with the firmware.
+
+**Requirements:** Visual Studio 2022+ with **Desktop development with C++**, platform **x64**.
+
+```powershell
+cd simulator
+.\build_simulator.cmd
+.\Output\Binaries\Release\x64\LVGL.Simulator.exe
+```
+
+Or open `simulator/LVGL.Simulator.sln` in Visual Studio and press F5. A 480×480 window opens with simulated OBD data (RPM, speed, coolant, etc.).
+
+See `simulator/README.md` for setup details and troubleshooting.
+
+### Layout Verification
+
+```powershell
+python scripts/verify_round_lcd_layout.py
+```
+
+Checks dashboard UI regions against the 480×480 round LCD geometry defined in `main/ui/theme.h`.
 
 ### Partition Table
 
@@ -320,9 +368,15 @@ Key configuration options in `sdkconfig.defaults`:
 - **LVGL out of memory error**: Verify PSRAM is enabled and `CONFIG_LV_MEM_CUSTOM=y` is set so LVGL uses PSRAM.
 - **Text not displaying on gauge**: Custom fonts (`montserrat_56`, `montserrat_94_bold`) must be compiled in. Check `main/CMakeLists.txt` includes them in `SRCS`.
 
----
+## Development Notes
 
-## License
+- **`CHANGELOG.md`** — dated history, current build/flash status, open tasks
+- **`docs/GELISTIRME_KURALLARI.md`** — rules for preserving BLE/ELM327 connection stability
+- **`.cursor/rules/`** — Cursor IDE guidance (changelog, BLE stability)
+
+When modifying OBD connection code (`ble_obd.c`, `elm327.c`), keep changes minimal and verify on real hardware.
+
+---
 
 This project is open source. See the repository for license details.
 

@@ -1,4 +1,0 @@
-void ble_obd_set_rx_callback(ble_obd_rx_cb_t cb)
-{
-    s_rx_cb = cb;
-}

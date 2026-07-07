@@ -3,9 +3,7 @@
 #include <math.h>
 
 extern const lv_font_t lv_font_montserrat_56;
-extern const lv_font_t lv_font_montserrat_72_bold;
 extern const lv_font_t lv_font_montserrat_94_bold;
-extern const lv_font_t lv_font_montserrat_120_bold;
 
 static ui_theme_t s_theme = {
     .bg         = LV_COLOR_MAKE(0x02, 0x06, 0x0A),

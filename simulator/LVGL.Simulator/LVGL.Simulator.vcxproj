@@ -737,7 +737,6 @@
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_grid.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\screen_settings.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_56.c" />
-    <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_72_bold.c" />
     <ClCompile Include="$(MSBuildThisFileDirectory)..\..\main\ui\lv_font_montserrat_94_bold.c" />
   </ItemGroup>
   <ItemGroup>

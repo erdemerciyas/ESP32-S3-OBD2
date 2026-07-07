@@ -20,7 +20,6 @@ idf_component_register(
         "ui/screen_settings.c"
         "ui/screen_gyro.c"
         "ui/lv_font_montserrat_56.c"
-        "ui/lv_font_montserrat_72_bold.c"
         "ui/lv_font_montserrat_94_bold.c"
     INCLUDE_DIRS
         "."

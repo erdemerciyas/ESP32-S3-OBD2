@@ -1,7 +1,0 @@
-    size_t len = strlen(s_pending_response);
-    if (len > 0) {
-        snprintf(s_pending_response + len, sizeof(s_pending_response) - len, " %s", line);
-    } else {
-        strncpy(s_pending_response, line, sizeof(s_pending_response) - 1);
-        s_pending_response[sizeof(s_pending_response) - 1] = '\0';
-    }

@@ -11,7 +11,43 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 | UI sekmeleri | Connect · Dash · Grid · Gyro · Settings (DTC kaldırıldı) |
 | Son build | `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
 | Son flash | COM3 — `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
-| Git | `main` = `origin/main` (HEAD `a75d99e`) |
+| Git | `main` = `origin/main` (HEAD `a75d99e`); **commit edilmemiş temizlik** |
+
+---
+
+## 2026-07-07 — Proje temizliği (referans artıkları + geçici dosyalar)
+
+**Neden:** Repo ~3500+ gereksiz dosya içeriyordu (referans projeler, yedek snapshot'lar, build logları, otomatik wiki); firmware/simülatör dışı her şey kaldırıldı.
+
+### Silinenler (git'ten)
+
+- `_ref_download/`, `_ref_tdisplay2/` — SquareLine/PlatformIO referans projeleri (~1500 dosya)
+- `_restore_jun10/` — Haziran yedek snapshot'ları (40 dosya)
+- `_ref_lib_tree.json`, `_ref_src_tree.json` — referans ağaç dökümleri
+- `simulator/Screenshot.png` — eski doğrulama ekran görüntüsü
+- `main/ui/lv_font_montserrat_72_bold.c` — kullanılmayan font (tema 94 px kullanıyor)
+- `scripts/revert_jun11.py`, `scripts/revert_ba3bbf10.py`, `scripts/extract_writes.py`, `scripts/extract_old_strings.py` — tek seferlik geri alma araçları
+
+### Silinenler (yerel, untracked)
+
+- `.qoder/` — otomatik üretilmiş wiki
+- `.cache/`, `build/` — önbellek ve derleme çıktısı
+- `bf.bat`, `build_esp32.bat`, `build_flash.bat`, `_flash_now.bat`, `_flash_now.ps1` — yinelenen build scriptleri (`rebuild.bat` korundu)
+- `build_out*.txt`, `build_err*.txt`, `build_sync*.txt`, `build_flash_out*.txt` — build log dökümleri
+- `simulator/Screenshot_*.png`, `simulator/Output/` — yerel doğrulama görüntüleri ve MSBuild çıktısı
+- `tools/` — boş klasör (font TTF'leri zaten derlenmiş `.c` dosyalarında)
+
+### Korunanlar
+
+- `main/` — firmware
+- `simulator/` — PC simülatörü (LVGL + `obd2_dashboard/`)
+- `scripts/verify_round_lcd_layout.py` — layout doğrulama
+- `rebuild.bat` — tek build/flash scripti
+- `docs/GELISTIRME_KURALLARI.md`, `.cursor/rules/`
+
+### `.gitignore` güncellendi
+
+- `.qoder/`, `.cache/`, `simulator/Output/`, `build_*.txt`, `_ref_*/`, `_restore_*/`, `simulator/Screenshot*.png`
 
 ---
 

@@ -1,4 +1,0 @@
-    return xSemaphoreTake(s_sync_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
-}
-
-static void elm327_run_init(void)

@@ -1,8 +1,0 @@
-static int subscribe_notify(uint16_t conn_handle)
-{
-    if (!s_notify_handle) {
-        return BLE_HS_EINVAL;
-    }
-    uint8_t buf[2] = {0x01, 0x00};
-    return ble_gattc_write_flat(conn_handle, s_notify_handle + 1, buf, sizeof(buf), NULL, NULL);
-}

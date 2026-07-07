@@ -1,2 +1,0 @@
-static esp_timer_handle_t s_reconnect_timer;
-static esp_timer_handle_t s_connect_timer;

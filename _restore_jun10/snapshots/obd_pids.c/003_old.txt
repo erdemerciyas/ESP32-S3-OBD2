@@ -1,3 +1,0 @@
-        if (!s_discovery_done) {
-            vehicle_data_set_state(OBD_STATE_PID_DISCOVERY, "Discovering PIDs...");
-            poll_voltage(now);

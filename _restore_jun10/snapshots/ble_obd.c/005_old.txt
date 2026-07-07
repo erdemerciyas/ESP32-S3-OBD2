@@ -1,2 +1,0 @@
-static int connect_peer(const ble_addr_t *addr, const char *name);
-static void start_scan(void);

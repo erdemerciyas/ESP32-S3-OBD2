@@ -5,3 +5,19 @@ managed_components/
 dependencies.lock
 .vscode/
 .idea/
+.cache/
+.qoder/
+
+# Build / flash log dumps
+build_*.txt
+*_flash_out*.txt
+
+# Simulator build output
+simulator/Output/
+
+# Reference snapshots (not part of firmware)
+_ref_*/
+_restore_*/
+
+# Screenshots (local verification only)
+simulator/Screenshot*.png

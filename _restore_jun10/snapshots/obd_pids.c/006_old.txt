@@ -1,5 +1,0 @@
-        if (!elm327_is_ready()) {
-            s_disc_idx = 0;
-            s_disc_busy = false;
-            s_discovery_done = false;
-            s_use_atrv = false;  /* always try PID 0x42 first, fall back to ATRV on error */

@@ -1,6 +1,0 @@
-            vehicle_profile_apply_known_pids();
-            s_discovery_done = true;
-            s_voltage_last = 0;
-            vehicle_data_set_state(OBD_STATE_READY, "Connected");
-            app_log_info(TAG, "Ready: %s", profile->display_name);
-        }
