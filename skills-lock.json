@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "design-taste": {
+      "source": "h3nryprod01/design-taste",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "686061c46d01b12ef6c7a998471cc6079bac20bd95667958578f20b76e078373"
+    },
+    "ui-ux-pro-max": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/ui-ux-pro-max/SKILL.md",
+      "computedHash": "7ac62d931e52dbc7c309ed8ee067101969db2454709339b02daa583e80e98d5f"
+    }
+  }
+}

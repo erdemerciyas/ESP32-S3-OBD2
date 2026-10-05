@@ -21,7 +21,10 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 - `README.md` baştan yazıldı (İngilizce + Türkçe özet): BLE/WiFi adaptör desteği, ekranlar, donanım, kurulum, Kconfig seçenekleri, mimari şeması, PID tablosu, sorun giderme, anahtar kelimeler. Arama motorları için başlık ve ilk paragraf "ESP32-S3 OBD2 dashboard / ELM327 BLE & WiFi" ifadelerini içeriyor.
 - GitHub repo açıklaması ve konu etiketleri (topics) güncellendi (`gh repo edit`).
-- Commit dışı bırakılanlar: `.claude/`, `.freebuff/`, `skills-lock.json` (araç dosyaları), `docs/IMPLEMENTATION_GUIDE.md`, `docs/QUICK_REFERENCE.md`, `docs/SVG_PNG_CONVERTER_PLAN.md` (SVG↔PNG dönüştürücü taslakları, uygulanmadı).
+- `LICENSE` (MIT) eklendi.
+- **GitHub Pages** sitesi: `docs/index.html` (SEO meta, Open Graph, schema.org `SoftwareSourceCode` JSON-LD, açık/koyu tema), `docs/_config.yml` (`jekyll-sitemap`, `jekyll-seo-tag`), `docs/robots.txt` → `https://erdemerciyas.github.io/ESP32-S3-OBD2/` repo "homepage" olarak ayarlandı.
+- **Sürüm v1.0.0**: tek dosya `esp32s3-obd2-dashboard-merged.bin` (`0x0`'a yazılır) + ayrı bootloader/partition/app dosyaları. README'ye "hazır firmware'i yükle" bölümü.
+- `docs/` SVG↔PNG dönüştürücü taslakları (`IMPLEMENTATION_GUIDE.md`, `QUICK_REFERENCE.md`, `SVG_PNG_CONVERTER_PLAN.md`), `.freebuff/`, `skills-lock.json` eklendi. `.claude/` (üçüncü taraf skill kopyaları + oturum kilidi) `.gitignore`'a alındı; skill'ler `skills-lock.json`'dan yeniden kurulabilir.
 
 ---
 

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-S3 OBD2 Dashboard — ELM327 BLE &amp; WiFi Car Gauge for Round LCD</title>
+<meta name="description" content="Open-source ESP32-S3 OBD-II car dashboard for the Waveshare ESP32-S3-Touch-LCD-2.1 round display. Reads ELM327 adapters over Bluetooth BLE or WiFi: RPM, speed, coolant, oil, voltage, live data and DTC trouble codes. ESP-IDF + LVGL.">
+<meta name="keywords" content="ESP32 OBD2, ESP32-S3 OBD-II, ELM327 BLE, ELM327 WiFi, OBD2 dashboard, car gauge, round LCD, Waveshare ESP32-S3-Touch-LCD-2.1, LVGL, ESP-IDF, DTC reader, araç gösterge paneli">
+<meta name="author" content="Erdem Erciyas">
+<link rel="canonical" href="https://erdemerciyas.github.io/ESP32-S3-OBD2/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="ESP32-S3 OBD2 Dashboard — ELM327 BLE &amp; WiFi">
+<meta property="og:description" content="Turn a Waveshare ESP32-S3 round touch LCD into an OBD-II gauge cluster with a cheap ELM327 Bluetooth or WiFi adapter.">
+<meta property="og:url" content="https://erdemerciyas.github.io/ESP32-S3-OBD2/">
+<meta name="twitter:card" content="summary">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "ESP32-S3 OBD2 Dashboard",
+  "description": "ESP32-S3 OBD-II car dashboard for a 480x480 round touch LCD, reading ELM327 adapters over Bluetooth Low Energy or WiFi.",
+  "codeRepository": "https://github.com/erdemerciyas/ESP32-S3-OBD2",
+  "programmingLanguage": "C",
+  "runtimePlatform": "ESP-IDF 5.3 / ESP32-S3",
+  "license": "https://opensource.org/licenses/MIT",
+  "author": { "@type": "Person", "name": "Erdem Erciyas", "url": "https://github.com/erdemerciyas" },
+  "keywords": "ESP32, OBD2, ELM327, BLE, WiFi, LVGL, car dashboard, DTC"
+}
+</script>
+<style>
+:root {
+  --bg: #f6f8fb; --surface: #ffffff; --text: #0d1520; --dim: #566375;
+  --line: #dde3eb; --accent: #0089a3; --accent2: #d46b00; --code: #eef2f6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #05090e; --surface: #0c131c; --text: #eef2f6; --dim: #8796a8;
+    --line: #1c2a3c; --accent: #00e0f0; --accent2: #ff9100; --code: #101a26;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.wrap { max-width: 960px; margin: 0 auto; padding: 0 16px; }
+header { padding: 56px 0 32px; display: grid; gap: 32px; grid-template-columns: 1fr; align-items: center; }
+@media (min-width: 760px) { header { grid-template-columns: 1.4fr 1fr; } }
+h1 { font-size: clamp(28px, 5vw, 42px); line-height: 1.15; margin: 0 0 16px; letter-spacing: -0.02em; }
+h2 { font-size: 24px; margin: 48px 0 16px; letter-spacing: -0.01em; }
+p.lead { font-size: 18px; color: var(--dim); margin: 0 0 24px; }
+a { color: var(--accent); }
+.btns { display: flex; flex-wrap: wrap; gap: 12px; }
+.btn {
+  display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none;
+  font-weight: 600; border: 1px solid var(--line); color: var(--text); background: var(--surface);
+}
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.gauge { width: 100%; max-width: 300px; justify-self: center; }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.card h3 { margin: 0 0 6px; font-size: 17px; }
+.card p { margin: 0; color: var(--dim); font-size: 15px; }
+table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); font-size: 15px; vertical-align: top; }
+th { color: var(--dim); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+.table-scroll { overflow-x: auto; }
+pre { background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 14px; overflow-x: auto; font-size: 14px; }
+code { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+footer { margin: 64px 0 32px; color: var(--dim); font-size: 14px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>ESP32-S3 OBD2 Dashboard for ELM327 Bluetooth &amp; WiFi adapters</h1>
+    <p class="lead">Open-source firmware that turns the Waveshare ESP32-S3-Touch-LCD-2.1 round touch display into a digital gauge cluster for any OBD-II car: RPM, speed, coolant and oil temperature, battery voltage, live sensor data and a trouble-code (DTC) reader.</p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/erdemerciyas/ESP32-S3-OBD2">Source on GitHub</a>
+      <a class="btn" href="https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/latest">Download firmware</a>
+    </div>
+  </div>
+  <svg class="gauge" viewBox="0 0 200 200" role="img" aria-label="Round tachometer gauge illustration">
+    <circle cx="100" cy="100" r="96" style="fill:var(--surface);stroke:var(--line)" stroke-width="2"/>
+    <path d="M 43.4 156.6 A 80 80 0 1 1 156.6 156.6" fill="none" style="stroke:var(--line)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 43.4 156.6 A 80 80 0 1 1 168.3 59.0" fill="none" style="stroke:var(--accent)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M 175.6 82.3 A 80 80 0 0 1 156.6 156.6" fill="none" style="stroke:var(--accent2)" stroke-width="10" stroke-linecap="round" opacity="0.5"/>
+    <text x="100" y="108" text-anchor="middle" font-size="38" font-weight="700" style="fill:var(--text)" font-family="system-ui, sans-serif">3450</text>
+    <text x="100" y="130" text-anchor="middle" font-size="12" style="fill:var(--dim)" font-family="system-ui, sans-serif" letter-spacing="2">RPM</text>
+    <text x="100" y="158" text-anchor="middle" font-size="14" style="fill:var(--accent)" font-family="system-ui, sans-serif">86 km/h</text>
+  </svg>
+</header>
+
+<h2>Features</h2>
+<div class="grid">
+  <div class="card"><h3>BLE or WiFi ELM327</h3><p>Works with cheap ELM327 clones over Bluetooth Low Energy (FFF0/FFE0) or WiFi (TCP 192.168.0.10:35000). Switch in Settings, no reboot.</p></div>
+  <div class="card"><h3>Universal OBD-II</h3><p>Automatic protocol detection with a cached protocol for instant reconnects. CAN, K-line KWP2000, ISO 9141-2, J1850.</p></div>
+  <div class="card"><h3>Smooth gauges</h3><p>Synchronized RPM and speed at ~60 FPS, shift lights, redline zone, EMA filtering on every sensor.</p></div>
+  <div class="card"><h3>Trouble codes</h3><p>Read stored and pending DTCs, freeze-frame data and MIL status; clear codes with verification; history kept in flash.</p></div>
+  <div class="card"><h3>Only supported data</h3><p>PIDs are discovered at connect time; the UI shows what your car actually reports, including oil temperature and fuel level.</p></div>
+  <div class="card"><h3>Built for a round screen</h3><p>Every screen is designed for the 480×480 circular panel: rings, a central lens and swipe navigation. Plus an off-road inclinometer.</p></div>
+</div>
+
+<h2>Supported adapters</h2>
+<div class="table-scroll">
+<table>
+  <tr><th>Type</th><th>How it connects</th><th>Examples</th></tr>
+  <tr><td>Bluetooth LE</td><td>GATT service FFF0 or FFE0, found by name or UUID, address remembered</td><td>ELM327 V1.5/V2.1 BLE clones, Vgate iCar Pro BLE, Veepeak BLE</td></tr>
+  <tr><td>WiFi</td><td>Joins the adapter's AP (WiFi_OBDII, OBDII, V-LINK…), TCP port 35000</td><td>ELM327 WiFi clones, Vgate iCar WiFi</td></tr>
+  <tr><td>Classic Bluetooth</td><td>Not supported (ESP32-S3 has no BR/EDR radio)</td><td>SPP-only adapters</td></tr>
+</table>
+</div>
+
+<h2>Hardware</h2>
+<div class="table-scroll">
+<table>
+  <tr><th>Part</th><th>Details</th></tr>
+  <tr><td>Board</td><td><a href="https://www.waveshare.com/esp32-s3-touch-lcd-2.1.htm">Waveshare ESP32-S3-Touch-LCD-2.1</a> — ESP32-S3, 16 MB flash, 8 MB PSRAM</td></tr>
+  <tr><td>Display</td><td>2.1" 480×480 round IPS (ST7701), CST816S capacitive touch</td></tr>
+  <tr><td>Sensors</td><td>QMI8658 6-axis IMU, buzzer via TCA9554</td></tr>
+  <tr><td>Adapter</td><td>Any ELM327 clone, BLE or WiFi</td></tr>
+</table>
+</div>
+
+<h2>Quick start</h2>
+<pre><code>git clone https://github.com/erdemerciyas/ESP32-S3-OBD2.git
+cd ESP32-S3-OBD2
+idf.py build                 # ESP-IDF v5.3.5
+idf.py -p COM3 flash monitor</code></pre>
+<p>Or flash the prebuilt image from the <a href="https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/latest">latest release</a>:</p>
+<pre><code>esptool.py --chip esp32s3 -p COM3 write_flash 0x0 esp32s3-obd2-dashboard-merged.bin</code></pre>
+
+<h2>Türkçe</h2>
+<p><strong>ESP32-S3 OBD2 araç gösterge paneli:</strong> Waveshare ESP32-S3-Touch-LCD-2.1 yuvarlak ekran için açık kaynak yazılım. ELM327 Bluetooth (BLE) veya WiFi adaptörle devir, hız, su/yağ sıcaklığı, akü voltajı, canlı sensör verileri ve Türkçe açıklamalı arıza kodu (DTC) okuma/silme. Ayarlar → Link ile BLE/WiFi seçilir.</p>
+
+<footer>
+  MIT licensed · by <a href="https://github.com/erdemerciyas">Erdem Erciyas</a> ·
+  <a href="https://github.com/erdemerciyas/ESP32-S3-OBD2">github.com/erdemerciyas/ESP32-S3-OBD2</a>
+</footer>
+
+</div>
+</body>
+</html>

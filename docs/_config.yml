@@ -1,0 +1,7 @@
+title: ESP32-S3 OBD2 Dashboard
+description: Open-source ESP32-S3 OBD-II car dashboard for a round touch LCD, reading ELM327 adapters over Bluetooth BLE or WiFi.
+url: https://erdemerciyas.github.io
+baseurl: /ESP32-S3-OBD2
+plugins:
+  - jekyll-sitemap
+  - jekyll-seo-tag

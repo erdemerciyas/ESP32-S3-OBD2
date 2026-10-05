@@ -4,6 +4,10 @@
 [![LVGL](https://img.shields.io/badge/LVGL-v8.4-green)](https://lvgl.io/)
 [![Board](https://img.shields.io/badge/Board-Waveshare_ESP32--S3--Touch--LCD--2.1-orange)](https://www.waveshare.com/esp32-s3-touch-lcd-2.1.htm)
 [![Adapter](https://img.shields.io/badge/Adapter-ELM327_BLE_%7C_WiFi-purple)](#supported-elm327-adapters)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/erdemerciyas/ESP32-S3-OBD2)](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/latest)
+
+**Website:** [erdemerciyas.github.io/ESP32-S3-OBD2](https://erdemerciyas.github.io/ESP32-S3-OBD2/) · **Prebuilt firmware:** [latest release](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/latest)
 
 An open-source **ESP32-S3 OBD-II car dashboard** for the **Waveshare ESP32-S3-Touch-LCD-2.1** (480×480 round touch display). It reads live engine data from any OBD-II car through a cheap **ELM327 clone adapter — Bluetooth Low Energy (BLE) or WiFi** — and shows it as a full-screen digital gauge cluster: tachometer, speedometer, coolant / oil temperature, battery voltage, live sensor data, **trouble code (DTC) reader and eraser**, and an off-road inclinometer.
 
@@ -108,12 +112,25 @@ The firmware scans for an AP whose name contains `OBD`, `ELM`, `V-LINK`, `VLINK`
 
 ## Getting started
 
-### Prerequisites
+### Option A — flash the prebuilt firmware (no toolchain)
+
+Download `esp32s3-obd2-dashboard-merged.bin` from the [latest release](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/latest) and write it at offset `0x0`:
+
+```bash
+pip install esptool
+esptool.py --chip esp32s3 -p COM3 write_flash 0x0 esp32s3-obd2-dashboard-merged.bin
+```
+
+Use the board's USB port (Linux/macOS: `/dev/ttyACM0`, `/dev/cu.usbmodem…`). Browser-based tools such as the [ESP Web Flasher](https://espressif.github.io/esptool-js/) also work: same file, address `0x0`.
+
+### Option B — build from source
+
+#### Prerequisites
 
 - [ESP-IDF **v5.3.5**](https://docs.espressif.com/projects/esp-idf/en/v5.3.5/esp32s3/get-started/index.html) with ESP32-S3 support
 - Python 3.11 (installed by the ESP-IDF installer), Git
 
-### Build & flash
+#### Build & flash
 
 ```bash
 git clone https://github.com/erdemerciyas/ESP32-S3-OBD2.git
@@ -238,7 +255,7 @@ Every numeric PID goes through an EMA filter with spike rejection (cold-start se
 │   └── ui/                  # LVGL screens, theme, fonts (incl. Turkish glyphs)
 ├── simulator/               # LVGL PC simulator (Visual Studio) sharing main/ui
 ├── scripts/                 # round-LCD layout checker
-├── docs/                    # development rules
+├── docs/                    # project website (GitHub Pages), dev rules, design notes
 ├── CHANGELOG.md             # dated history (Turkish), current status, open items
 ├── partitions.csv           # NVS 24 KB · PHY 4 KB · factory app 3 MB
 └── sdkconfig.defaults
@@ -285,13 +302,17 @@ Serial logs (USB-JTAG port, 115200) print a link summary every 5 s: requests/s, 
 - **Bağlantı seçimi:** Ayarlar → **Link** karosu (BLE / WiFi). Seçilen hemen aranır, yeniden başlatma gerekmez; seçim kalıcıdır.
 - **WiFi adaptörler:** `WiFi_OBDII`, `OBDII`, `V-LINK` gibi ağlar otomatik bulunur, adaptör `192.168.0.10:35000`. Adaptör tek bağlantı kabul eder — telefon uygulamasını kapatın.
 - **K-line (KWP2000) araçlar** (ör. 2005 Chevrolet Kalos / Daewoo) için optimize: protokol önbelleği, tek ECU yanıt eki, RPM/hıza öncelik.
-- Kurulum: ESP-IDF 5.3.5 → `idf.py build` → `idf.py -p COM3 flash`. Ayrıntılı geçmiş ve açık işler: [`CHANGELOG.md`](CHANGELOG.md).
+- Kurulum: hazır firmware'i [son sürümden](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/latest) indirip `0x0` adresine yazın, ya da ESP-IDF 5.3.5 ile `idf.py build` → `idf.py -p COM3 flash`. Ayrıntılı geçmiş ve açık işler: [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
 ## Contributing
 
 Issues and pull requests are welcome — especially reports of which ELM327 adapters (BLE or WiFi) and which cars work. When touching the connection code (`ble_obd.c`, `wifi_obd.c`, `elm327.c`), keep changes small and test on a real adapter; see [`docs/GELISTIRME_KURALLARI.md`](docs/GELISTIRME_KURALLARI.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Erdem Erciyas. Bundled third-party code keeps its own license (LVGL simulator: MIT; managed ESP-IDF components: see their headers).
 
 ## Author
 

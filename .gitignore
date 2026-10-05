@@ -21,3 +21,6 @@ _restore_*/
 
 # Screenshots (local verification only)
 simulator/Screenshot*.png
+
+# AI tool local state (skill copies are re-installable from skills-lock.json)
+.claude/
