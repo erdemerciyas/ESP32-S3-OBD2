@@ -600,7 +600,11 @@ static void elm327_task(void *arg)
         }
 
         if (s_state == ELM_STATE_ERROR) {
-            vTaskDelay(pdMS_TO_TICKS(500));
+            /* Init sırasında gönderim hatası: bağlantı açık kaldıysa takılı
+             * kalmak yerine init'i baştan dene. */
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            s_elm_configured = false;
+            s_state = ELM_STATE_IDLE;
             continue;
         }
 

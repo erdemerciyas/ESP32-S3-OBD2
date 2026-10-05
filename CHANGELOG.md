@@ -17,6 +17,18 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 ---
 
+## 2026-10-05 — WiFi kararlılığı: kontak kapat/aç sonrası PIDS'te kopma
+
+**Belirti:** WiFi adaptör ilk seferde bağlandı; araç kapatılıp açılınca LINK → ELM → PIDS'e kadar gelip bağlantı gidip geliyordu. Cihazda log alınamadı (yalnız COM4 bağlıydı); kodla teşhis.
+
+- **Keepalive 5/2/3 → 15/5/3** (`wifi_obd.c`): bazı klon TCP yığınları keepalive yoklamasına cevap vermiyor; 0100 beklemesinde (6–12 sn sessizlik) oturum ~11 sn'de bizim taraftan öldürülüyordu.
+- **Uygulama seviyesi bekçi:** gönderimden sonra 15 sn hiç bayt gelmezse TCP yeniden kurulur. Hiç veri alınamadan biten 2 oturumda WiFi baştan bağlanır (ESP'nin elektriği kesildiğinde adaptörde kalan eski oturum / takılmış köprü için).
+- **Kopma sebebi ekranda:** "Adapter closed link", "No reply from adapter", "WiFi lost, rejoining", "Link error, retrying".
+- `elm327.c`: init sırasında gönderim hatası ERROR durumunda kalıcı takılıyordu → 1 sn sonra init baştan.
+- Build uyarısız, COM4'ten flash, açılış tek seferde (ROM banner). **Araçta doğrulama bekliyor.**
+
+---
+
 ## 2026-10-05 — README yeniden yazıldı + GitHub bulunabilirliği
 
 - `README.md` baştan yazıldı (İngilizce + Türkçe özet): BLE/WiFi adaptör desteği, ekranlar, donanım, kurulum, Kconfig seçenekleri, mimari şeması, PID tablosu, sorun giderme, anahtar kelimeler. Arama motorları için başlık ve ilk paragraf "ESP32-S3 OBD2 dashboard / ELM327 BLE & WiFi" ifadelerini içeriyor.

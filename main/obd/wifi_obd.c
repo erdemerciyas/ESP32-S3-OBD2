@@ -47,6 +47,8 @@ static const char *NVS_KEY_SSID = "ssid";
 #define TCP_FAIL_MAX        3           /* sonra WiFi'yi baştan kur */
 #define JOIN_FAIL_MAX       2           /* kayıtlı SSID'de sonra taramaya düş */
 #define STOP_TIMEOUT_MS     9000
+#define SILENCE_MS          15000       /* en uzun meşru bekleme 0100 = 12 sn */
+#define DEAD_SESSION_MAX    2
 #define TASK_STACK          4096
 #define TASK_PRIO           6           /* elm327 (5) üstü: RX gecikmesi düşük kalsın */
 
@@ -69,6 +71,8 @@ static esp_netif_t *s_netif;
 static volatile bool s_connected;
 static volatile bool s_running;         /* seçili taşıma WiFi */
 static bool s_wifi_started;             /* yalnız görev değiştirir */
+static volatile TickType_t s_wait_since; /* yanıtsız ilk TX anı, 0 = yok */
+static volatile bool s_session_rx;      /* bu TCP oturumunda veri geldi mi */
 static int s_sock = -1;
 static uint32_t s_gw;                   /* DHCP'den gelen ağ geçidi (ağ bayt sırası) */
 static char s_ssid[33];                 /* şu an kullanılan SSID */
@@ -291,7 +295,10 @@ static int tcp_connect_to(uint32_t addr, int port)
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));   /* "010C\r" hemen gitsin */
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
-    int idle = 5, intvl = 2, cnt = 3;
+    /* Gevşek tutuldu: bazı klon TCP yığınları keepalive yoklamasına cevap
+     * vermiyor; 5 sn'lik ayar K-line 0100 beklemesinde oturumu öldürüyordu.
+     * Ölü köprüyü asıl yakalayan, rx_loop'taki uygulama seviyesi bekçi. */
+    int idle = 15, intvl = 5, cnt = 3;
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
     setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
@@ -331,6 +338,8 @@ static bool tcp_open(void)
         xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
         s_sock = fd;
         xSemaphoreGive(s_tx_mutex);
+        s_wait_since = 0;
+        s_session_rx = false;
         s_connected = true;
         vehicle_data_set_adapter(s_ssid, host);
         app_log_info(TAG, "TCP %s:%d connected in %ld ms", host, CONFIG_OBD_WIFI_PORT,
@@ -353,26 +362,44 @@ static void tcp_close(void)
     xSemaphoreGive(s_tx_mutex);
 }
 
+typedef enum {
+    RX_END_BREAK = 0,   /* durdurma / yeniden tarama isteği */
+    RX_END_WIFI,        /* WiFi ilişkisi düştü */
+    RX_END_CLOSED,      /* adaptör TCP'yi kapattı */
+    RX_END_ERROR,       /* recv hatası (RST, keepalive) */
+    RX_END_SILENT,      /* gönderdik, SILENCE_MS boyunca tek bayt gelmedi */
+} rx_end_t;
+
 /* Bağlantı düşene ya da yeniden tarama istenene kadar baytları ELM'e akıt. */
-static void rx_loop(void)
+static rx_end_t rx_loop(void)
 {
     uint8_t buf[256];
     while (1) {
         EventBits_t b = xEventGroupGetBits(s_ev);
-        if (!(b & BIT_GOT_IP) || (b & BIT_BREAK)) {
-            return;
+        if (b & BIT_BREAK) {
+            return RX_END_BREAK;
+        }
+        if (!(b & BIT_GOT_IP)) {
+            return RX_END_WIFI;
+        }
+        TickType_t since = s_wait_since;
+        if (since && xTaskGetTickCount() - since > pdMS_TO_TICKS(SILENCE_MS)) {
+            app_log_warn(TAG, "Adapter silent %d s after TX", SILENCE_MS / 1000);
+            return RX_END_SILENT;
         }
         int n = recv(s_sock, buf, sizeof(buf), 0);
         if (n > 0) {
+            s_wait_since = 0;
+            s_session_rx = true;
             if (s_rx_cb) {
                 s_rx_cb(buf, (size_t)n);
             }
         } else if (n == 0) {
             app_log_warn(TAG, "TCP closed by adapter");
-            return;
+            return RX_END_CLOSED;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
             app_log_warn(TAG, "TCP recv error %d", errno);
-            return;
+            return RX_END_ERROR;
         }
     }
 }
@@ -402,6 +429,7 @@ static void wifi_obd_task(void *arg)
     (void)arg;
     uint32_t backoff = RETRY_MS;
     int tcp_fail = 0;
+    int dead_sessions = 0;
 
     while (1) {
         /* stop() önce s_running'i düşürür sonra WAKE kurar: temizledikten
@@ -448,9 +476,32 @@ static void wifi_obd_task(void *arg)
         tcp_fail = 0;
         backoff = RETRY_MS;
 
-        rx_loop();
+        rx_end_t why = rx_loop();
         tcp_close();
-        vehicle_data_set_state(OBD_STATE_DISCONNECTED, "Disconnected");
+
+        /* Veri alamadan biten oturum: adaptör eski (kopuk) oturumu tutuyor ya
+         * da köprü takıldı. İkincisinde WiFi'yi baştan kur — çoğu klon istemci
+         * ayrılınca TCP sunucusunu sıfırlıyor. */
+        if (why != RX_END_BREAK && (why == RX_END_SILENT || !s_session_rx)) {
+            if (++dead_sessions >= DEAD_SESSION_MAX) {
+                dead_sessions = 0;
+                app_log_warn(TAG, "No data in %d sessions, rejoining WiFi", DEAD_SESSION_MAX);
+                esp_wifi_disconnect();
+                vTaskDelay(pdMS_TO_TICKS(100));
+                xEventGroupClearBits(s_ev, BIT_ASSOC | BIT_GOT_IP);
+            }
+        } else {
+            dead_sessions = 0;
+        }
+
+        static const char *const why_msg[] = {
+            [RX_END_BREAK]  = "Disconnected",
+            [RX_END_WIFI]   = "WiFi lost, rejoining",
+            [RX_END_CLOSED] = "Adapter closed link",
+            [RX_END_ERROR]  = "Link error, retrying",
+            [RX_END_SILENT] = "No reply from adapter",
+        };
+        vehicle_data_set_state(OBD_STATE_DISCONNECTED, why_msg[why]);
         wait_retry(RETRY_MS);
     }
 }
@@ -547,6 +598,9 @@ bool wifi_obd_send(const uint8_t *data, size_t len)
         off += (size_t)n;
     }
     xSemaphoreGive(s_tx_mutex);
+    if (off == len && !s_wait_since) {
+        s_wait_since = xTaskGetTickCount() | 1;   /* 0 = beklenen yanıt yok */
+    }
     return off == len;
 }
 
