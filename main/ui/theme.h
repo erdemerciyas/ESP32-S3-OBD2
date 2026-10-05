@@ -65,20 +65,29 @@
 #define UI_SHIFT_LIGHT_H      10
 #define UI_SHIFT_LIGHT_GAP    4
 #define UI_SHIFT_LIGHT_SEGS   9
-#define UI_NEEDLE_W           3
 #define UI_TICK_MARK_LEN      10
 #define UI_TICK_MINOR_LEN     5
 #define UI_DATA_RADIUS        12
 
-/* Gauge animation timing (ms) — LVGL ease-out interpolation.
- * RPM and Speed use the same duration so the center gauge and shift lights
- * always move in lockstep regardless of mode. */
-#define UI_GAUGE_ANIM_RPM     80
-#define UI_GAUGE_ANIM_SPEED   80
+/* Dashboard centre readouts — y offsets from the gauge centre (230,230). */
+#define UI_DASH_SHIFT_Y       84    /* shift-light strip, from gauge top */
+#define UI_DASH_PRIMARY_Y     (-38) /* large value (94 px digits) */
+#define UI_DASH_UNIT_Y        10    /* unit under the large value */
+#define UI_DASH_SECONDARY_Y   54    /* secondary value (48 px digits) */
 
-/* Data pill text smoothing — mini EMA alpha in UI layer.
- * 0.75 tracks real changes slightly faster than the old 0.70. */
-#define UI_TEXT_SMOOTH_ALPHA  0.75f
+/* Motion engine (RPM/Speed lockstep). Each sample starts a linear segment
+ * lasting the measured sample spacing, clamped to this range (ms). */
+#define UI_MOTION_DEFAULT_MS  250
+#define UI_MOTION_MIN_MS      60
+#define UI_MOTION_MAX_MS      600
+#define UI_DATA_STALE_MS      3000
+
+/* Round-native building blocks. Coordinates are relative to a
+ * UI_VIEWPORT_SZ root whose centre is the panel centre. */
+#define UI_C                  (UI_VIEWPORT_SZ / 2)
+#define UI_RING_D             444
+#define UI_RING_ROT           120   /* 300° ring, 60° gap centred on 6 o'clock */
+#define UI_RING_SWEEP         300   /* (the gap keeps the dot navigation free) */
 
 lv_coord_t ui_chord_width_at_y(lv_coord_t y_tab);
 lv_coord_t theme_safe_width(lv_coord_t y_top, lv_coord_t y_bottom);
@@ -104,6 +113,8 @@ typedef struct {
     const lv_font_t *font_xxl;      /* 56px regular */
     const lv_font_t *font_value;    /* 94px bold for gauge value */
     const lv_font_t *font_data;
+    const lv_font_t *font_tr_sm;    /* 16px, Türkçe harfli (fallback: montserrat_16) */
+    const lv_font_t *font_tr_md;    /* 20px, Türkçe harfli */
 } ui_theme_t;
 
 const ui_theme_t *theme_get(void);
@@ -129,3 +140,13 @@ void theme_apply_card_topline(lv_obj_t *obj, lv_color_t color);
 void theme_apply_setting_row(lv_obj_t *obj, lv_color_t accent);
 lv_obj_t *theme_create_flex_row(lv_obj_t *parent);
 lv_obj_t *theme_create_flex_col(lv_obj_t *parent, bool grow);
+
+/* Full-viewport absolute-layout root for a tab page (ignores the tab's flex). */
+lv_obj_t *theme_create_root(lv_obj_t *tab);
+/* Centred, non-interactive arc (no knob) with track/indicator widths w. */
+lv_obj_t *theme_create_arc(lv_obj_t *parent, lv_coord_t d, lv_coord_t w);
+/* Round glass disc of diameter d, centred on its parent. */
+void theme_apply_lens(lv_obj_t *obj, lv_coord_t d);
+/* Position a w×h box so it sits just inside radius r_in at angle deg
+ * (0° = 3 o'clock, clockwise), whatever the angle. */
+void theme_place_in_ring(lv_obj_t *obj, lv_coord_t w, lv_coord_t h, float deg, float r_in);

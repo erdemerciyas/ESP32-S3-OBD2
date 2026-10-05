@@ -53,4 +53,27 @@ menu "OBD2 Dashboard Configurations"
         default 90 if LVGL_PORT_ROTATION_DEGREE_90
         default 180 if LVGL_PORT_ROTATION_DEGREE_180
         default 270 if LVGL_PORT_ROTATION_DEGREE_270
+
+    menu "OBD adapter link"
+        config OBD_LINK_DEFAULT_WIFI
+            bool "Use WiFi adapter by default (until changed on device)"
+            default n
+
+        config OBD_WIFI_SSID
+            string "WiFi adapter SSID (empty = scan for OBD/ELM/V-LINK names)"
+            default ""
+
+        config OBD_WIFI_PASSWORD
+            string "WiFi adapter password (most clones are open)"
+            default ""
+
+        config OBD_WIFI_HOST
+            string "Adapter IP (empty = DHCP gateway, then 192.168.0.10)"
+            default ""
+
+        config OBD_WIFI_PORT
+            int "Adapter TCP port"
+            range 1 65535
+            default 35000
+    endmenu
 endmenu

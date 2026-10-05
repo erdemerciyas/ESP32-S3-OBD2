@@ -1,10 +1,11 @@
 #include "elm327.h"
-#include "ble_obd.h"
+#include "obd_link.h"
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
 #include "app_log.h"
 
 #include "esp_log.h"
+#include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -22,7 +23,12 @@ static const char *TAG = "elm327";
 #define ELM_TASK_STACK   4096
 #define ELM_TASK_PRIO    5
 #define TIMEOUT_FLUSH_MS 60
+/* ELM327 meşgulken gelen her karakter isteği iptal eder (STOPPED). Yeni komut
+ * göndermeden önce önceki komutun '>' prompt'unu en fazla bu kadar bekle. */
+#define PROMPT_WAIT_MS   100
 
+static const char *NVS_NS = "obd_elm";
+static const char *NVS_KEY_PROTO = "proto";
 typedef struct {
     char cmd[64];
     char expect[8];
@@ -40,6 +46,11 @@ static SemaphoreHandle_t s_elm_mutex;
 static char s_sync_response[256];
 static char s_pending_response[256];
 static char s_inflight_expect[8];
+static bool s_inflight_at;          /* uçuştaki komut AT komutu mu */
+static volatile bool s_prompt_pending; /* gönderildi, henüz '>' gelmedi */
+static char s_proto_hint;           /* son tespit edilen protokol (ATDPN), 0 = yok */
+static uint32_t s_done_count;       /* yanıtlanan kuyruk komutları */
+static uint32_t s_timeout_count;    /* zaman aşımına uğrayan kuyruk komutları */
 static TaskHandle_t s_task_handle;
 
 static void elm_lock(void) { xSemaphoreTake(s_elm_mutex, portMAX_DELAY); }
@@ -104,6 +115,7 @@ static bool is_hex_data_line(const char *line)
 static bool pending_has_obd_mode(void)
 {
     return strstr(s_pending_response, "41") != NULL ||
+           strstr(s_pending_response, "42") != NULL ||   /* mode 02 donmuş veri */
            strstr(s_pending_response, "43") != NULL ||
            strstr(s_pending_response, "44") != NULL ||
            strstr(s_pending_response, "47") != NULL;
@@ -126,6 +138,7 @@ static bool obd_line_complete(const char *line)
         return false;
     }
     if (strstr(line, "41") == NULL &&
+        strstr(line, "42") == NULL &&
         strstr(line, "43") == NULL &&
         strstr(line, "44") == NULL &&
         strstr(line, "47") == NULL) {
@@ -163,6 +176,7 @@ static bool is_final_response(const char *line)
         return true;
     }
     if (strstr(line, "41") != NULL ||
+        strstr(line, "42") != NULL ||
         strstr(line, "43") != NULL ||
         strstr(line, "44") != NULL ||
         strstr(line, "47") != NULL) {
@@ -216,6 +230,15 @@ static void flush_rx_after_timeout(void)
     s_sync_response[0] = '\0';
     elm_unlock();
     drain_stale_sync();
+    s_prompt_pending = false;
+}
+
+static void wait_prompt(uint32_t max_ms)
+{
+    for (uint32_t waited = 0; s_prompt_pending && waited < max_ms; waited++) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    s_prompt_pending = false;
 }
 
 static void derive_expect_token(const char *cmd, char *expect, size_t expect_len)
@@ -224,12 +247,14 @@ static void derive_expect_token(const char *cmd, char *expect, size_t expect_len
         return;
     }
     expect[0] = '\0';
+    s_inflight_at = false;
     if (!cmd || cmd[0] == '\0') {
         return;
     }
 
     /* AT commands: accept OK/ELM/voltage/error via empty expect filter. */
     if ((cmd[0] == 'A' || cmd[0] == 'a') && (cmd[1] == 'T' || cmd[1] == 't')) {
+        s_inflight_at = true;
         return;
     }
 
@@ -280,6 +305,7 @@ static bool pending_matches_inflight(void)
 static int response_priority(const char *line)
 {
     if (strstr(line, "41") != NULL ||
+        strstr(line, "42") != NULL ||
         strstr(line, "43") != NULL ||
         strstr(line, "44") != NULL ||
         strstr(line, "47") != NULL) {
@@ -381,6 +407,9 @@ static void process_rx_buffer(void)
         trim_response(line);
         consume_rx_bytes((size_t)(end - s_rx_buf) + consume);
 
+        if (was_prompt) {
+            s_prompt_pending = false;
+        }
         if (was_prompt && line[0] == '\0') {
             deliver_pending_response();
             continue;
@@ -394,6 +423,13 @@ static void process_rx_buffer(void)
         if (!is_final_response(line)) {
             if (is_hex_data_line(line) && pending_has_obd_mode()) {
                 append_hex_line(line);
+            } else if (s_inflight_at) {
+                /* ATDPN ("A5"), ATPPS vb. serbest biçimli AT yanıtları:
+                 * satırı tut, '>' gelince teslim edilir. */
+                consider_response_line(line);
+            }
+            if (was_prompt) {
+                deliver_pending_response();
             }
             continue;
         }
@@ -404,7 +440,8 @@ static void process_rx_buffer(void)
             looks_like_voltage(line) ||
             (strchr(line, 'V') != NULL && strchr(line, '.') != NULL)) {
             deliver_pending_response();
-        } else if (!pending_has_obd_mode() && obd_line_complete(s_pending_response)) {
+        } else if (was_prompt ||
+                   (!pending_has_obd_mode() && obd_line_complete(s_pending_response))) {
             deliver_pending_response();
         }
     }
@@ -427,8 +464,31 @@ static bool send_raw(const char *cmd)
 {
     char frame[80];
     int n = snprintf(frame, sizeof(frame), "%s\r", cmd);
+    wait_prompt(PROMPT_WAIT_MS);
     ESP_LOGD(TAG, "TX: %s", cmd);
-    return ble_obd_send((const uint8_t *)frame, n);
+    s_prompt_pending = true;
+    if (!obd_link_send((const uint8_t *)frame, n)) {
+        s_prompt_pending = false;
+        return false;
+    }
+    return true;
+}
+
+static void load_proto_hint(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        uint8_t v = 0;
+        if (nvs_get_u8(h, NVS_KEY_PROTO, &v) == ESP_OK) {
+            s_proto_hint = (char)v;
+        }
+        nvs_close(h);
+    }
+}
+
+static bool proto_digit_valid(char c)
+{
+    return (c >= '1' && c <= '9') || (c >= 'A' && c <= 'C');
 }
 
 static bool wait_response(uint32_t timeout_ms)
@@ -443,13 +503,22 @@ static bool wait_response(uint32_t timeout_ms)
 static void elm327_run_init(void)
 {
     const vehicle_profile_t *profile = vehicle_profile_get();
+    /* Otomatik protokolde son tespit edilen protokolü önce dene ("ATSPA5"):
+     * K-line'da ATSP0 araması her bağlantıda saniyeler sürüyordu. Araç
+     * değişirse ELM yine otomatik aramaya düşer. */
+    char proto_cmd[sizeof(profile->init_protocol_cmd)];
+    if (strcmp(profile->init_protocol_cmd, "ATSP0") == 0 && proto_digit_valid(s_proto_hint)) {
+        snprintf(proto_cmd, sizeof(proto_cmd), "ATSPA%c", s_proto_hint);
+    } else {
+        snprintf(proto_cmd, sizeof(proto_cmd), "%s", profile->init_protocol_cmd);
+    }
     const char *full_cmds[] = {
         "ATZ",
         "ATE0",
         "ATL0",
         "ATS0",
         "ATH0",
-        profile->init_protocol_cmd,
+        proto_cmd,
         profile->init_timeout_cmd,
         "ATAT1",
     };
@@ -458,7 +527,7 @@ static void elm327_run_init(void)
         "ATL0",
         "ATS0",
         "ATH0",
-        profile->init_protocol_cmd,
+        proto_cmd,
         profile->init_timeout_cmd,
         "ATAT1",
     };
@@ -508,7 +577,7 @@ static void elm327_run_init(void)
     s_elm_configured = true;
     s_state = ELM_STATE_READY;
     vehicle_data_set_state(OBD_STATE_PID_DISCOVERY, "Discovering PIDs...");
-    app_log_info(TAG, "Init complete (%s / %s)", profile->display_name, profile->protocol);
+    app_log_info(TAG, "Init complete (%s / %s)", profile->display_name, proto_cmd);
 }
 
 static void elm327_task(void *arg)
@@ -517,12 +586,13 @@ static void elm327_task(void *arg)
     s_sync_sem = xSemaphoreCreateBinary();
 
     while (1) {
-        if (!ble_obd_is_connected()) {
+        if (!obd_link_is_connected()) {
             s_state = ELM_STATE_IDLE;
             s_elm_configured = false;
             s_rx_len = 0;
             s_rx_buf[0] = '\0';
             s_inflight_expect[0] = '\0';
+            s_prompt_pending = false;
             clear_pending_response();
             vehicle_data_clear_supported_pids();
             vTaskDelay(pdMS_TO_TICKS(200));
@@ -544,7 +614,7 @@ static void elm327_task(void *arg)
         }
 
         s_state = ELM_STATE_BUSY;
-        app_log_info(TAG, "TX %s", cmd.cmd);
+        ESP_LOGD(TAG, "TX %s", cmd.cmd);
 
         drain_stale_sync();
         elm_lock();
@@ -560,10 +630,12 @@ static void elm327_task(void *arg)
         }
 
         if (wait_response(cmd.timeout_ms)) {
+            s_done_count++;
             if (cmd.cb) {
                 cmd.cb(s_sync_response, cmd.user_data);
             }
         } else {
+            s_timeout_count++;
             ESP_LOGW(TAG, "Timeout: %s", cmd.cmd);
             flush_rx_after_timeout();
         }
@@ -577,7 +649,51 @@ void elm327_init(void)
 {
     s_elm_mutex = xSemaphoreCreateMutex();
     s_cmd_queue = xQueueCreate(CMD_QUEUE_LEN, sizeof(elm_cmd_t));
-    ble_obd_set_rx_callback(elm327_on_rx_data);
+    load_proto_hint();
+    obd_link_set_rx_callback(elm327_on_rx_data);
+}
+
+void elm327_set_protocol_hint(const char *dpn)
+{
+    if (!dpn) {
+        return;
+    }
+    while (*dpn == ' ') {
+        dpn++;
+    }
+    /* "A5" = otomatik modda bulunan 5; "5" = sabit 5 */
+    char c = (dpn[0] == 'A' && dpn[1] != '\0') ? dpn[1] : dpn[0];
+    if (!proto_digit_valid(c) || c == s_proto_hint) {
+        return;
+    }
+    s_proto_hint = c;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, NVS_KEY_PROTO, (uint8_t)c);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    app_log_info(TAG, "Protocol %c cached for next connect", c);
+}
+
+bool elm327_has_protocol_hint(void)
+{
+    return proto_digit_valid(s_proto_hint);
+}
+
+bool elm327_protocol_is_can(void)
+{
+    return s_proto_hint >= '6' && s_proto_hint <= 'C';
+}
+
+uint32_t elm327_done_count(void)
+{
+    return s_done_count;
+}
+
+uint32_t elm327_timeout_count(void)
+{
+    return s_timeout_count;
 }
 
 void elm327_start(void)

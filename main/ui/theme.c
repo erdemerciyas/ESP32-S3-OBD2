@@ -4,6 +4,8 @@
 
 extern const lv_font_t lv_font_montserrat_56;
 extern const lv_font_t lv_font_montserrat_94_bold;
+extern const lv_font_t lv_font_tr_16;
+extern const lv_font_t lv_font_tr_20;
 
 static ui_theme_t s_theme = {
     .bg         = LV_COLOR_MAKE(0x02, 0x06, 0x0A),
@@ -26,6 +28,8 @@ static ui_theme_t s_theme = {
     .font_xxl   = &lv_font_montserrat_56,
     .font_value = &lv_font_montserrat_94_bold,
     .font_data  = &lv_font_montserrat_28,
+    .font_tr_sm = &lv_font_tr_16,
+    .font_tr_md = &lv_font_tr_20,
 };
 
 const ui_theme_t *theme_get(void)
@@ -212,6 +216,63 @@ lv_obj_t *theme_create_flex_col(lv_obj_t *parent, bool grow)
     lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
     return col;
+}
+
+lv_obj_t *theme_create_root(lv_obj_t *tab)
+{
+    lv_obj_set_style_pad_all(tab, 0, 0);
+    lv_obj_set_style_pad_row(tab, 0, 0);
+
+    lv_obj_t *root = lv_obj_create(tab);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_size(root, UI_VIEWPORT_SZ, UI_VIEWPORT_SZ);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(root, LV_OBJ_FLAG_FLOATING | LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
+    lv_obj_align(root, LV_ALIGN_TOP_LEFT, 0, 0);
+    return root;
+}
+
+lv_obj_t *theme_create_arc(lv_obj_t *parent, lv_coord_t d, lv_coord_t w)
+{
+    lv_obj_t *arc = lv_arc_create(parent);
+    lv_obj_set_size(arc, d, d);
+    lv_obj_align(arc, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(arc, LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
+    lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(arc, 0, 0);
+    lv_obj_set_style_arc_width(arc, w, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, w, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(arc, s_theme.arc_bg, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, s_theme.primary, LV_PART_INDICATOR);
+    return arc;
+}
+
+void theme_apply_lens(lv_obj_t *obj, lv_coord_t d)
+{
+    lv_obj_remove_style_all(obj);
+    lv_obj_set_size(obj, d, d);
+    lv_obj_align(obj, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(obj, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(obj, s_theme.surface, 0);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_60, 0);
+    lv_obj_set_style_bg_color(obj, s_theme.surface_hi, LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(obj, s_theme.border, 0);
+    lv_obj_set_style_border_width(obj, 1, 0);
+    lv_obj_set_style_border_opa(obj, LV_OPA_50, 0);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_SCROLL_CHAIN_HOR);
+}
+
+void theme_place_in_ring(lv_obj_t *obj, lv_coord_t w, lv_coord_t h, float deg, float r_in)
+{
+    float a = deg * 3.14159265f / 180.0f;
+    float c = cosf(a);
+    float s = sinf(a);
+    float r = r_in - (fabsf(c) * w + fabsf(s) * h) / 2.0f;
+    lv_obj_set_pos(obj, (lv_coord_t)lroundf(UI_C + r * c - w / 2.0f),
+                        (lv_coord_t)lroundf(UI_C + r * s - h / 2.0f));
 }
 
 lv_obj_t *theme_create_header(lv_obj_t *parent, const char *title)

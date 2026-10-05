@@ -46,6 +46,7 @@ static int s_direct_fail_count;   /* ardışık direkt bağlantı hataları */
 static bool s_prefer_scan;        /* geçici olarak scan'i tercih et (adres silinmez) */
 static int s_scan_fail_count;     /* ardışık "adaptör bulunamadı" — backoff için */
 static bool s_gatt_phase;         /* watchdog GATT keşfi mi bağlantı mı bekliyor */
+static volatile bool s_running;   /* NimBLE yığını açık (WiFi seçiliyken kapalı) */
 
 static const char *s_name_filters[] = {
     "OBD", "OBDII", "OBD2", "ELM", "VLINK", "IOS-Vlink", "Android-Vlink", "vlink", "Car",
@@ -178,7 +179,7 @@ static bool addr_is_valid(const uint8_t *addr)
 
 static void schedule_reconnect(uint32_t delay_ms)
 {
-    if (!vehicle_data_get()->auto_connect || s_reconnect_timer == NULL) {
+    if (!s_running || !vehicle_data_get()->auto_connect || s_reconnect_timer == NULL) {
         return;
     }
     if (ble_obd_is_connected() || s_scan_active) {
@@ -191,7 +192,7 @@ static void schedule_reconnect(uint32_t delay_ms)
 static void reconnect_timer_cb(void *arg)
 {
     (void)arg;
-    if (ble_obd_is_connected() || s_scan_active) {
+    if (!s_running || ble_obd_is_connected() || s_scan_active) {
         return;
     }
     try_auto_connect();
@@ -200,7 +201,7 @@ static void reconnect_timer_cb(void *arg)
 static void connect_timeout_cb(void *arg)
 {
     (void)arg;
-    if (s_state != BLE_OBD_CONNECTING) {
+    if (!s_running || s_state != BLE_OBD_CONNECTING) {
         return;
     }
     /* GATT keşfi de asılabilir; her iki fazı da burada kurtarıyoruz.
@@ -242,7 +243,7 @@ static void start_connect_watchdog(uint32_t timeout_ms)
 
 static void try_auto_connect(void)
 {
-    if (!vehicle_data_get()->auto_connect) {
+    if (!s_running || !vehicle_data_get()->auto_connect) {
         return;
     }
     if (ble_obd_is_connected() || s_scan_active || s_state == BLE_OBD_CONNECTING) {
@@ -395,6 +396,9 @@ static void start_gatt_discovery(uint16_t conn_handle)
 
 static void start_scan(void)
 {
+    if (!s_running) {
+        return;   /* durdurulurken gelen iptal olayı taramayı tetiklemesin */
+    }
     struct ble_gap_disc_params params = {
         .passive = 0,
         .filter_duplicates = 1,
@@ -405,8 +409,15 @@ static void start_scan(void)
     s_state = BLE_OBD_SCANNING;
     s_scan_active = true;
     vehicle_data_set_state(OBD_STATE_SCANNING, "Scanning for adapter...");
-    ble_gap_disc(BLE_OWN_ADDR_PUBLIC, SCAN_DURATION_SEC * 1000, &params,
-                 ble_obd_gap_event, NULL);
+    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, SCAN_DURATION_SEC * 1000, &params,
+                          ble_obd_gap_event, NULL);
+    if (rc != 0) {
+        /* s_scan_active takılı kalırsa schedule_reconnect bir daha çalışmaz. */
+        s_scan_active = false;
+        s_state = BLE_OBD_DISCONNECTED;
+        app_log_warn(TAG, "Scan start failed rc=%d", rc);
+        schedule_reconnect(RECONNECT_MS);
+    }
 }
 
 static int connect_peer(const ble_addr_t *addr, const char *name)
@@ -516,7 +527,11 @@ static int ble_obd_gap_event(struct ble_gap_event *event, void *arg)
                 s_prefer_scan = true;   /* adres korunur */
                 s_direct_fail_count = 0;
             }
-            schedule_reconnect(RECONNECT_MS);
+            if (s_prefer_scan && !s_scan_active) {
+                start_scan();   /* elle tarama bekleyen bağlantıyı iptal ettiyse */
+            } else {
+                schedule_reconnect(RECONNECT_MS);
+            }
         }
         break;
     case BLE_GAP_EVENT_DISCONNECT:
@@ -577,36 +592,68 @@ void ble_obd_init(void)
     };
     esp_timer_create(&reconnect_args, &s_reconnect_timer);
     esp_timer_create(&connect_args, &s_connect_timer);
+}
 
+/* Yığını aç; sync_cb tarama/bağlantıyı başlatır. */
+void ble_obd_start(void)
+{
+    if (s_running) {
+        return;
+    }
     esp_err_t ret = nimble_port_init();
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NimBLE init failed");
+        ESP_LOGE(TAG, "NimBLE init failed: %s", esp_err_to_name(ret));
         return;
     }
 
     ble_hs_cfg.sync_cb = ble_obd_on_sync;
     ble_hs_cfg.reset_cb = ble_obd_on_reset;
 
+    s_running = true;
     nimble_port_freertos_init(ble_obd_host_task);
 }
 
-void ble_obd_start(void)
-{
-    /* sync_cb triggers scan/connect */
-}
-
+/* Yığını tamamen kapat (kontrolcü dahil): WiFi radyoyu tek başına kullansın,
+ * modem-sleep'siz çalışabilsin. */
 void ble_obd_stop(void)
 {
-    if (s_scan_active) {
-        ble_gap_disc_cancel();
+    if (!s_running) {
+        return;
     }
-    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-    }
+    s_running = false;   /* zamanlayıcı/olay yolları artık yeniden bağlanmaz */
+    cancel_connect_watchdog();
+    esp_timer_stop(s_reconnect_timer);
+    nimble_port_stop();  /* bağlantıları/taramayı kapatır, host görevi biter */
+    nimble_port_deinit();
+
+    s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_write_handle = 0;
+    s_notify_handle = 0;
+    s_state = BLE_OBD_DISCONNECTED;
+    s_scan_active = false;
+    s_connecting_saved = false;
+    s_gatt_phase = false;
+    s_direct_fail_count = 0;
+    s_scan_fail_count = 0;
+    s_prefer_scan = false;
+    app_log_info(TAG, "BLE stack stopped");
 }
 
 void ble_obd_scan(void)
 {
+    if (!s_running) {
+        return;
+    }
+    s_prefer_scan = true;   /* elle tarama: kayıtlı adrese direkt bağlanmayı atla */
+    if (s_state == BLE_OBD_CONNECTING && s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        /* Bekleyen bağlantı varken tarama EBUSY döner; iptal olayı taramayı başlatır. */
+        cancel_connect_watchdog();
+        ble_gap_conn_cancel();
+        return;
+    }
+    if (s_scan_active) {
+        return;
+    }
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     }

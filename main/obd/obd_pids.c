@@ -1,4 +1,5 @@
 #include "obd_pids.h"
+#include "obd_dtc.h"
 #include "elm327.h"
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
@@ -15,13 +16,26 @@
 
 static const char *TAG = "obd_pids";
 
-#define VOLTAGE_POLL_MS    200
+/* ATRV adaptörün kendi ölçümü (araç hattına gitmez) ama yine de tek-uçuşlu
+ * ELM kuyruğunda slot harcar; voltaj saniyede bir yeterli. */
+#define VOLTAGE_POLL_MS    1000
+/* İlk 0100: ATSP0 araması K-line'da 10 sn'yi bulabilir. Erken timeout olursa
+ * sonraki komut aramayı keser (STOPPED) ve bağlantı hiç oturmaz. */
+#define DISC_FIRST_TIMEOUT_MS        12000
+#define DISC_FIRST_TIMEOUT_CACHED_MS 6000
+/* Yanıt sayısı eki ("010C1"): ELM tek yanıtı alınca ATST beklemeden döner.
+ * Bu kadar ardışık timeout'ta kapatılır (eski davranışa dönüş). */
+#define RESP_COUNT_FAIL_MAX 3
+#define STATS_PERIOD_MS     1000
+#define STATS_LOG_EVERY     5
 #define VOLTAGE_MIN_V      9.0f
-#define VOLTAGE_MAX_V      16.5f
+/* 16.5 idi: üstündeki okumalar sessizce atılıyor, ekranda sınırda sabit
+ * 16.5 V kalıyordu. Gerçek aşırı şarj (regülatör arızası) görünmeli. */
+#define VOLTAGE_MAX_V      18.0f
 /* ATRV timeout: previously 800 ms — a single stuck ATRV blocked the ELM327
  * for 800 ms starving all other PIDs (coolant, RPM, Speed).
  * 300 ms is still generous for a local AT command response. */
-#define ATRV_TIMEOUT_MS    150
+#define ATRV_TIMEOUT_MS    300
 /* Periyodik PID 0x42 re-probe: ATRV modundayken bile ara sıra dene
  * (bazı araçlarda init sonrası 0x42 çalışır hale gelir). */
 #define PID42_REPROBE_MS   30000
@@ -73,6 +87,7 @@ static const pid_filter_cfg_t s_pid_filter_cfgs[256] = {
     /* 0x14 O2 B1S1       */ [0x14] = { 0.50f,   0.8f },
     /* 0x15 O2 B1S2       */ [0x15] = { 0.50f,   0.8f },
     /* 0x2F FUEL LEVEL    */ [0x2F] = { 0.35f,  10.0f },
+    /* 0x5C OIL TEMP      */ [0x5C] = { 0.55f,  15.0f },
     /* 0x42 VOLTAGE       */ [0x42] = { VOLTAGE_EMA_ALPHA, VOLTAGE_SPIKE_MAX },
     /* Diğer PIDs: sıfır alpha → decode sonrası ham kullanılır (filtre yok) */
 };
@@ -119,6 +134,8 @@ static bool s_use_atrv;
 static uint32_t s_voltage_last;
 static bool s_voltage_pending;      /* ATRV/0142 cevap beklerken true */
 static bool s_reprobe_inflight;     /* ATRV modunda geçici 0142 re-probe uçuşta mı */
+static bool s_voltage_via_pid;      /* uçuştaki voltaj isteği 0142 mi (ATRV değil) */
+static bool s_pid42_dead;           /* 0142 timeout verdi: bu bağlantıda bir daha deneme */
 static uint32_t s_042_reprobe_last;
 
 /* RPM+Speed tek komut batch ("010C0D") — RPM ve Speed'i tek BLE round-trip'te
@@ -133,6 +150,11 @@ static uint8_t  s_batch_fail;
 static bool     s_batch_pending;
 static uint32_t s_batch_last;
 static uint8_t  s_voltage_oor_count;
+
+static int8_t   s_rc_state;         /* yanıt sayısı eki: 1=açık, 0/-1=kapalı */
+static uint8_t  s_rc_fail;          /* ek açıkken ardışık timeout */
+static uint32_t s_rpm_samples;      /* teşhis: RPM örnek sayacı */
+static obd_link_stats_t s_link;     /* teşhis: Settings ekranına gider */
 
 /* Tüm PID'ler için EMA + spike rejection state. İndeks = PID değeri.
  * Voltaj da dahil (s_pid_filter_cfgs[0x42] ile). */
@@ -161,7 +183,9 @@ static bool should_poll_pid(const pid_entry_t *e)
     if (e->pid == 0) {
         return false;
     }
-    if (e->priority) {
+    /* Yalnız dash canlı PID'leri (RPM/Speed/Coolant) koşulsuz sorgulanır.
+     * Desteklenmeyen PID'e istek K-line'da tam bir timeout slotu yakar. */
+    if (e->priority && e->live) {
         return true;
     }
     if (!has_any_supported_pids()) {
@@ -357,6 +381,9 @@ static bool pid_filter_apply(pid_filter_t *f, float raw, const pid_filter_cfg_t 
 
 static void set_voltage(float v, const char *source)
 {
+    s_link.volt_raw = v;
+    snprintf(s_link.volt_src, sizeof(s_link.volt_src), "%s",
+             strcmp(source, "ATRV") == 0 ? "ATRV" : "0142");
     if (!voltage_valid(v)) {
         app_log_warn(TAG, "Reject voltage %.2fV from %s (out of range)", v, source);
         return;
@@ -456,6 +483,7 @@ static void update_pid_value(uint8_t pid, const char *resp)
 
     switch (pid) {
     case 0x0C:
+        s_rpm_samples++;
         apply_filtered_float(0x0C, decode_rpm(data), &vd->rpm);
         break;
     case 0x0D:
@@ -517,6 +545,9 @@ static void update_pid_value(uint8_t pid, const char *resp)
         /* Fuel Level Input — A * 100 / 255  (same as decode_pct) */
         apply_filtered_float(0x2F, decode_pct(data), &vd->fuel_level);
         break;
+    case 0x5C:
+        apply_filtered_float(0x5C, decode_temp(data), &vd->oil_temp);
+        break;
     case 0x10:
         apply_filtered_float(0x10, decode_maf(data), &vd->maf);
         break;
@@ -556,6 +587,7 @@ static void pid_response_cb(const char *resp, void *user_data)
     if (e) {
         e->last_poll = now;
     }
+    s_rc_fail = 0;
     update_pid_value(pid, resp);
 }
 
@@ -608,6 +640,13 @@ static void atrv_response_cb(const char *resp, void *user_data)
         set_voltage(v, "ATRV");
         return;
     }
+    if (resp) {
+        float raw = 0.0f;
+        if (sscanf(resp, " %f", &raw) == 1) {
+            s_link.volt_raw = raw;   /* teşhis: aralık dışı ham değer de görünsün */
+            snprintf(s_link.volt_src, sizeof(s_link.volt_src), "ATRV");
+        }
+    }
     app_log_warn(TAG, "ATRV parse failed: resp='%s' parsed=%.2fV",
                  resp ? resp : "(null)", v);
 }
@@ -646,6 +685,52 @@ static const char *const s_disc_cmds[PID_DISC_BLOCK_COUNT] = {
     "0100", "0120", "0140", "0160", "0180", "01A0", "01C0",
 };
 
+static void atdpn_cb(const char *resp, void *user_data)
+{
+    (void)user_data;
+    snprintf(s_link.proto, sizeof(s_link.proto), "%s", resp);
+    elm327_set_protocol_hint(resp);
+    /* Çoklu-PID (010C0D) yalnız CAN'de var; K-line'da probe'u hiç deneme. */
+    if (elm327_has_protocol_hint() && !elm327_protocol_is_can() && s_batch_state == 0) {
+        s_batch_state = -1;
+    }
+    app_log_info(TAG, "Protocol %s, multi-PID %s", resp, s_batch_state < 0 ? "off" : "probe");
+}
+
+static void ati_cb(const char *resp, void *user_data)
+{
+    (void)user_data;
+    snprintf(s_link.elm_id, sizeof(s_link.elm_id), "%s", resp);
+    app_log_info(TAG, "Adapter: %s", resp);
+}
+
+static uint32_t disc_timeout_ms(int block)
+{
+    if (block == 0) {
+        return elm327_has_protocol_hint() ? DISC_FIRST_TIMEOUT_CACHED_MS : DISC_FIRST_TIMEOUT_MS;
+    }
+    return vehicle_profile_get()->disc_timeout_ms;
+}
+
+/* 0100 yanıtında tek ECU ("4100" tek satır) varsa yanıt sayısı ekini aç.
+ * Birden fazla ECU yanıt veriyorsa "1" eki diğerlerini keser; kapalı kalır. */
+static void detect_single_ecu(const char *resp)
+{
+    int count = 0;
+    char buf[256];
+    char *save = NULL;
+    snprintf(buf, sizeof(buf), "%s", resp);
+    for (char *tok = strtok_r(buf, " ", &save); tok; tok = strtok_r(NULL, " ", &save)) {
+        if (strncmp(tok, "4100", 4) == 0) {
+            count++;
+        }
+    }
+    s_rc_state = (count == 1) ? 1 : -1;
+    s_rc_fail = 0;
+    app_log_info(TAG, "0100: %d ECU response(s), response-count suffix %s",
+                 count, s_rc_state > 0 ? "on" : "off");
+}
+
 static void mark_disc_ready(void)
 {
     if (s_disc_ready) {
@@ -655,6 +740,9 @@ static void mark_disc_ready(void)
     s_voltage_last = 0;
     vehicle_data_set_state(OBD_STATE_READY, "Connected");
     app_log_info(TAG, "Ready: %s (PID scan continues)", vehicle_profile_get()->display_name);
+    elm327_send_cmd_prio("ATDPN", atdpn_cb, NULL, 500, true);
+    elm327_send_cmd_prio("ATI", ati_cb, NULL, 500, false);
+    obd_dtc_on_link_ready();
 }
 
 static void mark_disc_complete(void)
@@ -672,6 +760,9 @@ static void discover_cb(const char *resp, void *user_data)
     int block = (int)(intptr_t)user_data;
     if (!response_is_error(resp)) {
         parse_supported_pids(resp, block);
+        if (block == 0) {
+            detect_single_ecu(resp);
+        }
     }
     s_disc_idx = block + 1;
     s_disc_busy = false;
@@ -686,8 +777,7 @@ static void discover_cb(const char *resp, void *user_data)
 
 static void advance_disc_on_timeout(uint32_t now)
 {
-    const vehicle_profile_t *profile = vehicle_profile_get();
-    if (!s_disc_busy || now - s_disc_sent_at <= profile->disc_timeout_ms + 300) {
+    if (!s_disc_busy || now - s_disc_sent_at <= disc_timeout_ms(s_disc_idx) + 300) {
         return;
     }
 
@@ -712,10 +802,9 @@ static bool try_send_disc_block(bool high_priority)
         return false;
     }
 
-    const vehicle_profile_t *profile = vehicle_profile_get();
     uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
     if (!elm327_send_cmd_prio(s_disc_cmds[s_disc_idx], discover_cb,
-                              (void *)(intptr_t)s_disc_idx, profile->disc_timeout_ms,
+                              (void *)(intptr_t)s_disc_idx, disc_timeout_ms(s_disc_idx),
                               high_priority)) {
         return false;
     }
@@ -762,7 +851,9 @@ static bool send_pid_poll(pid_entry_t *e, uint32_t now, bool high_priority)
         return false;  /* önceki sorgu halen cevap bekliyor */
     }
     const vehicle_profile_t *profile = vehicle_profile_get();
-    if (!elm327_send_cmd_prio(e->cmd, pid_response_cb, (void *)(uintptr_t)e->pid,
+    char cmd[12];
+    snprintf(cmd, sizeof(cmd), s_rc_state > 0 ? "%s1" : "%s", e->cmd);
+    if (!elm327_send_cmd_prio(cmd, pid_response_cb, (void *)(uintptr_t)e->pid,
                               e->live ? profile->live_timeout_ms : profile->slow_timeout_ms,
                               high_priority)) {
         return false;
@@ -786,6 +877,10 @@ static bool poll_entry_by_pid(uint8_t pid, uint32_t now, bool high_priority)
         if (now - e->last_poll > timeout + 500) {
             e->pending = false;
             e->last_poll = now;  /* anchor interval to timeout recovery */
+            if (s_rc_state > 0 && ++s_rc_fail >= RESP_COUNT_FAIL_MAX) {
+                s_rc_state = -1;
+                app_log_warn(TAG, "Response-count suffix timing out — disabled");
+            }
         } else {
             return false;  /* halen cevap bekleniyor */
         }
@@ -807,13 +902,15 @@ static bool poll_voltage(uint32_t now)
             return false;
         }
         s_voltage_pending = false;  /* timeout, tekrar dene */
-        /* Re-probe 0142 timeout oldu: adaptör 0142'ye hiç yanıt vermiyor.
-         * ATRV moduna geri dön, aksi halde kalıcı olarak 0142'de takılıp
-         * voltaj hiç gelmez. */
-        if (s_reprobe_inflight) {
+        /* 0142 timeout oldu (ilk deneme ya da re-probe): K-line ECU'ları
+         * desteklenmeyen PID'e çoğu zaman NO DATA yerine negatif yanıt (7F)
+         * döner, ELM bunu timeout olarak gösterir. Kalıcı olarak ATRV'ye geç;
+         * aksi halde 0142 sonsuza kadar tekrarlanır ve voltaj hiç gelmez. */
+        if (s_voltage_via_pid) {
             s_use_atrv = true;
+            s_pid42_dead = true;
             s_reprobe_inflight = false;
-            app_log_warn(TAG, "0142 re-probe timed out — reverting to ATRV");
+            app_log_warn(TAG, "0142 timed out — using ATRV for voltage");
         }
     }
 
@@ -827,12 +924,13 @@ static bool poll_voltage(uint32_t now)
     /* Periyodik 0x42 re-probe: ATRV modundayken bile ara sıra 0x42 dene.
      * Bazı araçlarda init sonrası 0x42 çalışmaya başlar. Callback s_use_atrv'i
      * tekrar false'a çekebilir. */
-    if (s_use_atrv && (now - s_042_reprobe_last > PID42_REPROBE_MS)) {
+    if (s_use_atrv && !s_pid42_dead && (now - s_042_reprobe_last > PID42_REPROBE_MS)) {
         if (elm327_send_cmd_prio("0142", voltage_pid_cb, NULL,
                                  profile->slow_timeout_ms, true)) {
             s_042_reprobe_last = now;
             s_voltage_last = now;
             s_voltage_pending = true;
+            s_voltage_via_pid = true;
             s_reprobe_inflight = true;
             s_use_atrv = false;
             return true;
@@ -844,6 +942,7 @@ static bool poll_voltage(uint32_t now)
         if (elm327_send_cmd_prio("0142", voltage_pid_cb, NULL, profile->slow_timeout_ms, true)) {
             s_voltage_last = now;
             s_voltage_pending = true;
+            s_voltage_via_pid = true;
             return true;
         }
         /* queue full; try ATRV as immediate fallback */
@@ -853,6 +952,7 @@ static bool poll_voltage(uint32_t now)
         if (elm327_send_cmd_prio("ATRV", atrv_response_cb, NULL, ATRV_TIMEOUT_MS, true)) {
             s_voltage_last = now;
             s_voltage_pending = true;
+            s_voltage_via_pid = false;
             return true;
         }
     }
@@ -991,6 +1091,10 @@ static bool run_dash_poll(uint32_t now)
     if (poll_voltage(now)) {
         any_queued = true;
     }
+    /* Yağ sıcaklığı: yalnız ECU destekliyorsa, kendi 2 sn aralığıyla. */
+    if (poll_entry_by_pid(0x5C, now, false)) {
+        any_queued = true;
+    }
 
     /* Remaining live PIDs (none currently — RPM/Speed/Coolant are all
      * handled above).  Round-robin for future expansion. */
@@ -1030,6 +1134,32 @@ static bool run_grid_poll(uint32_t now)
     return false;
 }
 
+/* Saniyede bir bağlantı istatistiği: istek/sn, RPM Hz, timeout. Settings
+ * ekranında gösterilir, 5 sn'de bir seri porta loglanır (araç içi ölçüm). */
+static void update_link_stats(uint32_t now)
+{
+    static uint32_t s_last_at, s_last_done, s_last_rpm, s_tick;
+    uint32_t dt = now - s_last_at;
+    if (dt < STATS_PERIOD_MS) {
+        return;
+    }
+    uint32_t done = elm327_done_count();
+    s_link.req_rate = (float)(done - s_last_done) * 1000.0f / (float)dt;
+    s_link.rpm_hz = (float)(s_rpm_samples - s_last_rpm) * 1000.0f / (float)dt;
+    s_link.timeouts = elm327_timeout_count();
+    s_link.resp_count = s_rc_state > 0;
+    s_last_at = now;
+    s_last_done = done;
+    s_last_rpm = s_rpm_samples;
+    vehicle_data_set_link_stats(&s_link);
+
+    if (elm327_is_ready() && ++s_tick % STATS_LOG_EVERY == 0) {
+        app_log_info(TAG, "link %.1f req/s, rpm %.1f Hz, timeouts %lu, proto %s, x1 %s",
+                     s_link.req_rate, s_link.rpm_hz, (unsigned long)s_link.timeouts,
+                     s_link.proto[0] ? s_link.proto : "?", s_link.resp_count ? "on" : "off");
+    }
+}
+
 static void poll_task(void *arg)
 {
     init_poll_entries();
@@ -1038,7 +1168,13 @@ static void poll_task(void *arg)
         const vehicle_profile_t *profile = vehicle_profile_get();
         uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
+        update_link_stats(now);
+
         if (!elm327_is_ready()) {
+            s_rc_state = 0;
+            s_rc_fail = 0;
+            s_link.proto[0] = '\0';
+            s_link.elm_id[0] = '\0';
             s_disc_idx = 0;
             s_disc_busy = false;
             s_disc_ready = false;
@@ -1048,12 +1184,15 @@ static void poll_task(void *arg)
             s_042_reprobe_last = 0;
             s_voltage_pending = false;
             s_reprobe_inflight = false;
+            s_voltage_via_pid = false;
+            s_pid42_dead = false;
             s_batch_state = 0;   /* her bağlantıda batch yeteneğini yeniden probe et */
             s_batch_fail = 0;
             s_batch_pending = false;
             s_batch_last = 0;
             memset(s_pid_filters, 0, sizeof(s_pid_filters));  /* tüm PID filtreleri reset */
             init_poll_entries();  /* init tüm pending flag'leri false yapar */
+            obd_dtc_on_disconnect();
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
@@ -1061,8 +1200,17 @@ static void poll_task(void *arg)
         advance_disc_on_timeout(now);
 
         if (!s_disc_ready) {
-            poll_voltage(now);
+            /* İlk 0100 (protokol araması) uçuştayken kuyruğa ATRV yığma. */
+            if (!s_disc_busy) {
+                poll_voltage(now);
+            }
             try_send_disc_block(true);
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        /* DTC tarama/silme sürerken PID polling'i duraklat (tek komut uçuşta). */
+        if (obd_dtc_service(now)) {
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }

@@ -6,21 +6,28 @@ idf_component_register(
         "data/vehicle_data.c"
         "data/vehicle_profile.c"
         "data/app_log.c"
+        "data/dtc_db.c"
         "imu/qmi8658.c"
         "imu/imu_data.c"
         "obd/ble_obd.c"
+        "obd/wifi_obd.c"
+        "obd/obd_link.c"
         "obd/elm327.c"
         "obd/obd_pids.c"
+        "obd/obd_dtc.c"
         "ui/theme.c"
         "ui/ui.c"
         "ui/screen_splash.c"
         "ui/screen_connect.c"
         "ui/screen_dash.c"
         "ui/screen_grid.c"
+        "ui/screen_dtc.c"
         "ui/screen_settings.c"
         "ui/screen_gyro.c"
         "ui/lv_font_montserrat_56.c"
         "ui/lv_font_montserrat_94_bold.c"
+        "ui/lv_font_tr_16.c"
+        "ui/lv_font_tr_20.c"
     INCLUDE_DIRS
         "."
         "bsp"
@@ -31,6 +38,10 @@ idf_component_register(
     REQUIRES
         nvs_flash
         bt
+        esp_wifi
+        esp_netif
+        esp_event
+        lwip
         esp_timer
         freertos
         driver

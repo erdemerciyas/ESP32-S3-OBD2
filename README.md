@@ -1,310 +1,256 @@
-# ESP32-S3 OBD-II Dashboard
+# ESP32-S3 OBD2 Dashboard — ELM327 Bluetooth (BLE) & WiFi Car Gauge on a Round Touch LCD
 
 [![ESP-IDF](https://img.shields.io/badge/ESP--IDF-v5.3.5-blue)](https://idf.espressif.com/)
 [![LVGL](https://img.shields.io/badge/LVGL-v8.4-green)](https://lvgl.io/)
 [![Board](https://img.shields.io/badge/Board-Waveshare_ESP32--S3--Touch--LCD--2.1-orange)](https://www.waveshare.com/esp32-s3-touch-lcd-2.1.htm)
+[![Adapter](https://img.shields.io/badge/Adapter-ELM327_BLE_%7C_WiFi-purple)](#supported-elm327-adapters)
 
-A real-time automotive OBD-II (On-Board Diagnostics) dashboard built on the **ESP32-S3** with a **480×480 round LCD**, running **ESP-IDF v5.3.5** and **LVGL v8.4**. It connects to a vehicle's ECU via a **BLE ELM327 adapter**, reads dozens of PIDs, and displays them on a touch-interactive gauge user interface.
+An open-source **ESP32-S3 OBD-II car dashboard** for the **Waveshare ESP32-S3-Touch-LCD-2.1** (480×480 round touch display). It reads live engine data from any OBD-II car through a cheap **ELM327 clone adapter — Bluetooth Low Energy (BLE) or WiFi** — and shows it as a full-screen digital gauge cluster: tachometer, speedometer, coolant / oil temperature, battery voltage, live sensor data, **trouble code (DTC) reader and eraser**, and an off-road inclinometer.
 
-**Universal OBD-II profile** with automatic protocol detection (`ATSP0`) and runtime PID discovery works with any ELM327-compatible vehicle. Saved **vehicle profiles** (protocol, timeouts, redline, supported PID masks) let you switch between different cars or engines instantly.
+Built with **ESP-IDF v5.3.5**, **LVGL v8.4** and the **NimBLE** stack. No phone, no app, no cloud: plug the adapter into the OBD2 port, power the ESP32 from USB, and drive.
 
----
-
-## Features
-
-### Dashboard (Main Gauge)
-- **Center gauge** — large 270° sweep arc that fills the round LCD, displaying either **RPM** or **Speed**
-- **Gauge is centered** on the 480×480 round panel; the status bar and data strip are overlaid on top of the arc
-- **Double-tap** the gauge to toggle between RPM and Speed
-- **Active profile name** centered at the top of the gauge; **Bluetooth status** icon on the top-right
-- **9-segment shift-light strip** above the RPM value, lighting up as the engine approaches redline
-- **Redline zone** rendered as a subtle arc band past the profile's `rpm_redline`
-- **Gradient arc coloring**: arc color changes smoothly based on value:
-  - **RPM**: Cyan → Orange → Red (3000/5000/6500 thresholds)
-  - **Speed**: Cyan → Orange → Red (80/120/180 km/h thresholds)
-- **94px bold** center value display with custom-generated Montserrat Bold font
-- **3 bottom stat cards** with colored top-accent borders and separate value/unit labels:
-  - Left card toggles opposite to the center gauge (shows **Speed** in RPM mode and **RPM** in Speed mode)
-  - Center and right cards show **Coolant** and **Voltage**
-  - Coolant and voltage cards tint automatically on warning/critical thresholds
-
-### Live Data Grid
-- 3×3 grid of **card-style cells** displaying **9 real-time OBD-II PIDs**
-- Each cell has a colored **left-accent border** and separate value/unit labels
-- Displayed PIDs:
-  - Throttle Position (TPS %)
-  - Manifold Absolute Pressure (MAP kPa)
-  - Engine Load (%)
-  - Intake Air Temperature (IAT °C/°F)
-  - Ignition Timing (°)
-  - Short Term Fuel Trim (STFT %)
-  - Long Term Fuel Trim (LTFT %)
-  - Oxygen Sensor 1 Voltage (O2 V)
-  - Oxygen Sensor 2 Voltage (O2 V)
-
-### Connection Screen
-- BLE device scanning and connection management
-- Animated status arc showing connection progress with color-coded states
-- Status text color reflects state: ready (green), error (red), progress (blue)
-- Full-width primary **Scan for adapter** button
-- Status display for OBD states: Scanning, Connecting, ELM Init, PID Discovery, Ready, Error
-
-### Settings
-- **Vehicle profile** dropdown to switch between saved profiles instantly
-- **Metric/Imperial units** toggle (km/h ↔ mph, °C ↔ °F)
-- **Auto-connect** toggle for BLE adapter
-- **Center gauge source** toggle (RPM ↔ Speed)
-- Setting rows styled with colored left-accent borders and themed switches
-- System info display: profile, protocol, adapter, voltage
-
-### Temperature Critical Alert
-- **Buzzer beeps** immediately when coolant temperature reaches critical threshold
-- Beep duration: **400ms**
-- If still critical after **30 seconds**, beeps again
-- Stops immediately when temperature returns to normal
-- Uses the board's **TCA9554 IO expander** (EXIO8 = pin 7) to drive the buzzer
-
-### Bluetooth LE (NimBLE)
-- BLE GATT client using **Apache NimBLE** stack
-- Connects to BLE ELM327 adapters (e.g., VEEPEAK, OBDLink, etc.)
-- Central role with observer mode for scanning
-- Maximum 1 simultaneous connection
-- PSRAM-based memory allocation for BLE stack
-
-### IMU Off-Road Screen (QMI8658)
-- **6-axis IMU** (accelerometer + gyroscope) via I2C
-- Displays **pitch** and **roll** angles with twin arc gauges
-- **Yaw** (heading) display with gyro integration
-- Real-time sensor diagnostics (accel XYZ, gyro XYZ, temperature)
-- **Gyro calibration** on startup (vehicle must be stationary)
-- NVS storage for pitch/roll offset calibration
-- 100 Hz polling task for smooth updates
-
-### Splash Screen
-- Animated loading screen with spinning arc
-- 3-second duration before transitioning to main UI
-- Smooth fade-in animation
+> 🇹🇷 Türkçe özet [aşağıda](#türkçe-özet).
 
 ---
 
-## Hardware Requirements
+## Table of contents
 
-| Component | Specification |
-|-----------|---------------|
-| **MCU** | ESP32-S3 (Xtensa LX7 dual-core @ 240 MHz) |
-| **Display** | 480×480 round LCD (ST7701) via RGB interface |
-| **Touch** | Capacitive touch panel (CST226SE) |
-| **IMU** | QMI8658 6-axis (accel ±8g + gyro ±512 dps) |
-| **PSRAM** | Octal PSRAM @ 80 MHz (required for LVGL buffers) |
-| **Flash** | 16 MB |
-| **BLE** | Built-in BLE (NimBLE stack) |
-| **Buzzer** | Connected to IO expander TCA9554 (EXIO8 / pin 7) |
-| **Board** | [Waveshare ESP32-S3-Touch-LCD-2.1](https://www.waveshare.com/esp32-s3-touch-lcd-2.1.htm) |
-
----
-
-## Pin Mapping (Waveshare ESP32-S3-Touch-LCD-2.1)
-
-| Signal | GPIO | Notes |
-|--------|------|-------|
-| LCD RGB | RGB565 | Parallel RGB interface via `esp_display_panel` |
-| Touch I2C | GPIO 19 (SDA), GPIO 20 (SCL) | CST226SE or similar |
-| IMU I2C | GPIO 19 (SDA), GPIO 20 (SCL) | QMI8658, address 0x6A (shared with touch) |
-| IO Expander I2C | Same I2C bus | TCA9554, address 0x27 |
-| Buzzer (EXIO8) | TCA9554 pin 7 | Active high via IO expander |
+- [Highlights](#highlights)
+- [Screens](#screens)
+- [Supported ELM327 adapters](#supported-elm327-adapters)
+- [Hardware](#hardware)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [How it works](#how-it-works)
+- [OBD-II data & PIDs](#obd-ii-data--pids)
+- [Project structure](#project-structure)
+- [PC simulator](#pc-simulator)
+- [Troubleshooting](#troubleshooting)
+- [Türkçe özet](#türkçe-özet)
 
 ---
 
-## Software Architecture
+## Highlights
 
-```
-app_main()
-├── nvs_flash_init()
-├── vehicle_data_init()          ← Thread-safe shared data store
-├── vehicle_profile_init()       ← Load saved profiles + universal profile
-├── bsp_display_init()           ← Board, LCD, touch, LVGL init
-│   └── bsp_buzzer_init()        ← IO expander + buzzer setup
-├── imu_init()                   ← QMI8658 IMU driver + gyro calibration
-├── ui_init()                    ← Create all screens
-│   ├── screen_splash_create()   ← Animated loading screen
-│   ├── screen_connect_create()  ← BLE connection UI
-│   ├── screen_dash_create()     ← Main gauge + stats
-│   ├── screen_grid_create()     ← Live data 3×3 grid
-│   ├── screen_gyro_create()     ← IMU pitch/roll/yaw display
-│   └── screen_settings_create() ← Configuration
-├── ui_start_update_timer()      ← 16ms periodic update (60 fps)
-├── imu_start()                  ← Start IMU polling task
-├── ble_obd_init/start()         ← BLE GATT client
-├── elm327_init/start()          ← ELM327 command processor
-└── obd_pids_init/start()        ← PID polling scheduler
-```
-
-### Module Breakdown
-
-- **`main/`** — Entry point, component registration
-- **`main/bsp/`** — Board support: display init, LVGL port, buzzer (C++ with `esp_display_panel`)
-- **`main/data/`** — Vehicle data model, vehicle profile system, application logging
-- **`main/obd/`** — BLE ELM327 communication and PID polling engine
-- **`main/imu/`** — QMI8658 6-axis IMU driver, gyro calibration, sensor fusion
-- **`main/ui/`** — LVGL screens, theme system, custom fonts
-
-### Project Structure
-
-```
-├── main/                  # ESP32-S3 firmware (OBD, UI, BSP, IMU)
-├── simulator/             # LVGL PC simulator (Visual Studio, shared UI sources)
-├── scripts/               # verify_round_lcd_layout.py — round LCD geometry check
-├── docs/                  # GELISTIRME_KURALLARI.md — development rules
-├── rebuild.bat            # Windows: fullclean + build + flash
-├── CHANGELOG.md           # Dated project history and current status
-├── partitions.csv         # Flash partition table
-├── sdkconfig.defaults     # Default ESP-IDF configuration
-└── dependencies.lock      # Managed component versions
-```
-
-Reference snapshots, build logs, and duplicate scripts were removed in the 2026-07 cleanup (~1500 files). See `CHANGELOG.md` for details.
-
-### Screens (Tab Navigation)
-
-Navigation uses an LVGL TabView with hidden tab buttons. Screen switching is done via **swipe gesture** (horizontal) and visual indicator dots at the bottom:
-
-1. **Connection** — BLE scan, connect, status
-2. **Dashboard** — Main arc gauge + stats row
-3. **Live Data** — 3×3 PID grid
-4. **Gyro** — IMU pitch/roll/yaw off-road display
-5. **Settings** — Toggles and system info
-
-A **splash screen** plays for 3 seconds at startup, then transitions to the main UI.
+- **Two adapter types, one firmware** — BLE ELM327 (FFF0 / FFE0 GATT profiles) *and* WiFi ELM327 (TCP `192.168.0.10:35000`). Pick one in **Settings → Link**; the other radio is shut down and the new one starts searching immediately, without a reboot.
+- **Universal OBD-II** — automatic protocol detection (`ATSP0`), detected protocol cached in flash (`ATSPA<n>`) so the next connection is instant. Works with CAN (ISO 15765), K-line KWP2000 (ISO 14230), ISO 9141-2, J1850.
+- **Only what your car supports** — PIDs are discovered at connect time (`0100/0120/0140…`); unsupported values are hidden and never polled.
+- **Smooth, synchronized gauges** — RPM and speed are interpolated over the measured sample interval and move in lock-step at ~60 FPS; EMA + spike filtering on every PID.
+- **Diagnostic trouble codes** — reads stored (`03`), pending (`07`) and freeze-frame (`02`) data, MIL status and readiness monitors; clears codes (`04`) with verification; keeps a history in flash. ~190 code descriptions (generic SAE P0/P2 + GM-Daewoo P1xxx), currently in Turkish.
+- **Slow-protocol tuning** — prompt gating, response-count suffix (`010C1`), slot budgeting so K-line cars still get ~6–8 requests/s with RPM/speed first.
+- **Round-display UI** — every screen is designed for the circular 460 px visible area: ring segments, a central lens, dot navigation, swipe between screens.
+- **Robust links** — BLE: saved-address direct connect, scan fallback, GATT watchdog, backoff. WiFi: SSID auto-detect, DHCP → static-IP fallback, TCP keepalive, `TCP_NODELAY`, modem-sleep disabled for low latency.
+- **Extras** — coolant over-temperature buzzer, battery over/under-voltage warnings, QMI8658 pitch/roll inclinometer, animated ignition-style boot sequence.
 
 ---
 
-## Custom Fonts
+## Screens
 
-Two custom Montserrat fonts were generated using `lv_font_conv` for the gauge display:
+Swipe left/right to move between screens. The order is:
 
-| Font | Size | Weight | Usage |
-|------|------|--------|-------|
-| `lv_font_montserrat_56` | 56px | Regular | Larger labels |
-| `lv_font_montserrat_94_bold` | 94px | Bold | Center gauge value |
-
-These are compiled directly into the firmware (no external file system required).
-
----
-
-## Color System
-
-### Theme Palette
-
-| Token | Color | HEX |
-|-------|-------|-----|
-| Background | Near black | `#02060A` |
-| Surface | Dark navy | `#0A1018` |
-| Surface Highlight | Lighter navy | `#121C28` |
-| Primary | Cyan | `#00F0FF` |
-| Secondary | Orange | `#FF9100` |
-| Accent | Racing red | `#FF2A2A` |
-| Text | Off-white | `#F0F0F0` |
-| Text Dim | Gray-blue | `#6B7A8F` |
-| OK / Good | Green | `#00E676` |
-| Warning | Amber | `#FFC400` |
-| Critical | Racing red | `#FF2A2A` |
-| Arc Background | Deep navy | `#08121C` |
-| Border | Border blue | `#1C2A3C` |
-
-### Speed Gradient
-
-| Speed (km/h) | Arc Color |
-|--------------|-----------|
-| 0 – 80 | Cyan |
-| 80 – 120 | Cyan → Orange (lerp) |
-| 120 – 180 | Orange → Red (lerp) |
-| 180+ | Red |
-
-### RPM Gradient
-
-| RPM | Arc Color |
-|-----|-----------|
-| 0 – 3000 | Cyan |
-| 3000 – 5000 | Cyan → Orange (lerp) |
-| 5000 – 6500 | Orange → Red (lerp) |
-| 6500+ | Red |
+| # | Screen | What it shows |
+|---|--------|---------------|
+| 1 | **Connect** | Four-stage link ring (SCAN · LINK · ELM · PIDS), radar sweep while busy, BLE or WiFi icon for the selected link. Tap the centre to re-scan. |
+| 2 | **Dash** | 270° tachometer arc with shift lights and redline zone, big primary value (RPM or speed — double-tap to swap), secondary value, coolant · oil · battery cards, protocol and request rate, `⚠ N ARIZA` fault badge (tap → DTC). |
+| 3 | **Live Data** | Ring of supported sensors (throttle, load, MAP, intake temp, oil temp, timing, MAF, short/long fuel trim, O2 sensors, fuel level). Tap a chip to focus it in the centre lens with session min/max; long-press resets min/max. |
+| 4 | **DTC** | "Supernova" scan view: colour tells the state (cyan scanning, green clean, yellow pending, orange stored, red critical/MIL). Code cards → detail (description, likely cause, freeze-frame), history, clear-codes dialog. |
+| 5 | **Gyro** | Off-road inclinometer: pitch and roll rings, rotating horizon, zero button. |
+| 6 | **Settings** | Tiles: **Units** (metric/imperial) · **Link** (BLE / WiFi) · **Auto** connect · **Centre** gauge (RPM/speed) · **Profile**. Below: adapter, state, protocol, raw voltage source, req/s, RPM Hz, timeouts. |
 
 ---
 
-## OBD-II PID Support
+## Supported ELM327 adapters
 
-The system supports dynamic PID discovery and polling with **EMA + spike filtering** for all PIDs. The following PIDs are polled:
+### Bluetooth Low Energy (BLE)
 
-| PID | Description | Priority | Filter Alpha | Spike Max |
-|-----|-------------|----------|--------------|-----------|
-| 0x0C | RPM (engine speed) | High (live) | 0.90 | 1500 RPM |
-| 0x0D | Vehicle speed | High (live) | 0.94 | 30 km/h |
-| 0x05 | Coolant temperature | High (live) | 0.55 | 15°C |
-| 0x42 | Battery voltage | High (live) | 0.30 | 0.6V |
-| 0x11 | Throttle position | Medium | 0.70 | 30% |
-| 0x0B | MAP (intake pressure) | Medium | 0.70 | 30 kPa |
-| 0x0F | Intake air temperature | Medium | 0.55 | 20°C |
-| 0x0E | Timing advance | Medium | 0.60 | 15° |
-| 0x04 | Engine load | Medium | 0.65 | 30% |
-| 0x06 | Short term fuel trim | Medium | 0.40 | 15% |
-| 0x07 | Long term fuel trim | Medium | 0.40 | 15% |
-| 0x14 | O2 sensor 1 voltage | Medium | 0.50 | 0.8V |
-| 0x15 | O2 sensor 2 voltage | Medium | 0.50 | 0.8V |
-| 0x10 | MAF (air flow) | Medium | 0.60 | 30 g/s |
-| 0x03 | Fuel system status | Slow | 0.00 | — |
-| 0x12 | Secondary air status | Slow | 0.00 | — |
-| 0x0A | Fuel pressure | Slow | 0.40 | 80 kPa |
+- Any BLE ELM327 that exposes a serial-like GATT service: `FFF0` (notify `FFF1`, write `FFF2`) or `FFE0` (`FFE1`/`FFE2`). This covers most "ELM327 V1.5 / V2.1 BLE", Vgate iCar Pro BLE, Veepeak BLE and similar clones.
+- Found by name (`OBD`, `OBDII`, `ELM`, `VLINK`, `IOS-Vlink`, …) or by service UUID. The address is saved; next time the dashboard connects directly.
+- Classic Bluetooth (SPP-only) adapters are **not** supported — the ESP32-S3 has no Bluetooth Classic radio.
 
-**Filtering**: Each PID uses an Exponential Moving Average (EMA) filter with spike rejection. Cold-start seeding provides instant initial values. After 3 consecutive spikes, the filter resets to track rapid real changes.
+### WiFi
+
+Typical WiFi ELM327 clones run their own open access point and bridge TCP to the ELM chip:
+
+| Setting | Usual value |
+|---------|-------------|
+| SSID | `WiFi_OBDII`, `OBDII`, `OBD2`, `V-LINK` (Vgate) |
+| Security | open (some use a password) |
+| Adapter IP | `192.168.0.10` (some `192.168.0.11`) |
+| TCP port | `35000` |
+
+The firmware scans for an AP whose name contains `OBD`, `ELM`, `V-LINK`, `VLINK`, `ICAR`, `VGATE` or `KONNWEI`, joins the strongest one, and connects to the DHCP gateway (falling back to `192.168.0.10`). If the adapter's DHCP server doesn't answer within 5 s, a static address in the adapter's subnet is used. Everything can be pinned in `menuconfig` (see [Configuration](#configuration)).
+
+> **Only one client at a time.** WiFi adapters accept a single TCP connection — disconnect any phone app (Torque, Car Scanner…) first.
 
 ---
 
-## Getting Started
+## Hardware
+
+| Component | Details |
+|-----------|---------|
+| Board | [Waveshare ESP32-S3-Touch-LCD-2.1](https://www.waveshare.com/esp32-s3-touch-lcd-2.1.htm) |
+| MCU | ESP32-S3, dual-core Xtensa LX7 @ 240 MHz, WiFi 2.4 GHz + BLE 5 |
+| Memory | 16 MB flash, 8 MB octal PSRAM @ 80 MHz |
+| Display | 2.1" 480×480 round IPS, ST7701 RGB interface |
+| Touch | CST816S capacitive (I2C) |
+| IMU | QMI8658 6-axis (±8 g, ±512 dps) |
+| Buzzer | via TCA9554 IO expander (EXIO8) |
+| OBD adapter | ELM327 clone, BLE or WiFi |
+| Power | USB-C (5 V) — in the car a USB socket or 12 V → 5 V converter |
+
+| Signal | GPIO / bus | Notes |
+|--------|------------|-------|
+| LCD | RGB565 parallel | via `esp32_display_panel` |
+| Touch, IMU, IO expander | I2C, GPIO 19 (SDA) / 20 (SCL) | QMI8658 `0x6A`, TCA9554 `0x27` |
+| Buzzer | TCA9554 pin 7 | active high |
+
+---
+
+## Getting started
 
 ### Prerequisites
 
-- **ESP-IDF v5.3.5** installed (with ESP32-S3 support)
-- Python 3.11+ with required packages
-- Git
+- [ESP-IDF **v5.3.5**](https://docs.espressif.com/projects/esp-idf/en/v5.3.5/esp32s3/get-started/index.html) with ESP32-S3 support
+- Python 3.11 (installed by the ESP-IDF installer), Git
 
-### Build & Flash
-
-**Windows (recommended):** use `rebuild.bat` for a full clean, reconfigure, build, and flash in one step. Edit the COM port in the script if needed (default: `COM4`).
-
-```powershell
-.\rebuild.bat
-```
-
-**Manual (any platform):**
+### Build & flash
 
 ```bash
-# Clone the repository
 git clone https://github.com/erdemerciyas/ESP32-S3-OBD2.git
 cd ESP32-S3-OBD2
 
-# Set up ESP-IDF environment (Windows PowerShell example)
+# ESP-IDF environment (Windows PowerShell example; use export.sh on Linux/macOS)
 . C:\Espressif\frameworks\esp-idf-v5.3.5\export.ps1
 
-# Configure for your board (if not using default Waveshare board)
-idf.py menuconfig
-
-# Build
 idf.py build
-
-# Flash (connect ESP32-S3 via USB)
-idf.py -p COM3 flash
-
-# Monitor serial output
-idf.py -p COM3 monitor
+idf.py -p COM3 flash monitor
 ```
 
-> **Note**: This project is configured for the **Waveshare ESP32-S3-Touch-LCD-2.1** board. If using a different board, update the panel configuration in `menuconfig` under `Component config > ESP Panel`.
+Managed components (`esp32_display_panel`, `lvgl`) are downloaded automatically on the first build.
 
-### PC Simulator
+**Windows shortcut:** `rebuild.bat` does fullclean → reconfigure → build → flash. Edit the paths and COM port inside if your install differs.
 
-UI changes can be tested on Windows without flashing hardware. The simulator shares `main/ui/` sources with the firmware.
+> **Windows note:** run `idf.py` from PowerShell or `cmd`; Git Bash/MSYS is rejected by ESP-IDF.
+> On the Waveshare board the USB-JTAG port carries the application console; the CH343 UART port flashes but only shows the ROM banner.
 
-**Requirements:** Visual Studio 2022+ with **Desktop development with C++**, platform **x64**.
+### First run in the car
+
+1. Plug the ELM327 adapter into the OBD2 port (usually under the steering column) and turn the ignition **on**.
+2. Power the dashboard. After the boot animation it opens the **Connect** screen and starts searching.
+3. Using a **WiFi** adapter? Swipe to **Settings** and tap **Link** until it shows **WiFi**. The choice is saved.
+4. Once the ring is complete (SCAN → LINK → ELM → PIDS) the dashboard switches to the gauge.
+
+---
+
+## Configuration
+
+Runtime settings live on the device (Settings screen) and are stored in NVS. Build-time options are under `idf.py menuconfig` → **OBD2 Dashboard Configurations → OBD adapter link**:
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `OBD_LINK_DEFAULT_WIFI` | `n` | Transport on first boot (until changed on the device) |
+| `OBD_WIFI_SSID` | empty | Fixed adapter SSID; empty = scan for OBD-like names |
+| `OBD_WIFI_PASSWORD` | empty | For adapters with a secured AP |
+| `OBD_WIFI_HOST` | empty | Fixed adapter IP; empty = DHCP gateway, then `192.168.0.10` |
+| `OBD_WIFI_PORT` | `35000` | Adapter TCP port |
+
+Notable `sdkconfig.defaults` choices:
+
+| Option | Why |
+|--------|-----|
+| `CONFIG_SPIRAM=y`, `CONFIG_SPIRAM_MODE_OCT=y`, `CONFIG_SPIRAM_XIP_FROM_PSRAM=y` | LVGL frame buffers and code in PSRAM |
+| `CONFIG_BT_NIMBLE_ENABLED=y`, `CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y` | lightweight BLE central, buffers in PSRAM |
+| `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` | WiFi/LWIP buffers in PSRAM |
+| `CONFIG_LVGL_PORT_AVOID_TEARING_MODE_3=y` | double buffer + direct mode, no tearing |
+| `CONFIG_LV_DISP_DEF_REFR_PERIOD=16` | ~60 FPS refresh |
+
+Vehicle profiles (protocol command, ELM timeout, redline, gauge limits) are in `main/data/vehicle_profile.c`; the default is **Universal OBD-II**.
+
+---
+
+## How it works
+
+```
+ ┌──────────────┐   BLE GATT (NimBLE)   ┌─────────────┐
+ │ ELM327 BLE   │◄─────────────────────►│ ble_obd.c   │──┐
+ └──────────────┘                       └─────────────┘  │   obd_link.c
+ ┌──────────────┐   TCP :35000 (lwIP)   ┌─────────────┐  ├─► (one transport
+ │ ELM327 WiFi  │◄─────────────────────►│ wifi_obd.c  │──┘    active at a time)
+ └──────────────┘                       └─────────────┘           │
+                                                                  ▼
+                       elm327.c  — command queue, prompt gating, response parser
+                                                                  │
+                     obd_pids.c  — PID discovery, scheduling, decode, EMA filter
+                     obd_dtc.c   — DTC scan / clear / history
+                                                                  │
+                  vehicle_data.c — thread-safe snapshot  ◄── imu_data.c (QMI8658)
+                                                                  │
+                         ui/*.c  — LVGL screens, 16 ms update timer (core 1)
+```
+
+- OBD tasks run on core 0, LVGL on core 1.
+- `elm327.c` keeps exactly one command in flight (required on K-line), waits for the `>` prompt before sending, matches responses to the request, and drops late answers.
+- `obd_pids.c` gives the dashboard PIDs (RPM, speed) most of the bus time; slow values (coolant, voltage, fuel) get fixed slots. Battery voltage comes from PID `0x42` or falls back to the adapter's `ATRV`.
+- The link layer (`obd_link.c`) persists the selected transport and switches by stopping one stack completely (NimBLE deinit / `esp_wifi_stop`) before starting the other, so WiFi can run without modem sleep.
+
+---
+
+## OBD-II data & PIDs
+
+| PID | Value | Shown on |
+|-----|-------|----------|
+| `0x0C` | Engine RPM | Dash (arc + value) |
+| `0x0D` | Vehicle speed | Dash |
+| `0x05` | Coolant temperature | Dash card, over-temp buzzer |
+| `0x5C` | Oil temperature | Dash card, Live Data (if supported) |
+| `0x42` / `ATRV` | Battery / module voltage | Dash card, Settings (raw value + source) |
+| `0x11` | Throttle position | Live Data |
+| `0x04` | Calculated engine load | Live Data |
+| `0x0B` | Intake manifold pressure (MAP) | Live Data |
+| `0x0F` | Intake air temperature | Live Data |
+| `0x0E` | Timing advance | Live Data |
+| `0x10` | Mass air flow (MAF) | Live Data |
+| `0x06` / `0x07` | Short / long term fuel trim | Live Data |
+| `0x14` / `0x15` | O2 sensor 1 / 2 voltage | Live Data |
+| `0x2F` | Fuel level | Live Data |
+| `0x01`, `03`, `07`, `02`, `04` | MIL, DTCs, freeze frame, clear | DTC screen |
+
+Every numeric PID goes through an EMA filter with spike rejection (cold-start seeding, reset after 3 consecutive spikes). Values older than 3 s are shown as `--`.
+
+---
+
+## Project structure
+
+```
+├── main/
+│   ├── main.c               # app_main: NVS, display, IMU, UI, OBD layers
+│   ├── Kconfig.projbuild    # display + OBD adapter link options
+│   ├── bsp/                 # board support: panel, LVGL port, touch, buzzer
+│   ├── obd/
+│   │   ├── obd_link.c/h     # BLE / WiFi transport selection
+│   │   ├── ble_obd.c/h      # NimBLE central, scan/connect, GATT
+│   │   ├── wifi_obd.c/h     # WiFi STA + TCP client for WiFi ELM327
+│   │   ├── elm327.c/h       # ELM327 command engine and parser
+│   │   ├── obd_pids.c/h     # PID discovery, polling, decoding
+│   │   └── obd_dtc.c/h      # trouble codes
+│   ├── data/                # vehicle data snapshot, profiles, DTC database, log
+│   ├── imu/                 # QMI8658 driver and attitude
+│   └── ui/                  # LVGL screens, theme, fonts (incl. Turkish glyphs)
+├── simulator/               # LVGL PC simulator (Visual Studio) sharing main/ui
+├── scripts/                 # round-LCD layout checker
+├── docs/                    # development rules
+├── CHANGELOG.md             # dated history (Turkish), current status, open items
+├── partitions.csv           # NVS 24 KB · PHY 4 KB · factory app 3 MB
+└── sdkconfig.defaults
+```
+
+---
+
+## PC simulator
+
+The UI can be developed on Windows without hardware. The simulator compiles the same `main/ui/` sources against a simulated data feed.
+
+Requirements: Visual Studio 2022+ with **Desktop development with C++** (x64).
 
 ```powershell
 cd simulator
@@ -312,76 +258,43 @@ cd simulator
 .\Output\Binaries\Release\x64\LVGL.Simulator.exe
 ```
 
-Or open `simulator/LVGL.Simulator.sln` in Visual Studio and press F5. A 480×480 window opens with simulated OBD data (RPM, speed, coolant, etc.).
-
-See `simulator/README.md` for setup details and troubleshooting.
-
-### Layout Verification
-
-```powershell
-python scripts/verify_round_lcd_layout.py
-```
-
-Checks dashboard UI regions against the 480×480 round LCD geometry defined in `main/ui/theme.h`.
-
-### Partition Table
-
-| Partition | Type | Offset | Size |
-|-----------|------|--------|------|
-| NVS | data | 0x9000 | 24 KB |
-| PHY init | data | 0xF000 | 4 KB |
-| Factory app | app | 0x10000 | 3 MB |
-
----
-
-## Project Dependencies (Managed Components)
-
-| Component | Version | Purpose |
-|-----------|---------|---------|
-| `espressif/esp32_display_panel` | Latest | LCD, touch, IO expander driver |
-| `espressif/esp32_io_expander` | Latest | TCA9554 IO expander C++ API |
-| `espressif/esp-lib-utils` | Latest | Utility helpers |
-| `lvgl/lvgl` | v8.4 | Graphics library |
-
----
-
-## Configuration
-
-Key configuration options in `sdkconfig.defaults`:
-
-| Option | Value | Description |
-|--------|-------|-------------|
-| `CONFIG_IDF_TARGET` | `esp32s3` | Target chip |
-| `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ` | `240` | CPU frequency |
-| `CONFIG_SPIRAM` | `y` | PSRAM enabled |
-| `CONFIG_SPIRAM_MODE_OCT` | `y` | Octal PSRAM mode |
-| `CONFIG_SPIRAM_XIP_FROM_PSRAM` | `y` | Execute-in-place from PSRAM |
-| `CONFIG_BT_NIMBLE_ENABLED` | `y` | NimBLE BLE stack |
-| `CONFIG_LVGL_PORT_AVOID_TEARING_MODE_3` | `y` | Double-buffer + direct mode |
+See [`simulator/README.md`](simulator/README.md).
 
 ---
 
 ## Troubleshooting
 
-- **Display not initializing**: Check that `CONFIG_ESP_PANEL_BOARD_MANUFACTURER_WAVESHARE=y` and `CONFIG_BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_2_1=y` are set.
-- **BLE scanning finds no devices**: Ensure the ELM327 adapter is in pairing mode. Check `CONFIG_BT_NIMBLE_ROLE_CENTRAL=y` and `CONFIG_BT_NIMBLE_ROLE_OBSERVER=y`.
-- **LVGL out of memory error**: Verify PSRAM is enabled and `CONFIG_LV_MEM_CUSTOM=y` is set so LVGL uses PSRAM.
-- **Text not displaying on gauge**: Custom fonts (`montserrat_56`, `montserrat_94_bold`) must be compiled in. Check `main/CMakeLists.txt` includes them in `SRCS`.
+| Symptom | What to check |
+|---------|---------------|
+| Stuck on **SCAN** (BLE) | Adapter powered (ignition on)? Name or service UUID unusual? A phone may already be connected to it. |
+| "Adapter not found" (WiFi) | Is **Settings → Link** on WiFi? Is the AP visible on a phone? If the SSID is unusual, set `OBD_WIFI_SSID`. |
+| "Adapter TCP refused" | Another device holds the single TCP slot; or the adapter uses another IP/port — set `OBD_WIFI_HOST` / `OBD_WIFI_PORT`. |
+| Connects but no data | Ignition must be on (engine running is best). Check the protocol line in Settings; very slow cars may need the profile's ELM timeout raised. |
+| Voltage looks wrong | Settings shows the raw reading and its source (`ATRV` or `0142`); clone adapters are often off by a few tenths. |
+| Display stays black | `CONFIG_BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_2_1=y` must be set; PSRAM must be detected in the boot log. |
+| LVGL out of memory | PSRAM enabled and `CONFIG_LV_MEM_CUSTOM=y`. |
 
-## Development Notes
+Serial logs (USB-JTAG port, 115200) print a link summary every 5 s: requests/s, RPM rate, timeouts, protocol.
 
-- **`CHANGELOG.md`** — dated history, current build/flash status, open tasks
-- **`docs/GELISTIRME_KURALLARI.md`** — rules for preserving BLE/ELM327 connection stability
-- **`.cursor/rules/`** — Cursor IDE guidance (changelog, BLE stability)
+---
 
-When modifying OBD connection code (`ble_obd.c`, `elm327.c`), keep changes minimal and verify on real hardware.
+## Türkçe özet
+
+**ESP32-S3 OBD2 gösterge paneli:** Waveshare ESP32-S3-Touch-LCD-2.1 (480×480 yuvarlak dokunmatik ekran) için açık kaynak araç göstergesi. Ucuz **ELM327 klon adaptör** ile — **Bluetooth (BLE) veya WiFi** — her OBD-II araçtan canlı veri okur: devir, hız, su/yağ sıcaklığı, akü voltajı, sensör verileri, **arıza kodu (DTC) okuma ve silme** (Türkçe açıklamalı, ~190 kod), eğim göstergesi.
+
+- **Bağlantı seçimi:** Ayarlar → **Link** karosu (BLE / WiFi). Seçilen hemen aranır, yeniden başlatma gerekmez; seçim kalıcıdır.
+- **WiFi adaptörler:** `WiFi_OBDII`, `OBDII`, `V-LINK` gibi ağlar otomatik bulunur, adaptör `192.168.0.10:35000`. Adaptör tek bağlantı kabul eder — telefon uygulamasını kapatın.
+- **K-line (KWP2000) araçlar** (ör. 2005 Chevrolet Kalos / Daewoo) için optimize: protokol önbelleği, tek ECU yanıt eki, RPM/hıza öncelik.
+- Kurulum: ESP-IDF 5.3.5 → `idf.py build` → `idf.py -p COM3 flash`. Ayrıntılı geçmiş ve açık işler: [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
-This project is open source. See the repository for license details.
+## Contributing
 
----
+Issues and pull requests are welcome — especially reports of which ELM327 adapters (BLE or WiFi) and which cars work. When touching the connection code (`ble_obd.c`, `wifi_obd.c`, `elm327.c`), keep changes small and test on a real adapter; see [`docs/GELISTIRME_KURALLARI.md`](docs/GELISTIRME_KURALLARI.md).
 
 ## Author
 
-**erdemerciyas** — [GitHub](https://github.com/erdemerciyas)
+**Erdem Erciyas** — [github.com/erdemerciyas](https://github.com/erdemerciyas)
+
+*Keywords: ESP32 OBD2, ESP32-S3 OBD-II dashboard, ELM327 BLE ESP32, ELM327 WiFi ESP32, OBD2 gauge, digital car dashboard, round LCD gauge, Waveshare ESP32-S3-Touch-LCD-2.1, LVGL car dashboard, NimBLE OBD, DTC reader, check engine code reader, K-line KWP2000, araç gösterge paneli, OBD2 arıza kodu okuyucu.*

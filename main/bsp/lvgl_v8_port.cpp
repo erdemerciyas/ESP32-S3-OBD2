@@ -644,18 +644,30 @@ static SemaphoreHandle_t touch_detected;
 
 static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
+    /* CST816/820 dokunulmadığında uyur ve I2C'ye NACK verir; her 30 ms'lik
+     * koşulsuz okuma LVGL görevinde başarısız I2C işlemi + log yağmuru demekti.
+     * Kesme en az bir kez görüldüyse yalnız kesmede ve basılıyken oku;
+     * hiç görülmediyse eski sürekli okuma davranışına kal (regresyonsuz). */
+    static bool s_irq_seen;
+    static bool s_pressed;
     Touch *tp = (Touch *)indev_drv->user_data;
     TouchPoint point;
 
+    data->state = LV_INDEV_STATE_RELEASED;
     if (tp->isInterruptEnabled()) {
-        xSemaphoreTake(touch_detected, 0);
+        bool irq = xSemaphoreTake(touch_detected, 0) == pdTRUE;
+        s_irq_seen = s_irq_seen || irq;
+        if (s_irq_seen && !irq && !s_pressed) {
+            return;
+        }
     }
 
-    data->state = LV_INDEV_STATE_RELEASED;
+    s_pressed = false;
     if (tp->readPoints(&point, 1, 0) > 0) {
         data->point.x = point.x;
         data->point.y = point.y;
         data->state = LV_INDEV_STATE_PRESSED;
+        s_pressed = true;
     }
 }
 

@@ -97,6 +97,9 @@ static void ui_update_cb(lv_timer_t *timer)
     case UI_TAB_GRID:
         screen_grid_update(&snap);
         break;
+    case UI_TAB_DTC:
+        screen_dtc_update(&snap);
+        break;
     case UI_TAB_GYRO: {
         imu_snapshot_t imu_snap;
         imu_get_snapshot(&imu_snap);
@@ -128,10 +131,11 @@ void ui_init(void)
     lv_obj_t *tab_conn = lv_tabview_add_tab(s_tabview, "conn");
     lv_obj_t *tab_dash = lv_tabview_add_tab(s_tabview, "dash");
     lv_obj_t *tab_grid = lv_tabview_add_tab(s_tabview, "grid");
+    lv_obj_t *tab_dtc  = lv_tabview_add_tab(s_tabview, "dtc");
     lv_obj_t *tab_gyro = lv_tabview_add_tab(s_tabview, "gyro");
     lv_obj_t *tab_set  = lv_tabview_add_tab(s_tabview, "set");
 
-    lv_obj_t *tabs[] = { tab_conn, tab_dash, tab_grid, tab_gyro, tab_set };
+    lv_obj_t *tabs[] = { tab_conn, tab_dash, tab_grid, tab_dtc, tab_gyro, tab_set };
     for (int i = 0; i < UI_TAB_COUNT; i++) {
         theme_apply_content(tabs[i]);
         prepare_tab_page(tabs[i]);
@@ -140,6 +144,7 @@ void ui_init(void)
     screen_connect_create(tab_conn);
     screen_dash_create(tab_dash);
     screen_grid_create(tab_grid);
+    screen_dtc_create(tab_dtc);
     screen_gyro_create(tab_gyro);
     screen_settings_create(tab_set);
 
@@ -175,13 +180,19 @@ void ui_start_update_timer(void)
     s_update_timer = lv_timer_create(ui_update_cb, 16, NULL);
 }
 
-void ui_show_dash(void)
+void ui_show_tab(int tab)
 {
-    if (!s_tabview) {
+    if (!s_tabview || tab < 0 || tab >= UI_TAB_COUNT) {
         return;
     }
-    lv_tabview_set_act(s_tabview, UI_TAB_DASH, LV_ANIM_OFF);
-    update_dots(UI_TAB_DASH);
+    lv_tabview_set_act(s_tabview, (uint32_t)tab, LV_ANIM_OFF);
+    s_active_tab = tab;   /* set_act does not emit VALUE_CHANGED */
+    update_dots((uint32_t)tab);
+}
+
+void ui_show_dash(void)
+{
+    ui_show_tab(UI_TAB_DASH);
 }
 
 int ui_get_active_tab(void)

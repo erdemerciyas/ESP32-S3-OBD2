@@ -30,3 +30,12 @@ uint32_t elm327_queue_depth(void);
 bool elm327_can_queue(bool high_priority);
 
 void elm327_on_rx_data(const uint8_t *data, size_t len);
+
+/* Protocol cache: store the ATDPN result so the next init uses "ATSPA<n>". */
+void elm327_set_protocol_hint(const char *dpn);
+bool elm327_has_protocol_hint(void);
+bool elm327_protocol_is_can(void);
+
+/* Link diagnostics: queued commands answered / timed out since boot. */
+uint32_t elm327_done_count(void);
+uint32_t elm327_timeout_count(void);

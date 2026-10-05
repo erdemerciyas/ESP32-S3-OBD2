@@ -32,9 +32,11 @@ static const char *PROFILE_KEY_PREFIX = "p_";
  */
 
 static const vehicle_pid_poll_t s_univ_live[] = {
-    { 0x0C,  60, true, true  },  /* RPM        — batched with Speed (~16 Hz) */
-    { 0x0D,  60, true, true  },  /* Speed      — batched with RPM  (~16 Hz) */
-    { 0x05, 150, true, true  },  /* Coolant    — lively sub-cell (~6.7 Hz) */
+    /* K-line'da toplam ~6-8 istek/sn var: RPM/Speed slotların çoğunu alır,
+     * coolant yavaş değişir (1 Hz yeter). CAN'de RPM+Speed batch'lenir. */
+    { 0x0C,   60, true, true  },  /* RPM */
+    { 0x0D,   60, true, true  },  /* Speed */
+    { 0x05, 1000, true, true  },  /* Coolant */
 };
 
 static const vehicle_pid_poll_t s_univ_fast[] = {
@@ -52,6 +54,7 @@ static const vehicle_pid_poll_t s_univ_slow[] = {
     { 0x14, 2500, true,  false }, /* O2 B1S1 */
     { 0x15, 2500, false, false }, /* O2 B1S2 */
     { 0x2F, 3000, true,  false }, /* Fuel Level */
+    { 0x5C, 2000, false, false }, /* Oil temp (dash + grid, if supported) */
 };
 
 static const vehicle_profile_t s_default_profile = {

@@ -19,6 +19,18 @@ typedef enum {
     THRESHOLD_CRIT,
 } threshold_level_t;
 
+/* OBD link diagnostics (measured by the PID poller, shown in Settings). */
+typedef struct {
+    float    req_rate;      /* completed OBD requests per second */
+    float    rpm_hz;        /* RPM samples per second */
+    uint32_t timeouts;      /* ELM327 command timeouts since boot */
+    char     proto[4];      /* ATDPN result, e.g. "A5" */
+    char     elm_id[20];    /* ATI result, e.g. "ELM327 v1.5" */
+    bool     resp_count;    /* "1" response-count suffix active */
+    float    volt_raw;      /* last raw voltage reading before validation */
+    char     volt_src[6];   /* "ATRV" or "0142" */
+} obd_link_stats_t;
+
 typedef struct {
     float rpm;
     float speed;
@@ -34,6 +46,7 @@ typedef struct {
     float load;
     float fuel_pressure;
     float fuel_level;       /* PID 0x2F — Fuel tank level 0-100% */
+    float oil_temp;         /* PID 0x5C — Engine oil temperature °C */
     float o2_voltage;
     float o2_b1s2;
     float fuel_system1;
@@ -54,6 +67,8 @@ typedef struct {
     uint32_t dash_pair_ts;
 
     uint32_t supported_pids[4];
+
+    obd_link_stats_t link;
 
     obd_state_t state;
     char adapter_name[32];
@@ -81,6 +96,7 @@ typedef struct {
     float fuel_trim_lt;
     float load;
     float fuel_level;
+    float oil_temp;
     float o2_voltage;
     float o2_b1s2;
 
@@ -92,6 +108,8 @@ typedef struct {
 
     /* Pair timestamp from batch RPM+Speed request (0 = individual poll). */
     uint32_t dash_pair_ts;
+
+    obd_link_stats_t link;
 
     obd_state_t state;
     char adapter_name[32];
@@ -115,6 +133,7 @@ void vehicle_data_clear_supported_pids(void);
 bool vehicle_data_is_pid_supported(uint8_t pid);
 
 void vehicle_data_set_float(float *field, float value);
+void vehicle_data_set_link_stats(const obd_link_stats_t *stats);
 
 /* Update a key value together with its freshness timestamp. Callers in the OBD
  * layer should prefer these over vehicle_data_set_float for rpm/speed/coolant/

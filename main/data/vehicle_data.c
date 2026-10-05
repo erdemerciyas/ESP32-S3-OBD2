@@ -37,6 +37,7 @@ void vehicle_data_snapshot(vehicle_data_snapshot_t *snap)
     snap->fuel_trim_lt = s_data.fuel_trim_lt;
     snap->load = s_data.load;
     snap->fuel_level = s_data.fuel_level;
+    snap->oil_temp = s_data.oil_temp;
     snap->o2_voltage = s_data.o2_voltage;
     snap->o2_b1s2 = s_data.o2_b1s2;
     snap->rpm_ts = s_data.rpm_ts;
@@ -44,6 +45,7 @@ void vehicle_data_snapshot(vehicle_data_snapshot_t *snap)
     snap->coolant_ts = s_data.coolant_ts;
     snap->voltage_ts = s_data.voltage_ts;
     snap->dash_pair_ts = s_data.dash_pair_ts;
+    snap->link = s_data.link;
     snap->state = s_data.state;
     snap->metric_units = s_data.metric_units;
     snap->center_gauge_rpm = s_data.center_gauge_rpm;
@@ -91,6 +93,16 @@ void vehicle_data_set_adapter(const char *name, const char *addr)
     if (addr) {
         strncpy(s_data.adapter_addr, addr, sizeof(s_data.adapter_addr) - 1);
     }
+    vehicle_data_unlock();
+}
+
+void vehicle_data_set_link_stats(const obd_link_stats_t *stats)
+{
+    if (!stats) {
+        return;
+    }
+    vehicle_data_lock();
+    s_data.link = *stats;
     vehicle_data_unlock();
 }
 
@@ -211,6 +223,13 @@ threshold_level_t vehicle_data_coolant_level(float c)
 
 threshold_level_t vehicle_data_voltage_level(float v)
 {
+    /* Over-voltage: a regulator fault (>15 V) damages battery/electronics. */
+    if (v > 15.8f) {
+        return THRESHOLD_CRIT;
+    }
+    if (v > 15.0f) {
+        return THRESHOLD_WARN;
+    }
     if (v < 11.5f) {
         return THRESHOLD_CRIT;
     }

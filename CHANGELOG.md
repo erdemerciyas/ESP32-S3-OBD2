@@ -2,16 +2,178 @@
 
 Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce burayı oku;** anlamlı değişiklik yaptıktan sonra güncelle.
 
-## Mevcut durum (2026-07-07)
+## Mevcut durum (2026-10-05)
 
 | Alan | Değer |
 |------|-------|
-| Hedef cihaz | ESP32-S3, 480×480 yuvarlak LCD (görünür 460 px), 8MB PSRAM |
-| Araç profili | **Universal OBD-II** (`ATSP0`, runtime PID keşfi) |
-| UI sekmeleri | Connect · Dash · Grid · Gyro · Settings (DTC kaldırıldı) |
-| Son build | `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
-| Son flash | COM3 — `obd2_dashboard.bin` **0x13a610** (~1.29 MB), 2026-07-07 |
-| Git | `main` = `origin/main` (HEAD `2e637a9`) |
+| Hedef cihaz | Waveshare ESP32-S3-Touch-LCD-2.1, 480×480 yuvarlak LCD (görünür 460 px), 8MB PSRAM |
+| Hedef araç | 2005 Chevrolet Kalos 1.4 benzin — K-line, KWP2000 fast (`ATSP5`); adaptör: "ELM327 Blue" klon (BLE) |
+| Araç profili | **Universal OBD-II** (`ATSP0` → tespit edilen protokol NVS'de, sonraki bağlantı `ATSPA<n>`) |
+| UI sekmeleri | Connect · Dash · Grid · **DTC (Arıza)** · Gyro · Settings |
+| Son build | `obd2_dashboard.bin` **0x1b65e0** (~1.79 MB, %43 boş — WiFi yığını eklendi), 2026-10-05 |
+| Son flash | COM3 (USB-JTAG) — BLE/WiFi taşıma seçimi, varsayılan BLE, 2026-10-05 |
+| Git | 2026-10-05 tüm değişiklikler (K-line optimizasyonu, DTC, yuvarlak UI, WiFi adaptör, README) `main`e commit edilip `origin`e gönderildi |
+| Açık işler | WiFi adaptörle araçta test · Araçta ölçüm (Settings → `Link:` satırı) · Faz 3 K-line P3 ayarı · Faz 4 BLE CCCD · `scripts/verify_round_lcd_layout.py` `UI_VIEWPORT_SZ` parse hatası (önceden var) |
+
+---
+
+## 2026-10-05 — README yeniden yazıldı + GitHub bulunabilirliği
+
+- `README.md` baştan yazıldı (İngilizce + Türkçe özet): BLE/WiFi adaptör desteği, ekranlar, donanım, kurulum, Kconfig seçenekleri, mimari şeması, PID tablosu, sorun giderme, anahtar kelimeler. Arama motorları için başlık ve ilk paragraf "ESP32-S3 OBD2 dashboard / ELM327 BLE & WiFi" ifadelerini içeriyor.
+- GitHub repo açıklaması ve konu etiketleri (topics) güncellendi (`gh repo edit`).
+- Commit dışı bırakılanlar: `.claude/`, `.freebuff/`, `skills-lock.json` (araç dosyaları), `docs/IMPLEMENTATION_GUIDE.md`, `docs/QUICK_REFERENCE.md`, `docs/SVG_PNG_CONVERTER_PLAN.md` (SVG↔PNG dönüştürücü taslakları, uygulanmadı).
+
+---
+
+## 2026-10-05 — WiFi ELM327 adaptör desteği (BLE'ye ek)
+
+**Neden:** Elimizde ELM327 klonunun WiFi modeli de var.
+
+### Araştırma (klon WiFi adaptörleri)
+- Adaptör **AP** yayınlar, genelde şifresiz: `WiFi_OBDII`, `OBDII`, `OBD2`, Vgate'te `V-LINK`. ELM **192.168.0.10:35000** üzerinde şeffaf TCP↔UART köprüsü (içeride XLW/USR/HLK modülleri, ELM tarafı 38400 baud).
+- **Tek TCP istemcisi**: telefon uygulaması bağlıysa cihaz bağlanamaz.
+- Bazı klonlarda DHCP bozuk → uygulamalar statik IP öneriyor. Bağlantı kopmaları yaygın.
+
+### Kod
+- `obd/obd_link.c/h`: taşıma soyutlaması. `elm327.c` artık `obd_link_*` kullanıyor; BLE ve WiFi aynı ayrıştırıcıyı paylaşıyor. Seçim NVS'de (`obd_link/type`); aynı anda yalnız seçilen radyo yığını çalışır. Geçiş **yeniden başlatmadan**, ayrı görevde: eskisi durur (`ble_obd_stop` = `nimble_port_stop/deinit`, kontrolcü dahil; `wifi_obd_stop` = TCP kapat + `esp_wifi_stop`), yenisi başlar ve hemen aramaya geçer.
+- `obd/wifi_obd.c/h`: STA → tarama (SSID'de `OBD/ELM/V-LINK/VLINK/ICAR/VGATE/KONNWEI`, en güçlü RSSI) → katılım (kayıtlı SSID NVS'de; 2 hatada taramaya döner) → DHCP 5 sn, yoksa adaptör alt ağında **statik `.123`** → TCP (sırasıyla DHCP ağ geçidi, 192.168.0.10). `TCP_NODELAY`, keepalive 5/2/3, `WIFI_PS_NONE` (modem-sleep istek başına ~100-300 ms ekliyordu). RX ayrı görevde (lwIP full-duplex), TX mutex'li. 3 TCP hatasında WiFi baştan; geri çekilme 1.5→10 sn; `auto_connect` kapalıysa dokunuş bekler.
+- Kconfig `OBD adapter link`: varsayılan taşıma, sabit SSID / şifre / IP / port (35000).
+- `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` (WiFi/LWIP tamponları PSRAM'de).
+- UI: **Settings → "Link" karosu (BLE / WiFi)** — dokununca geçer ve seçilen aramaya başlar. Settings 3+2 düzene geçti (karo Ø100: Units · Link · Auto / Centre · Profile); Auto simgesi `LOOP`. Connect çekirdeği yalnız tarar, simgesi seçili taşımayı canlı gösterir.
+- Düzeltme: ilk sürümde geçiş Connect çekirdeğinde LVGL'in 400 ms uzun basmasına bağlıydı → normal dokunuş cihazı yeniden başlatıyordu (NVS'de `obd_link:type` yazılmış olmasından teşhis edildi). Geçiş Settings'e taşındı, yeniden başlatma kaldırıldı.
+- Doğrulama: geçici test görevi 4 tur WiFi⇄BLE geçti — her geçiş 5–15 ms, çökme yok; WiFi durumunda boş iç RAM her turda 112.6 KB'ye dönüyor (sızıntı yok), BLE durumunda ~69–75 KB.
+- Düzeltme (`ble_obd.c`): kayıtlı adrese bağlanma sürerken dokununca `ble_gap_disc` EBUSY dönüyor, `s_scan_active` takılı kalıp yeniden bağlanma tamamen duruyordu. Şimdi bekleyen bağlantı iptal edilir ve iptal olayı taramayı başlatır; tarama başlatılamazsa durum sıfırlanıp yeniden denenir.
+
+### Doğrulama
+- Uyarısız build. Cihazda BLE modu eskisi gibi açılıyor. WiFi modu (geçici varsayılan ile) açıldı: `ps type: 0`, 12-15 AP taranıp "No OBD access point" + geri çekilme — çökme yok. **Gerçek WiFi adaptörle araçta test bekliyor.**
+
+---
+
+## 2026-10-05 — Yuvarlak panel UI yenilemesi + açılış animasyonu
+
+**Neden:** Live Data ekranının yuvarlak dili (dış halka + merkez lens) diğer ekranlara taşınsın; kare/düz kart düzenleri yuvarlak maskede kesiliyordu. Açılışa gösterge paneli tarzı animasyon.
+
+### Ortak (`theme.c/h`)
+- `UI_C`, `UI_RING_D` (444), `UI_RING_ROT` (120), `UI_RING_SWEEP` (300): 6 yönündeki 60° boşluk nokta navigasyonuna ayrılmış ortak halka.
+- `theme_create_root` (sekme flex'ini yok sayan 460×460 kök), `theme_create_arc`, `theme_apply_lens` (cam disk), `theme_place_in_ring` (kutuyu açıdan bağımsız halkanın içine oturtur).
+
+### Ekranlar
+- **Live Data** (`screen_grid.c`): dış halkada desteklenen her PID için segment + isim/değer çipi; merkezde seçili metrik (270° yay, oturum min/max). Dokun → sonraki, çipe dokun → seç, uzun bas → min/max sıfırla. Trim'ler merkezden dolar. Ortak yardımcılara taşındı.
+- **Connect**: 4 aşamalı halka (SCAN · LINK · ELM · PIDS) — tamamlanan yeşil, aktif nabız atar, hatalı kırmızı. Radar halkasında dönen tarama (yalnız açı aralığı yeniden çizilir). Ortadaki Bluetooth çekirdeğine dokununca tarar (eski düğme kaldırıldı).
+- **Gyro**: sol halka pitch, sağ halka roll (±45°, merkezden); merkezde dönen/kayan ufuk çizgisi + sabit araç işareti; EMA yumuşatma, tam derece adımları; değer/renk yalnız değişince güncellenir. SIFIRLA üstte.
+- **Settings**: 2×2 yuvarlak karo (Birim · Otomatik bağlan · Merkez gösterge · Profil). Profil açılır listesi yuvarlak ekrana taşmasın diye dokunarak döngüye çevrildi. Altta 3 satır bağlantı özeti (yalnız değişince çizilir). Başlangıç durumları artık `vehicle_data`'dan okunuyor.
+- **Açılış** (`screen_splash.c`): dış halka çizilir → 270° ibre 0 → max → 0 süpürür (cyan→turuncu→kırmızı, kırmızı bölge) → OBD2 yazısı harf aralığı daralarak belirir → profil adı + canlı açılış durumu → arka plana kararır, UI üst katmandaki perdeyle yumuşakça açılır. Toplam ~2.95 sn; her stil yalnız değişince uygulanır.
+
+### Doğrulama
+- `idf.py build` uyarısız. Halka/çip/etiket yerleşimi 1–12 PID için çakışma ve kenar boşluğu açısından sayısal kontrol edildi. Simülatör derlenemedi (Visual Studio yok) — görsel kontrol cihazda.
+
+---
+
+## 2026-10-05 — Arıza kodu (DTC) tarama sistemi + Supernova UI
+
+**Neden:** Araçta arıza var mı, kod neyi ifade ediyor (Türkçe), geçmiş flash'ta tutulsun, kodlar silinebilsin; Kalos'a özel kod tablosu; yavaşlama/çökme olmasın.
+
+### OBD (`main/obd/obd_dtc.c/.h`, yeni)
+- Tarama obd_poll görevinde adım adım: `0101` (MIL, kod sayısı, hazırlık monitörleri) → `03` kayıtlı → `07` bekleyen → `020200` donmuş veri kodu → `02xx00` (devir, hız, su, yük, STFT/LTFT, MAP) → `0121`/`0131` (km, destekleniyorsa).
+- Çalışırken PID polling duraklar; ELM kuyruğu boşalmadan komut gönderilmez (K-line'da tek komut uçuşta). Geç yanıtlar sıra numarasıyla elenir; her adımda watchdog.
+- Bağlantıdan 8 sn sonra otomatik tarama; sonra 60 sn'de bir yalnız `0101` — MIL/sayı değişirse tam tarama.
+- Silme: `04` → 1.5 sn bekle → yeniden tarama ile **doğrulama** (ECU reddederse "silinemedi").
+- `07` timeout verirse o bağlantıda atlanır. K-line 7 baytlık çerçeve, CAN sayı baytı ve ATS1 klonları ayrıştırılır.
+- Geçmiş NVS'de (`obd_dtc/hist`, 24 kod): ilk/son tarama no, görülme sayısı, silindi bayrağı. Yalnız değişiklik olunca yazılır (temiz → temiz yazmaz). Açılışta son tarama kayıttan gösterilir.
+- `elm327.c`: yalnız mode 02 yanıt token'ı (`42`) 4 kontrole eklendi; kuyruk/zaman aşımı mantığı değişmedi.
+
+### Veritabanı (`main/data/dtc_db.c/.h`, yeni)
+- ~190 Türkçe açıklama + olası neden + önem (bilgi/uyarı/kritik). Genel SAE P0/P2 ve GM-Daewoo P1xxx (2004 Aveo T200 GM servis kılavuzu DTC dizini — Kalos ile aynı ECU ailesi). Tabloda olmayan kodlara grup açıklaması; C/B/U için sistem açıklaması.
+
+### UI (`main/ui/screen_dtc.c`, yeni; `ui.c/h`, `theme.c/h`, `screen_dash.c`)
+- Supernova düzeni: ışın halkası (tek nesne, özel çizim), iki hale, ilerleme yayı, gradyanlı çekirdek (kod sayısı / %ilerleme). Renk durumu anlatır: cyan tarıyor, yeşil temiz, sarı bekleyen, turuncu kayıtlı, kırmızı kritik/MIL.
+- Şok dalgası halkaları yalnız tarama sırasında; kartlar yalnız kodlar değişince yeniden kurulur. LVGL çekirdek 1, OBD çekirdek 0.
+- Kod kartı → detay (açıklama, neden, donmuş veri, kayıt); GEÇMİŞ ekranı (kaydı silme onaylı); SİL onay penceresi (kontak açık/motor kapalı uyarısı). Çekirdeğe dokunmak da tarar.
+- Dash: shift ışıklarının altında `⚠ N ARIZA` göstergesi, dokununca DTC sekmesi.
+- Türkçe fontlar `lv_font_tr_16/20`: yalnız ç ğ ı İ ö ş ü glifleri, geri kalanı fallback ile yerleşik Montserrat (lv_font_conv, LVGL'in Montserrat-Medium.ttf'i).
+
+### Açık
+- Araçta test: otomatik tarama logu, `03` çok çerçeveli yanıt, silme doğrulaması, donmuş veri desteği.
+- CAN çok çerçeveli (`0:`/`1:` önekli) DTC yanıtı elm327 katmanında birleştirilmiyor — Kalos K-line olduğundan etkisiz.
+
+---
+
+## 2026-10-05 — Voltaj sabit 16.5 V: üst sınır + ham değer teşhisi
+
+**Neden:** ATRV geldikten sonra ekranda sabit 16.5 V. `VOLTAGE_MAX_V` 16.5 idi; üstündeki okumalar atılıyor, sınıra yakın kabul edilenler ekranda kalıyordu. Adaptör kalibrasyonu mu yoksa gerçek aşırı şarj mı ayırt edilemiyordu.
+
+- `obd_pids.c`: `VOLTAGE_MAX_V` 16.5 → 18.0; ham okuma + kaynak (`ATRV`/`0142`) `obd_link_stats_t.volt_raw/volt_src`'ye yazılıyor (aralık dışı ham ATRV dahil).
+- `vehicle_data.c`: aşırı gerilim seviyeleri — >15.0 V uyarı, >15.8 V kritik.
+- `screen_settings.c`: bilgi satırında `14.2V (ATRV 14.23)` biçiminde ham değer.
+- Build + flash (COM3) OK, açılış temiz. Not: build diğer oturumların commit edilmemiş değişikliklerini de (DTC, TR fontlar, settings yeniden tasarımı) içeriyor.
+- **Açık:** motor kapalı/çalışır ham değerlere göre kalibrasyon katsayısı veya alternatör kontrolü.
+
+---
+
+## 2026-10-05 — Voltaj boş geliyordu: 0142 timeout → ATRV düşüşü
+
+**Neden:** Araçta UI sorunsuz, ancak voltaj hep `--`. K-line ECU (Kalos) desteklenmeyen `0142`'ye NO DATA yerine negatif yanıt veriyor / yanıt vermiyor → ELM timeout; kod yalnız re-probe timeout'unda ATRV'ye dönüyordu, ilk `0142` timeout'unda sonsuza dek `0142` tekrarlanıyordu.
+
+- `obd_pids.c`: herhangi bir `0142` timeout'u → kalıcı ATRV (`s_voltage_via_pid`, `s_pid42_dead`; bağlantı başına sıfırlanır), ölü 0142 için 30 sn re-probe yapılmaz.
+- `ATRV_TIMEOUT_MS` 150 → 300 ms (BLE + klon gecikmesine pay).
+- Build OK; COM4 (CH343 UART portu) üzerinden flash edildi, açılış OK. Araçta doğrulama bekliyor.
+
+---
+
+## 2026-10-05 — UI yeniden yapımı: senkron RPM/Speed + performans + desteklenen PID'ler
+
+**Neden:** RPM ve Speed tam senkron ve akıcı görünmeli; ekran yalnız aracın desteklediği verileri (yağ dahil) göstermeli; çizim yükü düşmeli.
+
+### Dashboard (`main/ui/screen_dash.c`, `theme.h`)
+- **Hareket motoru:** her örnek, ölçülen örnek aralığı (EMA, 60–600 ms) boyunca doğrusal segment başlatır; RPM ve Speed aynı kare saatinde ilerler → basamaksız, eşit gecikmeli hareket (sabit 80 ms ease-out kaldırıldı).
+- **Çift okuma:** büyük değer (94 px) + ikincil değer (48 px, cyan); çift dokunma yer değiştirir. Yay her zaman takometre.
+- **Sabit aralıklı rakamlar:** hane başına etiket → rakamlar kaymaz, yalnız değişen hane yeniden çizilir.
+- **İbre kaldırıldı:** yerine yay ucunda beyaz nokta (arc knob) — geniş bölge invalidation'ı bitti. Kadran: 1000 rpm'de numaralı majör, 500'de minör tick (statik).
+- Shift-light'lar yalnız durum değişince güncellenir; redline'a göre (%70→%100).
+- Alt kartlar: Coolant · Oil (yalnız PID 0x5C destekleniyorsa) · Battery. Üstte protokol + istek/sn.
+- Veri 3 sn bayatsa / bağlantı yoksa `--` ve sönük renk.
+
+### Live Data (`main/ui/screen_grid.c`)
+- 12 metrik (Throttle, Load, MAP, Intake, Oil, Timing, MAF, STFT, LTFT, O2 S1/S2, Fuel); **yalnız desteklenenler** gösterilir (flex-wrap yeniden akar), her kartta aralık çubuğu.
+
+### Veri / polling
+- `oil_temp` (PID 0x5C) eklendi: decode + filtre, slow listede 2 sn, dash'te de destekleniyorsa sorgulanır.
+- `should_poll_pid`: yalnız dash canlı PID'leri koşulsuz; diğer "priority" PID'ler artık desteklenmiyorsa sorgulanmıyor (K-line'da boşa timeout slotu yakıyordu).
+
+### Performans
+- `CONFIG_LV_DISP_DEF_REFR_PERIOD` 30 → **16 ms** (~60 FPS).
+- Dokunmatik (`lvgl_v8_port.cpp`): kesme bir kez görüldükten sonra yalnız kesmede/basılıyken I2C okunur (CST816 uykudayken 30 ms'de bir başarısız okuma + log yağmuru bitti). Kesme hiç gelmezse eski davranış.
+- `ui_show_dash()` aktif sekmeyi de günceller (bağlanınca dash güncellenmiyordu).
+
+### Doğrulama
+- Build + flash OK; geçici snapshot firmware'i ile cihazdan dash/grid ekran görüntüsü alındı (debug kodu kaldırıldı). Simülatör: `demo_feed.c`/`vehicle_data_sim.c` güncellendi (Visual Studio yok, derlenmedi).
+
+---
+
+## 2026-10-05 — K-line hız optimizasyonu (Faz 0+1+2) + bağlantı teşhisi
+
+**Neden:** Kalos 2005 K-line (KWP2000) kullanıyor; her istek sonrası ATST (~200 ms) bekleniyor, `ATSP0` araması her bağlantıda saniyeler sürüyor ve ilk `0100` 2 sn'de timeout olup aramayı kesiyordu. Çoklu-PID (`010C0D`) K-line'da desteklenmiyor.
+
+### ELM327 (`main/obd/elm327.c/.h`)
+- **Prompt kapısı:** yeni komut, önceki komutun `>` prompt'u gelmeden gönderilmez (en çok 100 ms) — meşgul ELM'e karakter gönderip isteği `STOPPED` ile kesme riski kalktı.
+- **Serbest AT yanıtları:** `ATDPN` (`A5`), `ATPPS` gibi yanıtlar artık yakalanıyor ve `>` ile teslim ediliyor (eskiden timeout oluyordu).
+- **Protokol önbelleği:** `ATDPN` sonucu NVS'ye (`obd_elm/proto`) yazılıyor; profil `ATSP0` ise sonraki init `ATSPA<n>` kullanıyor (önce bilinen protokol, olmazsa otomatik arama).
+- Her TX logu INFO → DEBUG. Teşhis sayaçları: `elm327_done_count()`, `elm327_timeout_count()`.
+
+### PID polling (`main/obd/obd_pids.c`, `main/data/vehicle_profile.c`)
+- **Yanıt sayısı eki (`010C1`):** `0100` tek ECU yanıtı verirse açılır; ELM ATST beklemeden döner. 3 ardışık timeout'ta kendiliğinden kapanır.
+- **İlk `0100` timeout:** 2 sn → 12 sn (protokol önbellekteyse 6 sn); arama sürerken kuyruğa ATRV yığılmıyor.
+- **Çoklu-PID probe:** protokol CAN değilse hiç denenmiyor.
+- **Slot dağılımı:** Coolant 150 → 1000 ms, voltaj (ATRV) 200 → 1000 ms; K-line kapasitesinin çoğu RPM/Speed'e gidiyor.
+- Bağlantı sonrası `ATDPN` + `ATI` sorgulanıyor.
+
+### Teşhis (`main/data/vehicle_data.*`, `main/ui/screen_settings.c`, simülatör)
+- `obd_link_stats_t` (istek/sn, RPM Hz, timeout, protokol, ELM kimliği, x1 eki) snapshot'a eklendi.
+- Settings bilgi kartı: `Protocol: A5 (x1)`, `Link: 6.8 req/s  RPM 3.2 Hz  TO 0`. Seri portta 5 sn'de bir `link ...` logu.
+
+### Build / Flash
+- Build başarılı **0x13ae00**; COM3'e flash edildi, açılış ve BLE bağlantı denemesi doğrulandı. Araçta PID testi henüz yapılmadı.
+- Not: açılışta `CST816S: I2C read failed` hatası sürekli loglanıyor (dokunmatik denetleyici); bu değişiklikle ilgisiz, önceki sürümde olup olmadığı doğrulanmadı.
 
 ---
 

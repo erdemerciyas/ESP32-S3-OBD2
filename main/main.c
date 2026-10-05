@@ -4,9 +4,10 @@
 #include "bsp.h"
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
-#include "ble_obd.h"
+#include "obd_link.h"
 #include "elm327.h"
 #include "obd_pids.h"
+#include "obd_dtc.h"
 #include "ui.h"
 #include "imu_data.h"
 
@@ -35,16 +36,17 @@ void app_main(void)
     imu_init();
     imu_start();
 
+    obd_dtc_init();   /* UI açılışta son DTC kaydını gösterir */
     ui_init();
     ui_start_update_timer();
 
-    ble_obd_init();
+    obd_link_init();
     elm327_init();
     obd_pids_init();
 
     elm327_start();
     obd_pids_start();
-    ble_obd_start();
+    obd_link_start();
 
     ESP_LOGI(TAG, "All layers ready");
 }

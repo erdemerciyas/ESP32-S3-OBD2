@@ -39,6 +39,7 @@ static void apply_live_values(void)
     vehicle_data_set_float(&vd->load, 22.0f + 50.0f * base);
     vehicle_data_set_float(&vd->o2_voltage, 0.45f + 0.2f * sinf(s_phase * 1.4f));
     vehicle_data_set_float(&vd->o2_b1s2, 0.42f + 0.18f * sinf(s_phase * 1.2f));
+    vehicle_data_set_float(&vd->oil_temp, 96.0f + 8.0f * sinf(s_phase * 0.25f));
 }
 
 static void demo_timer_cb(lv_timer_t *timer)
@@ -68,6 +69,7 @@ static void connect_timer_cb(lv_timer_t *timer)
     case 3:
         vehicle_data_set_state(OBD_STATE_PID_DISCOVERY, "PID kesfi...");
         vehicle_data_set_pid_supported(0, 0x8833787E);
+        vehicle_data_set_pid_supported(2, 1u << ((0x5C - 1) % 32));  /* oil temp */
         break;
     case 4:
         vehicle_data_set_state(OBD_STATE_READY, "Bagli (simulator)");

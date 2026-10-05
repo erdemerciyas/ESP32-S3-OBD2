@@ -32,8 +32,15 @@ void vehicle_data_snapshot(vehicle_data_snapshot_t *snap)
     snap->fuel_trim_lt = s_data.fuel_trim_lt;
     snap->load = s_data.load;
     snap->fuel_level = s_data.fuel_level;
+    snap->oil_temp = s_data.oil_temp;
     snap->o2_voltage = s_data.o2_voltage;
     snap->o2_b1s2 = s_data.o2_b1s2;
+    snap->rpm_ts = s_data.rpm_ts;
+    snap->speed_ts = s_data.speed_ts;
+    snap->coolant_ts = s_data.coolant_ts;
+    snap->voltage_ts = s_data.voltage_ts;
+    snap->dash_pair_ts = s_data.dash_pair_ts;
+    snap->link = s_data.link;
     snap->state = s_data.state;
     snap->metric_units = s_data.metric_units;
     snap->center_gauge_rpm = s_data.center_gauge_rpm;
