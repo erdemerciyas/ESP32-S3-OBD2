@@ -26,6 +26,10 @@ static const char *TAG = "elm327";
 /* ELM327 meşgulken gelen her karakter isteği iptal eder (STOPPED). Yeni komut
  * göndermeden önce önceki komutun '>' prompt'unu en fazla bu kadar bekle. */
 #define PROMPT_WAIT_MS   100
+/* WiFi köprüsü her yöne gecikme ekler; init'te AT komutlarının gidiş-dönüşü
+ * ölçülür ve tüm zaman aşımlarına pay olarak eklenir. BLE'de pay 0 (değişmez). */
+#define MARGIN_MIN_MS    150
+#define MARGIN_MAX_MS    800
 
 static const char *NVS_NS = "obd_elm";
 static const char *NVS_KEY_PROTO = "proto";
@@ -48,6 +52,7 @@ static char s_pending_response[256];
 static char s_inflight_expect[8];
 static bool s_inflight_at;          /* uçuştaki komut AT komutu mu */
 static volatile bool s_prompt_pending; /* gönderildi, henüz '>' gelmedi */
+static volatile uint32_t s_margin_ms;  /* taşıma gecikme payı (WiFi) */
 static char s_proto_hint;           /* son tespit edilen protokol (ATDPN), 0 = yok */
 static uint32_t s_done_count;       /* yanıtlanan kuyruk komutları */
 static uint32_t s_timeout_count;    /* zaman aşımına uğrayan kuyruk komutları */
@@ -464,7 +469,7 @@ static bool send_raw(const char *cmd)
 {
     char frame[80];
     int n = snprintf(frame, sizeof(frame), "%s\r", cmd);
-    wait_prompt(PROMPT_WAIT_MS);
+    wait_prompt(PROMPT_WAIT_MS + s_margin_ms / 2);
     ESP_LOGD(TAG, "TX: %s", cmd);
     s_prompt_pending = true;
     if (!obd_link_send((const uint8_t *)frame, n)) {
@@ -550,6 +555,7 @@ static void elm327_run_init(void)
         vehicle_data_set_state(OBD_STATE_ELM_INIT, "Starting ELM327...");
     }
 
+    uint32_t rtt_sum = 0, rtt_n = 0;
     for (size_t i = 0; i < cmd_count; i++) {
         drain_stale_sync();
         elm_lock();
@@ -564,14 +570,30 @@ static void elm327_run_init(void)
             app_log_error(TAG, "Send failed during init: %s", cmds[i]);
             return;
         }
+        TickType_t t0 = xTaskGetTickCount();
         if (i == 0 && atz_delay_ms > 0) {
             vTaskDelay(pdMS_TO_TICKS(atz_delay_ms));
         }
         if (!wait_response(1500)) {
             ESP_LOGW(TAG, "Timeout on %s", cmds[i]);
             flush_rx_after_timeout();
+        } else if (!(i == 0 && atz_delay_ms > 0)) {   /* ATZ'nin bekleme süresi ölçüme girmesin */
+            rtt_sum += pdTICKS_TO_MS(xTaskGetTickCount() - t0);
+            rtt_n++;
         }
         s_inflight_expect[0] = '\0';
+    }
+
+    if (obd_link_get_type() == OBD_LINK_WIFI && rtt_n > 0) {
+        uint32_t avg = rtt_sum / rtt_n;
+        uint32_t m = avg * 3 / 2 + 100;
+        s_margin_ms = m < MARGIN_MIN_MS ? MARGIN_MIN_MS : m > MARGIN_MAX_MS ? MARGIN_MAX_MS : m;
+        app_log_info(TAG, "Link RTT %lu ms -> timeout margin %lu ms",
+                     (unsigned long)avg, (unsigned long)s_margin_ms);
+    } else if (obd_link_get_type() == OBD_LINK_WIFI) {
+        s_margin_ms = MARGIN_MAX_MS;   /* hiç yanıt ölçülemedi: en geniş pay */
+    } else {
+        s_margin_ms = 0;
     }
 
     s_elm_configured = true;
@@ -633,7 +655,7 @@ static void elm327_task(void *arg)
             continue;
         }
 
-        if (wait_response(cmd.timeout_ms)) {
+        if (wait_response(cmd.timeout_ms + s_margin_ms)) {
             s_done_count++;
             if (cmd.cb) {
                 cmd.cb(s_sync_response, cmd.user_data);
@@ -800,4 +822,9 @@ bool elm327_can_queue(bool high_priority)
 void elm327_on_rx_data(const uint8_t *data, size_t len)
 {
     elm327_on_rx(data, len);
+}
+
+uint32_t elm327_timeout_margin_ms(void)
+{
+    return s_margin_ms;
 }

@@ -1,6 +1,7 @@
 #include "obd_pids.h"
 #include "obd_dtc.h"
 #include "elm327.h"
+#include "obd_link.h"
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
 #include "ui.h"
@@ -8,6 +9,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -379,11 +381,69 @@ static bool pid_filter_apply(pid_filter_t *f, float raw, const pid_filter_cfg_t 
     return true;
 }
 
+/* Voltaj kalibrasyonu: klon adaptörlerin ölçümü volt seviyesinde sapabiliyor
+ * (aynı araçta WiFi klon 14.x, BLE klon ~16 V). Çarpan taşıma başına NVS'de. */
+#define VOLT_CAL_MIN   0.70f
+#define VOLT_CAL_MAX   1.30f
+static const char *VOLT_CAL_NS = "obd_volt";
+static float s_volt_cal = 1.0f;
+static int s_volt_cal_type = -1;           /* yüklü çarpanın taşıması */
+static volatile bool s_volt_filter_reset;  /* kalibrasyon değişti: filtreyi tazele */
+
+static const char *volt_cal_key(void)
+{
+    return obd_link_get_type() == OBD_LINK_WIFI ? "cal_wifi" : "cal_ble";
+}
+
+float obd_volt_cal_get(void)
+{
+    if (s_volt_cal_type != (int)obd_link_get_type()) {
+        s_volt_cal_type = (int)obd_link_get_type();
+        s_volt_cal = 1.0f;
+        nvs_handle_t h;
+        if (nvs_open(VOLT_CAL_NS, NVS_READONLY, &h) == ESP_OK) {
+            uint32_t v;
+            if (nvs_get_u32(h, volt_cal_key(), &v) == ESP_OK) {
+                s_volt_cal = v / 10000.0f;
+            }
+            nvs_close(h);
+        }
+    }
+    return s_volt_cal;
+}
+
+void obd_volt_cal_set(float factor)
+{
+    if (factor < VOLT_CAL_MIN) {
+        factor = VOLT_CAL_MIN;
+    } else if (factor > VOLT_CAL_MAX) {
+        factor = VOLT_CAL_MAX;
+    }
+    obd_volt_cal_get();   /* doğru taşımanın anahtarı yüklü olsun */
+    s_volt_cal = factor;
+    nvs_handle_t h;
+    if (nvs_open(VOLT_CAL_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u32(h, volt_cal_key(), (uint32_t)(factor * 10000.0f + 0.5f));
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    s_volt_filter_reset = true;
+    if (s_link.volt_raw > 0.1f) {
+        vehicle_data_set_voltage(s_link.volt_raw * factor);   /* ekranda hemen görünsün */
+    }
+    app_log_info(TAG, "Voltage calibration x%.4f", factor);
+}
+
 static void set_voltage(float v, const char *source)
 {
     s_link.volt_raw = v;
     snprintf(s_link.volt_src, sizeof(s_link.volt_src), "%s",
              strcmp(source, "ATRV") == 0 ? "ATRV" : "0142");
+    v *= obd_volt_cal_get();
+    if (s_volt_filter_reset) {
+        s_volt_filter_reset = false;
+        s_pid_filters[0x42].init = false;
+    }
     if (!voltage_valid(v)) {
         app_log_warn(TAG, "Reject voltage %.2fV from %s (out of range)", v, source);
         return;
@@ -777,7 +837,8 @@ static void discover_cb(const char *resp, void *user_data)
 
 static void advance_disc_on_timeout(uint32_t now)
 {
-    if (!s_disc_busy || now - s_disc_sent_at <= disc_timeout_ms(s_disc_idx) + 300) {
+    if (!s_disc_busy ||
+        now - s_disc_sent_at <= disc_timeout_ms(s_disc_idx) + 300 + elm327_timeout_margin_ms()) {
         return;
     }
 
@@ -874,7 +935,7 @@ static bool poll_entry_by_pid(uint8_t pid, uint32_t now, bool high_priority)
     if (e->pending) {
         const vehicle_profile_t *profile = vehicle_profile_get();
         uint32_t timeout = e->live ? profile->live_timeout_ms : profile->slow_timeout_ms;
-        if (now - e->last_poll > timeout + 500) {
+        if (now - e->last_poll > timeout + 500 + elm327_timeout_margin_ms()) {
             e->pending = false;
             e->last_poll = now;  /* anchor interval to timeout recovery */
             if (s_rc_state > 0 && ++s_rc_fail >= RESP_COUNT_FAIL_MAX) {
@@ -898,7 +959,7 @@ static bool poll_voltage(uint32_t now)
 
     if (s_voltage_pending) {
         /* Önceki voltaj sorgusu halen cevap bekliyor — timeout kontrolü */
-        if (now - s_voltage_last < (uint32_t)ATRV_TIMEOUT_MS + 500) {
+        if (now - s_voltage_last < (uint32_t)ATRV_TIMEOUT_MS + 500 + elm327_timeout_margin_ms()) {
             return false;
         }
         s_voltage_pending = false;  /* timeout, tekrar dene */
@@ -1021,7 +1082,7 @@ static bool poll_batch_rpm_speed(uint32_t now, bool probe)
     const vehicle_profile_t *profile = vehicle_profile_get();
 
     if (s_batch_pending) {
-        if (now - s_batch_last < (uint32_t)profile->live_timeout_ms + 500) {
+        if (now - s_batch_last < (uint32_t)profile->live_timeout_ms + 500 + elm327_timeout_margin_ms()) {
             return false;
         }
         s_batch_pending = false;        /* timeout */

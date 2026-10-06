@@ -39,3 +39,6 @@ bool elm327_protocol_is_can(void);
 /* Link diagnostics: queued commands answered / timed out since boot. */
 uint32_t elm327_done_count(void);
 uint32_t elm327_timeout_count(void);
+
+/* WiFi gecikme payı (ms): kuyruktaki her zaman aşımına eklenir; BLE'de 0. */
+uint32_t elm327_timeout_margin_ms(void);

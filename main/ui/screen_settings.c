@@ -3,6 +3,8 @@
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
 #include "obd_link.h"
+#include "obd_pids.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -32,6 +34,17 @@ typedef struct {
 
 static tile_t s_tiles[TILE_COUNT];
 static lv_obj_t *s_info_lbl;
+
+/* Voltage calibration overlay — opened by tapping the info text. Adjusts the
+ * shown battery voltage in 0.1 V steps against the adapter's raw reading;
+ * stored per transport (BLE / WiFi adapters read differently). */
+#define CAL_PANEL_D     400
+#define CAL_BTN_D       76
+#define CAL_BTN_DX      104
+static lv_obj_t *s_cal_panel;
+static lv_obj_t *s_cal_link;
+static lv_obj_t *s_cal_value;
+static lv_obj_t *s_cal_raw;
 static char s_prev_info[192] = "";
 static char s_prev_active_profile[VEHICLE_PROFILE_ID_LEN] = "";
 
@@ -161,6 +174,109 @@ static void create_tile(lv_obj_t *root, int i, lv_coord_t x, lv_coord_t y,
     tile_refresh(i);
 }
 
+static void cal_refresh(void)
+{
+    const vehicle_data_t *vd = vehicle_data_get();
+    float raw = vd->link.volt_raw;
+    float cal = obd_volt_cal_get();
+
+    lv_label_set_text_static(s_cal_link, obd_link_get_type() == OBD_LINK_WIFI ? "WiFi adapter"
+                                                                             : "BLE adapter");
+    if (raw > 0.1f) {
+        lv_label_set_text_fmt(s_cal_value, "%.1f V", raw * cal);
+        lv_label_set_text_fmt(s_cal_raw, "%s raw %.2f V  \xE2\x80\xA2  x%.3f",
+                              vd->link.volt_src[0] ? vd->link.volt_src : "ATRV", raw, cal);
+    } else {
+        lv_label_set_text_static(s_cal_value, "-- V");
+        lv_label_set_text_fmt(s_cal_raw, "no reading yet  \xE2\x80\xA2  x%.3f", cal);
+    }
+}
+
+static void cal_step_cb(lv_event_t *e)
+{
+    int step = (int)(intptr_t)lv_event_get_user_data(e);   /* -1 / +1 = 0.1 V, 0 = reset */
+    float raw = vehicle_data_get()->link.volt_raw;
+
+    if (step == 0) {
+        obd_volt_cal_set(1.0f);
+    } else if (raw > 0.1f) {
+        float target = (roundf(raw * obd_volt_cal_get() * 10.0f) + step) / 10.0f;
+        obd_volt_cal_set(target / raw);
+    }
+    cal_refresh();
+}
+
+static void cal_open_cb(lv_event_t *e)
+{
+    (void)e;
+    cal_refresh();
+    lv_obj_clear_flag(s_cal_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void cal_close_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_obj_add_flag(s_cal_panel, LV_OBJ_FLAG_HIDDEN);
+}
+
+static lv_obj_t *cal_label(lv_obj_t *parent, const lv_font_t *font, lv_color_t color, lv_coord_t y)
+{
+    lv_obj_t *l = lv_label_create(parent);
+    lv_label_set_text_static(l, "");
+    lv_obj_set_style_text_font(l, font, 0);
+    lv_obj_set_style_text_color(l, color, 0);
+    lv_obj_align(l, LV_ALIGN_CENTER, 0, y);
+    return l;
+}
+
+static void cal_button(lv_obj_t *parent, lv_coord_t x, const char *text, int step)
+{
+    const ui_theme_t *t = theme_get();
+    lv_obj_t *b = lv_obj_create(parent);
+    theme_apply_lens(b, CAL_BTN_D);
+    lv_obj_align(b, LV_ALIGN_CENTER, x, 70);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(b, cal_step_cb, LV_EVENT_CLICKED, (void *)(intptr_t)step);
+    lv_obj_t *l = lv_label_create(b);
+    lv_label_set_text_static(l, text);
+    lv_obj_set_style_text_font(l, step ? t->font_md : &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(l, step ? t->primary : t->text_dim, 0);
+    lv_obj_center(l);
+}
+
+static void cal_create(lv_obj_t *root)
+{
+    const ui_theme_t *t = theme_get();
+
+    s_cal_panel = lv_obj_create(root);
+    theme_apply_lens(s_cal_panel, CAL_PANEL_D);
+    lv_obj_set_style_bg_color(s_cal_panel, t->bg, 0);
+    lv_obj_set_style_bg_opa(s_cal_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_cal_panel, t->primary, 0);
+    lv_obj_set_style_border_width(s_cal_panel, 2, 0);
+    lv_obj_set_style_border_opa(s_cal_panel, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_cal_panel, LV_OBJ_FLAG_CLICKABLE);   /* dokunuşlar alttaki karolara geçmesin */
+    lv_obj_add_flag(s_cal_panel, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *title = cal_label(s_cal_panel, &lv_font_montserrat_14, t->text_dim, -122);
+    lv_label_set_text_static(title, "BATTERY CALIBRATION");
+    lv_obj_set_style_text_letter_space(title, 2, 0);
+
+    s_cal_link  = cal_label(s_cal_panel, t->font_sm, t->secondary, -96);
+    s_cal_value = cal_label(s_cal_panel, t->font_xl, t->text, -44);
+    s_cal_raw   = cal_label(s_cal_panel, &lv_font_montserrat_14, t->text_dim, 4);
+
+    cal_button(s_cal_panel, -CAL_BTN_DX, LV_SYMBOL_MINUS, -1);
+    cal_button(s_cal_panel, 0, "RESET", 0);
+    cal_button(s_cal_panel, CAL_BTN_DX, LV_SYMBOL_PLUS, 1);
+
+    lv_obj_t *done = cal_label(s_cal_panel, t->font_md, t->primary, 146);
+    lv_label_set_text_static(done, "DONE");
+    lv_obj_add_flag(done, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(done, 16);
+    lv_obj_add_event_cb(done, cal_close_cb, LV_EVENT_CLICKED, NULL);
+}
+
 void screen_settings_create(lv_obj_t *parent)
 {
     const ui_theme_t *t = theme_get();
@@ -187,6 +303,11 @@ void screen_settings_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(s_info_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_info_lbl, t->text_dim, 0);
     lv_obj_align(s_info_lbl, LV_ALIGN_CENTER, 0, ST_INFO_Y);
+    lv_obj_add_flag(s_info_lbl, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(s_info_lbl, 8);
+    lv_obj_add_event_cb(s_info_lbl, cal_open_cb, LV_EVENT_CLICKED, NULL);
+
+    cal_create(root);   /* last: drawn above the tiles */
 }
 
 void screen_settings_update(const vehicle_data_snapshot_t *snap)
@@ -199,6 +320,12 @@ void screen_settings_update(const vehicle_data_snapshot_t *snap)
         strncpy(s_prev_active_profile, profile->profile_id, sizeof(s_prev_active_profile) - 1);
         s_prev_active_profile[sizeof(s_prev_active_profile) - 1] = '\0';
         tile_refresh(TILE_PROFILE);
+    }
+
+    static uint32_t s_cal_tick;
+    if (!lv_obj_has_flag(s_cal_panel, LV_OBJ_FLAG_HIDDEN) && lv_tick_elaps(s_cal_tick) > 500) {
+        s_cal_tick = lv_tick_get();
+        cal_refresh();   /* live raw reading while calibrating */
     }
 
     char volt[32] = "--";

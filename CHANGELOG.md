@@ -17,6 +17,20 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 ---
 
+## 2026-10-06 — WiFi: zaman aşımı payı + adaptör başına voltaj kalibrasyonu
+
+**Belirti:** WiFi zor bağlanıyor; "Connected" olup veri hiç/kısmen gelmiyor. BLE hızlı. Voltaj: WiFi klon 14.x, BLE klon ~16 V (aynı araç).
+
+**Teşhis (kod):** canlı PID zaman aşımı 250 ms. K-line yanıtı BLE'de bile ~150–250 ms; WiFi köprüsünün gecikmesi eklenince yanıtlar zaman aşımına düşüyor, geç gelenler atılıyor. 3 zaman aşımında yanıt sayısı eki (`010C1`) kapanıyor → her yanıt +200 ms (ATST) → kısır döngü.
+
+- `elm327.c`: init'te AT komutlarının gidiş-dönüşü ölçülür; **yalnız WiFi'de** pay = 1.5×RTT + 100 ms (150–800 ms), tüm kuyruk zaman aşımlarına ve prompt beklemesine (+pay/2) eklenir. Ölçüm yoksa 800 ms. BLE'de pay 0 (davranış aynı). `elm327_timeout_margin_ms()`.
+- `obd_pids.c`: pending/ATRV/batch/keşif kontrolleri aynı payı ekliyor (çift sorgu olmasın).
+- **Voltaj kalibrasyonu** (`obd_volt_cal_get/set`): ham × çarpan (0.70–1.30), BLE ve WiFi için ayrı NVS anahtarı (`obd_volt/cal_ble`, `cal_wifi`). Değişince filtre sıfırlanır, ekran hemen güncellenir.
+- Settings: **alttaki bilgi yazısına dokun → BATTERY CALIBRATION** penceresi: düzeltilmiş değer, ham değer + kaynak + çarpan, −0.1 / RESET / +0.1, DONE. Açıkken 0.5 sn'de bir canlı yenilenir.
+- Build uyarısız, COM4'ten flash, açılış tek sefer. **Araçta doğrulama bekliyor.** Not: PC simülatörü önceki DTC değişikliğinden beri derlenmiyor (`main/obd` include yolu + DTC kaynakları vcxproj'da yok) — ayrı iş.
+
+---
+
 ## 2026-10-05 — WiFi kararlılığı: kontak kapat/aç sonrası PIDS'te kopma
 
 **Belirti:** WiFi adaptör ilk seferde bağlandı; araç kapatılıp açılınca LINK → ELM → PIDS'e kadar gelip bağlantı gidip geliyordu. Cihazda log alınamadı (yalnız COM4 bağlıydı); kodla teşhis.
