@@ -1,0 +1,3 @@
+# Kanca ve kabuk betikleri her platformda LF (bash  ile çalışmaz)
+*.sh text eol=lf
+.githooks/* text eol=lf

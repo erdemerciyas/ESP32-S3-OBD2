@@ -19,6 +19,13 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 ---
 
+## v1.1.1 — 2026-10-06 — Kanca betikleri LF
+
+- `.gitattributes`: `*.sh` ve `.githooks/*` her platformda LF (Windows'ta CRLF'ye çevrilirse Linux/macOS klonunda bash `\r` hatası verir).
+- Kanca doğrulandı: sürüm artırılmadan yapılan commit `pre-commit: sürüm artırılmadı (1.1.0 → 1.1.0)` ile reddedildi.
+
+---
+
 ## v1.1.0 — 2026-10-06 — Sürümleme kuralı + AURA ilk sürüm numarası
 
 - `version.txt` = **1.1.0** (v1.0.0 = yalnız OBD; 1.1.0 = AURA: NAV + Android köprü + saat + fx3d — aşağıdaki 2026-10-06 girdileri, commit `e599120`). ESP-IDF bunu uygulama sürümü yapar: açılış logu `AURA v1.1.0`, ana menüde altta `v1.1.0`.
