@@ -1,0 +1,56 @@
+[
+  {
+    "id": "intro",
+    "durationInFrames": 292,
+    "voiceFrom": 66,
+    "voiceSeconds": 6.408
+  },
+  {
+    "id": "modes",
+    "durationInFrames": 416,
+    "voiceFrom": 11,
+    "voiceSeconds": 12.24
+  },
+  {
+    "id": "obd",
+    "durationInFrames": 473,
+    "voiceFrom": 11,
+    "voiceSeconds": 14.136
+  },
+  {
+    "id": "diag",
+    "durationInFrames": 429,
+    "voiceFrom": 11,
+    "voiceSeconds": 12.672
+  },
+  {
+    "id": "nav",
+    "durationInFrames": 537,
+    "voiceFrom": 11,
+    "voiceSeconds": 16.272
+  },
+  {
+    "id": "roll",
+    "durationInFrames": 665,
+    "voiceFrom": 11,
+    "voiceSeconds": 20.544
+  },
+  {
+    "id": "clock",
+    "durationInFrames": 275,
+    "voiceFrom": 11,
+    "voiceSeconds": 7.536
+  },
+  {
+    "id": "tech",
+    "durationInFrames": 308,
+    "voiceFrom": 11,
+    "voiceSeconds": 8.664
+  },
+  {
+    "id": "outro",
+    "durationInFrames": 452,
+    "voiceFrom": 9,
+    "voiceSeconds": 9.744
+  }
+]

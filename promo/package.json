@@ -1,0 +1,38 @@
+{
+  "name": "aura-promo",
+  "version": "1.0.0",
+  "description": "AURA promo video (Remotion) — English & Turkish",
+  "repository": {},
+  "license": "MIT",
+  "private": true,
+  "dependencies": {
+    "@remotion/cli": "4.0.533",
+    "@remotion/google-fonts": "4.0.533",
+    "@remotion/media": "4.0.533",
+    "@remotion/transitions": "4.0.533",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.533"
+  },
+  "devDependencies": {
+    "@remotion/eslint-config-flat": "4.0.533",
+    "@types/react": "19.2.7",
+    "@types/web": "0.0.166",
+    "eslint": "9.39.5",
+    "msedge-tts": "^2.0.9",
+    "prettier": "3.8.1",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "shots": "node -e \"require('fs').cpSync('../docs/screenshots','public/shots',{recursive:true})\"",
+    "voice:en": "node scripts/tts.mjs en",
+    "voice:tr": "node scripts/tts.mjs tr",
+    "music": "node scripts/music.mjs",
+    "assets": "npm run shots && npm run voice:en && npm run voice:tr && npm run music",
+    "dev": "remotion studio",
+    "render:en": "remotion render AuraPromoEN out/AURA-promo-en.mp4 --codec=h264 --crf=18 --audio-bitrate=192k",
+    "render:tr": "remotion render AuraPromoTR out/AURA-promo-tr.mp4 --codec=h264 --crf=18 --audio-bitrate=192k",
+    "thumbs": "remotion still ThumbnailEN out/AURA-thumbnail-en.png && remotion still ThumbnailTR out/AURA-thumbnail-tr.png",
+    "lint": "eslint src && tsc"
+  }
+}

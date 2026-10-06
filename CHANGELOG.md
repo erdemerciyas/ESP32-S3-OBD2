@@ -19,6 +19,14 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 ---
 
+## v1.2.1 — 2026-10-07 — Tanıtım videosu (EN + TR)
+
+Firmware ve Android uygulamasında değişiklik yok; derlenmiş dosyalar v1.2.0 ile aynı.
+
+- **`promo/`**: Remotion ile tanıtım videosu kaynağı, İngilizce ve Türkçe. 9 sahne (açılış, modlar, OBD, teşhis, NAV, ROLL, 3D saat, "kodla çiziliyor", GitHub); tüm ekranlar `docs/screenshots`teki gerçek cihaz kareleri. Seslendirme: Edge nöral sesler (varsayılan) veya ElevenLabs (`scripts/tts.mjs <dil> elevenlabs`); müzik `scripts/music.mjs` ile sentezleniyor (telifsiz). Sahne süreleri seslendirme uzunluğundan hesaplanıyor, YouTube için SRT altyazı da üretiliyor.
+- **Sürüm v1.2.1 eki**: `AURA-promo-en.mp4` (1:56), `AURA-promo-tr.mp4` (2:04), SRT altyazılar, 1280×720 kapak görselleri. Videolar repoya konmadı (~80 MB), yalnız sürüm ekinde.
+- README: "Promo video" bölümü (kapak görselleri `docs/promo/`), proje yapısına `promo/`, Türkçe özete video bağlantısı.
+
 ## v1.2.0 — 2026-10-07 — ROLL: performans ölçümü (F0 ölçüm zinciri) + ayarlar + kayıt görüntüleyici
 
 Üçüncü mod **ROLL**: Dragy benzeri hızlanma / mesafe / fren ölçümü. Harici GNSS yok; hız kaynağı önceliği: telefon bağlı ve GPS fix'i yeterliyse **telefon GPS'i** (Doppler), değilse **BLE ELM327 üzerinden ECU hızı**; aradaki boşlukları IMU (100 Hz) doldurur. Bu sürüm F0: ölçüm altyapısı + kayıt + analiz; cihazdaki koşu motoru (hazırlanma, canlı süre, timeslip) F2'de, gerçek kayıtlarla ayarlanacak.

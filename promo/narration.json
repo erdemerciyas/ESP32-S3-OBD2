@@ -1,0 +1,47 @@
+[
+  {
+    "id": "intro",
+    "en": "What if your car's dashboard could do more? Meet AURA.",
+    "tr": "Aracınızın göstergesi daha fazlasını yapabilseydi? Karşınızda AURA."
+  },
+  {
+    "id": "modes",
+    "en": "AURA is open-source firmware that turns a tiny ESP32-S3 round touch display into a smart in-car screen, with three modes: OBD, Navigation, and Roll.",
+    "tr": "AURA, küçük bir ESP32-S3 yuvarlak dokunmatik ekranı akıllı bir araç ekranına dönüştüren açık kaynaklı bir yazılım. Üç modu var: OBD, Navigasyon ve Roll."
+  },
+  {
+    "id": "obd",
+    "en": "In OBD mode, a cheap ELM327 adapter, Bluetooth or WiFi, becomes a full digital gauge cluster. RPM, speed, coolant temperature and battery voltage, silky smooth at sixty frames per second.",
+    "tr": "OBD modunda ucuz bir ELM327 adaptörü, Bluetooth ya da WiFi, tam bir dijital gösterge paneline dönüşür. Devir, hız, su sıcaklığı ve akü voltajı, saniyede altmış kare akıcılıkla."
+  },
+  {
+    "id": "diag",
+    "en": "Watch every supported sensor live, read and clear trouble codes, and check pitch, roll and G-forces with the built-in motion sensor. It speaks CAN, K-line and older protocols too.",
+    "tr": "Desteklenen tüm sensörleri canlı izleyin, arıza kodlarını okuyup silin, dahili hareket sensörüyle eğimi ve G kuvvetini görün. CAN, K-line ve eski protokollerle de çalışır."
+  },
+  {
+    "id": "nav",
+    "en": "Switch to NAV, and the AURA Bridge app on your Android phone mirrors turn-by-turn directions from Google Maps, Waze or Yandex. A ring fills as the turn gets closer, the 3D road bends toward it, and speed cameras turn your speed red.",
+    "tr": "NAV moduna geçin; Android telefonunuzdaki AURA Köprü uygulaması Google Haritalar, Waze veya Yandex'in yol tarifini ekrana taşır. Dönüş yaklaştıkça halka dolar, 3D yol dönüşe doğru kıvrılır, radar uyarısında hızınız kırmızıya döner."
+  },
+  {
+    "id": "roll",
+    "en": "ROLL mode is a Dragy-style performance timer. Time zero to one hundred, sixty to two hundred, or your own ranges. Speed comes from the phone's GPS or the car's ECU, while the motion sensor fills the gaps a hundred times a second. Every run is saved on your phone.",
+    "tr": "ROLL modu, Dragy benzeri bir performans ölçer. Sıfırdan yüze, altmıştan iki yüze ya da kendi aralıklarınızı ölçün. Hız telefonun GPS'inden veya aracın motor beyninden gelir; aradaki boşlukları hareket sensörü saniyede yüz kez doldurur. Her koşu telefonunuza kaydedilir."
+  },
+  {
+    "id": "clock",
+    "en": "Hold the screen for four seconds, anywhere, and a 3D holographic clock appears, set automatically from your phone.",
+    "tr": "Herhangi bir ekranda dört saniye basılı tutun; saati telefonunuzdan ayarlanan 3D holografik saat belirir."
+  },
+  {
+    "id": "tech",
+    "en": "Everything you see is drawn in code, with LVGL and a custom 3D renderer. No images. No video.",
+    "tr": "Gördüğünüz her şey kodla çiziliyor: LVGL ve özel bir 3D motor. Ne resim var, ne video."
+  },
+  {
+    "id": "outro",
+    "en": "AURA is free and open source. The firmware and the Android app are on GitHub. Build your own, and drive smarter.",
+    "tr": "AURA ücretsiz ve açık kaynak. Yazılım ve Android uygulaması GitHub'da. Kendiniz yapın, daha akıllı sürün."
+  }
+]

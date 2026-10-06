@@ -29,8 +29,20 @@ Everything is rendered on-device with **LVGL 8** plus **fx3d**, a small software
 
 ---
 
+## Promo video
+
+| 🇬🇧 English (1:56) | 🇹🇷 Türkçe (2:04) |
+|:---:|:---:|
+| <a href="https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/download/v1.2.1/AURA-promo-en.mp4"><img src="docs/promo/thumbnail-en.jpg" width="400" alt="AURA promo video — English"></a> | <a href="https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/download/v1.2.1/AURA-promo-tr.mp4"><img src="docs/promo/thumbnail-tr.jpg" width="400" alt="AURA tanıtım videosu — Türkçe"></a> |
+| [MP4](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/download/v1.2.1/AURA-promo-en.mp4) · [subtitles](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/download/v1.2.1/AURA-promo-en.srt) | [MP4](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/download/v1.2.1/AURA-promo-tr.mp4) · [altyazı](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/download/v1.2.1/AURA-promo-tr.srt) |
+
+The video is built from the real firmware screenshots with [Remotion](https://www.remotion.dev/); its source is in [`promo/`](promo/).
+
+---
+
 ## Table of contents
 
+- [Promo video](#promo-video)
 - [Highlights](#highlights)
 - [Screenshots](#screenshots)
 - [How the device is organised](#how-the-device-is-organised)
@@ -553,6 +565,7 @@ Each scene renders only while its view is visible. The NAV background builds its
 │   ├── roll_analyze.py        # ROLL log analysis: sources, OBD k/τ, runs, slope, plot
 │   └── verify_round_lcd_layout.py
 ├── simulator/                 # LVGL PC simulator (Visual Studio)
+├── promo/                     # promo video source (Remotion, EN + TR)
 ├── docs/                      # website, screenshots, dev rules, design notes
 ├── CHANGELOG.md               # dated history (Turkish), status, open items
 ├── partitions.csv             # NVS · PHY · 3 MB factory app
@@ -653,6 +666,7 @@ UI strings live next to each screen in `main/ui/*.c`, and fonts include the Turk
 - **NAV modu:** **AURA Köprü** Android uygulaması Yandex Navigasyon / Yandex Haritalar / Google Haritalar / Waze bildirimlerinden rehberliği BLE ile gönderir. Ekranda ok, mesafe, yaklaşma halkası, dönüşe doğru kıvrılan canlı 3D yol, radar uyarısı (limit aşılırsa hız kırmızı), karanlık harita ve sürüş özeti görünür.
 - **ROLL modu (v1.2.0):** Dragy benzeri performans ölçümü: 0-100, 60-200, 80-250, kendi aralıkların, mesafe koşuları ve frenleme. Telefon bağlıysa hız **telefon GPS'inden** (Doppler), değilse **BLE ELM327 üzerinden araç ECU'sundan** alınır; aradaki boşlukları **IMU 100 Hz** doldurur. Tüm örnekler ESP saatine µs hassasiyetle damgalanır. Kişisel ayarlar (hedefler, kaynak, eğim sınırı, GPS eşikleri, OBD düzeltmesi, araç profili) telefondaki **ROLL ayarları** ekranındadır. Kayıtlar telefonda tutulur; **ROLL kayıtları** ekranında sonuçlar, grafik ve koşu ayrıntıları görülür, sonuçlar veya ham kayıt CSV olarak dışa aktarılır.
 - **Saat:** tarih ve saat telefondan ayarlanır. **Her ekranda 4 sn basılı tutunca** 3D holografik saat açılır, dokununca geri dönülür. Ayarlar → **Clock** açıksa OBD / ana menüde 30 sn dokunulmazsa kendiliğinden gelir; **NAV modunda asla kendiliğinden gelmez**.
+- **Tanıtım videosu:** Türkçe ve İngilizce videolar [v1.2.1 sürümünde](https://github.com/erdemerciyas/ESP32-S3-OBD2/releases/tag/v1.2.1); kaynağı `promo/` klasöründe (Remotion).
 - Kurulum: ESP-IDF 5.3.5 ile `idf.py build` → `idf.py -p COM3 flash`. Android uygulaması için `android-bridge` içinde `gradle assembleRelease`. Ayrıntılı geçmiş: [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
