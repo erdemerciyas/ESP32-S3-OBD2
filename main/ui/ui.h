@@ -15,11 +15,12 @@ enum {
     UI_TAB_COUNT,
 };
 
-/* Üst düzey görünümler: mod seçimi, OBD sekmeleri, navigasyon. */
+/* Üst düzey görünümler: mod seçimi, OBD sekmeleri, navigasyon, performans. */
 enum {
     UI_VIEW_HOME = 0,
     UI_VIEW_OBD,
     UI_VIEW_NAV,
+    UI_VIEW_ROLL,
 };
 
 void ui_init(void);
@@ -52,6 +53,8 @@ lv_obj_t *screen_nav_create(lv_obj_t *parent);
 void screen_home_update(void);
 void screen_nav_update(void);
 void screen_nav_next_page(void);
+lv_obj_t *screen_roll_create(lv_obj_t *parent);
+void screen_roll_update(void);
 
 /* CONFIG_UI_SHOT_TOUR: README ekran görüntüsü turu (yoksa boş) */
 void ui_shots_start(void);

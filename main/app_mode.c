@@ -1,6 +1,7 @@
 #include "app_mode.h"
 #include "obd_link.h"
 #include "nav_service.h"
+#include "roll_feed.h"
 #include "app_log.h"
 
 #include "freertos/FreeRTOS.h"
@@ -17,14 +18,49 @@ static const char *NVS_KEY_MODE = "mode";
 static volatile app_mode_t s_target = APP_MODE_OBD;   /* istenen */
 static volatile app_mode_t s_cur = APP_MODE_OBD;       /* radyonun gerçek durumu */
 static TaskHandle_t s_task;
+static bool s_nav_on;   /* telefon servisi açık (NAV ve ROLL ortak) */
 
 static const char *mode_name(app_mode_t m)
 {
-    return m == APP_MODE_NAV ? "NAV" : "OBD";
+    return m == APP_MODE_NAV ? "NAV" : m == APP_MODE_ROLL ? "ROLL" : "OBD";
+}
+
+static const char *mode_tag(app_mode_t m)
+{
+    return m == APP_MODE_NAV ? "nav" : m == APP_MODE_ROLL ? "roll" : "obd";
 }
 
 /* Durdurma işlemleri bloklar (WiFi stop ~11 sn, NimBLE deinit); sıra önemli:
- * önce eski radyo tamamen kapanır, sonra yenisi açılır. */
+ * önce gereksiz radyo kapanır, sonra gerekenler açılır. NAV ↔ ROLL geçişinde
+ * telefon bağlantısı kopmaz. */
+static void apply_radios(app_mode_t to, bool boot)
+{
+    bool want_nav = to != APP_MODE_OBD;
+    bool want_obd = to == APP_MODE_OBD ||
+                    (to == APP_MODE_ROLL && obd_link_get_type() == OBD_LINK_BLE);
+
+    roll_feed_set_active(to == APP_MODE_ROLL);
+    if (!want_obd) {
+        obd_link_suspend();   /* açılışta henüz başlamadı: yalnız işaretler */
+    }
+    if (!want_nav && s_nav_on) {
+        nav_service_stop();
+        s_nav_on = false;
+    }
+    nav_service_set_mode(mode_tag(to));
+    if (want_nav && !s_nav_on) {
+        nav_service_start();
+        s_nav_on = true;
+    }
+    if (want_obd) {
+        if (boot) {
+            obd_link_start();
+        } else {
+            obd_link_resume();
+        }
+    }
+}
+
 static void mode_task(void *arg)
 {
     (void)arg;
@@ -32,13 +68,7 @@ static void mode_task(void *arg)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         while (s_cur != s_target) {
             app_mode_t to = s_target;
-            if (to == APP_MODE_NAV) {
-                obd_link_suspend();
-                nav_service_start();
-            } else {
-                nav_service_stop();
-                obd_link_resume();
-            }
+            apply_radios(to, false);
             s_cur = to;
             app_log_info(TAG, "Mode: %s", mode_name(to));
         }
@@ -50,7 +80,7 @@ void app_mode_init(void)
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
         uint8_t v;
-        if (nvs_get_u8(h, NVS_KEY_MODE, &v) == ESP_OK && v <= APP_MODE_NAV) {
+        if (nvs_get_u8(h, NVS_KEY_MODE, &v) == ESP_OK && v <= APP_MODE_ROLL) {
             s_target = (app_mode_t)v;
         }
         nvs_close(h);
@@ -66,12 +96,7 @@ void app_mode_init(void)
 
 void app_mode_start(void)
 {
-    if (s_cur == APP_MODE_NAV) {
-        obd_link_suspend();   /* henüz başlamadı: yalnız işaretler */
-        nav_service_start();
-    } else {
-        obd_link_start();
-    }
+    apply_radios(s_cur, true);
 }
 
 void app_mode_set(app_mode_t mode)

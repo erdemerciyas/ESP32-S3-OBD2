@@ -1,15 +1,11 @@
 #include "nav_transport.h"
+#include "ble_host.h"
 #include "app_log.h"
 
 #include "esp_log.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
-#include "host/util/util.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
 
 #include <string.h>
 
@@ -20,10 +16,10 @@
  *   RX      7c6a0002-…  telefon → ESP (write / write without response)
  *   TX      7c6a0003-…  ESP → telefon (notify)
  *   MAP     7c6a0004-…  telefon → ESP harita JPEG parçaları (onaylı write: kayıpsız)
+ *   TEL     7c6a0005-…  ESP → telefon ikili ROLL telemetrisi (notify, roll_feed.h)
  *
  * Her yazma tek bir mesajdır (uzun yazmalar NimBLE'da birleştirilir).
- * NimBLE yığını yalnızca NAV modunda açıktır; OBD'nin ble_obd'si o sırada
- * kapalıdır (app_mode sırayı garanti eder). */
+ * Yığın paylaşılır (ble_host): ROLL modunda ble_obd ile aynı anda açıktır. */
 
 static const char *TAG = "nav_ble";
 
@@ -37,6 +33,7 @@ static const ble_uuid128_t s_svc_uuid = NAV_UUID(0x01);
 static const ble_uuid128_t s_rx_uuid  = NAV_UUID(0x02);
 static const ble_uuid128_t s_tx_uuid  = NAV_UUID(0x03);
 static const ble_uuid128_t s_map_uuid = NAV_UUID(0x04);
+static const ble_uuid128_t s_tel_uuid = NAV_UUID(0x05);
 
 static nav_transport_rx_cb_t   s_rx_cb;
 static nav_transport_link_cb_t s_link_cb;
@@ -44,7 +41,8 @@ static volatile bool s_running;
 static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_tx_handle;
 static bool     s_tx_subscribed;
-static uint8_t  s_own_addr_type;
+static uint16_t s_tel_handle;
+static bool     s_tel_subscribed;
 static uint8_t  s_rx_buf[NAV_RX_MAX + 1];
 
 static void start_advertising(void);
@@ -91,6 +89,12 @@ static const struct ble_gatt_svc_def s_svcs[] = {
                 .flags = BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &s_tx_handle,
             },
+            {
+                .uuid = &s_tel_uuid.u,
+                .access_cb = chr_access_cb,
+                .flags = BLE_GATT_CHR_F_NOTIFY,
+                .val_handle = &s_tel_handle,
+            },
             { 0 },
         },
     },
@@ -116,6 +120,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         if (ble_gap_conn_find(event->connect.conn_handle, &desc) == 0) {
             s_conn = event->connect.conn_handle;
             s_tx_subscribed = false;
+            s_tel_subscribed = false;
             app_log_info(TAG, "Phone connected (status=%d)", event->connect.status);
             set_link(true);
         } else if (s_running) {
@@ -127,6 +132,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         app_log_warn(TAG, "Phone disconnected, reason=%d", event->disconnect.reason);
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         s_tx_subscribed = false;
+        s_tel_subscribed = false;
         set_link(false);
         if (s_running) {
             start_advertising();
@@ -140,6 +146,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == s_tx_handle) {
             s_tx_subscribed = event->subscribe.cur_notify;
+        } else if (event->subscribe.attr_handle == s_tel_handle) {
+            s_tel_subscribed = event->subscribe.cur_notify;
         }
         break;
     case BLE_GAP_EVENT_MTU:
@@ -171,7 +179,7 @@ static void start_advertising(void)
     struct ble_gap_adv_params params = {0};
     params.conn_mode = BLE_GAP_CONN_MODE_UND;
     params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event_cb, NULL);
+    rc = ble_gap_adv_start(ble_host_own_addr_type(), NULL, BLE_HS_FOREVER, &params, gap_event_cb, NULL);
     if (rc != 0 && rc != BLE_HS_EALREADY) {
         app_log_error(TAG, "adv start rc=%d", rc);
     }
@@ -179,8 +187,7 @@ static void start_advertising(void)
 
 static void on_sync(void)
 {
-    if (ble_hs_util_ensure_addr(0) != 0 || ble_hs_id_infer_auto(0, &s_own_addr_type) != 0) {
-        app_log_error(TAG, "No BLE address");
+    if (!s_running) {
         return;
     }
     app_log_info(TAG, "Advertising as %s", NAV_DEVICE_NAME);
@@ -189,14 +196,20 @@ static void on_sync(void)
 
 static void on_reset(int reason)
 {
-    ESP_LOGW(TAG, "NimBLE reset, reason=%d", reason);
+    (void)reason;
+    s_conn = BLE_HS_CONN_HANDLE_NONE;
+    s_tx_subscribed = false;
+    s_tel_subscribed = false;
 }
 
-static void host_task(void *param)
+static const ble_host_client_t s_client = {
+    .on_sync = on_sync,
+    .on_reset = on_reset,
+};
+
+static void ble_init(void)
 {
-    (void)param;
-    nimble_port_run();
-    nimble_port_freertos_deinit();
+    ble_host_init(s_svcs, NAV_DEVICE_NAME);
 }
 
 static bool ble_start(nav_transport_rx_cb_t rx, nav_transport_link_cb_t link)
@@ -206,31 +219,11 @@ static bool ble_start(nav_transport_rx_cb_t rx, nav_transport_link_cb_t link)
     }
     s_rx_cb = rx;
     s_link_cb = link;
-
-    esp_err_t err = nimble_port_init();
-    if (err != ESP_OK) {
-        app_log_error(TAG, "NimBLE init failed: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    ble_hs_cfg.sync_cb = on_sync;
-    ble_hs_cfg.reset_cb = on_reset;
-
-    ble_svc_gap_init();
-    ble_svc_gatt_init();
-    int rc = ble_gatts_count_cfg(s_svcs);
-    if (rc == 0) {
-        rc = ble_gatts_add_svcs(s_svcs);
-    }
-    if (rc != 0) {
-        app_log_error(TAG, "GATT register rc=%d", rc);
-        nimble_port_deinit();
-        return false;
-    }
-    ble_svc_gap_device_name_set(NAV_DEVICE_NAME);
-
     s_running = true;
-    nimble_port_freertos_init(host_task);
+    if (!ble_host_acquire(&s_client)) {
+        s_running = false;
+        return false;
+    }
     return true;
 }
 
@@ -240,29 +233,45 @@ static void ble_stop(void)
         return;
     }
     s_running = false;   /* olay yolları artık reklamı yeniden başlatmaz */
-    nimble_port_stop();  /* bağlantıyı/reklamı kapatır, host görevi biter */
-    nimble_port_deinit();
+    ble_gap_adv_stop();
+    if (s_conn != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(s_conn, BLE_ERR_REM_USER_CONN_TERM);
+    }
+    ble_host_release(&s_client);   /* son kullanıcıysa yığını kapatır */
     s_conn = BLE_HS_CONN_HANDLE_NONE;
     s_tx_subscribed = false;
+    s_tel_subscribed = false;
     set_link(false);
-    app_log_info(TAG, "BLE stack stopped");
+    app_log_info(TAG, "Phone link stopped");
 }
 
-static bool ble_send(const uint8_t *data, size_t len)
+static bool notify(uint16_t handle, bool subscribed, const uint8_t *data, size_t len)
 {
-    if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE || !s_tx_subscribed) {
+    if (!s_running || s_conn == BLE_HS_CONN_HANDLE_NONE || !subscribed) {
         return false;
     }
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (!om) {
         return false;
     }
-    return ble_gatts_notify_custom(s_conn, s_tx_handle, om) == 0;
+    return ble_gatts_notify_custom(s_conn, handle, om) == 0;
+}
+
+static bool ble_send(const uint8_t *data, size_t len)
+{
+    return notify(s_tx_handle, s_tx_subscribed, data, len);
+}
+
+static bool ble_send_tel(const uint8_t *data, size_t len)
+{
+    return notify(s_tel_handle, s_tel_subscribed, data, len);
 }
 
 const nav_transport_t nav_transport_ble = {
     .name = "ble",
+    .init = ble_init,
     .start = ble_start,
     .stop = ble_stop,
     .send = ble_send,
+    .send_tel = ble_send_tel,
 };

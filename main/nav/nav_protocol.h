@@ -5,13 +5,14 @@
 #include <stdint.h>
 #include "nav_state.h"
 #include "nav_map.h"
+#include "roll_feed.h"
 
 /* Telefon ↔ ESP32 navigasyon protokolü (v1) — taşıma ve kodlamadan bağımsız
  * mesaj modeli. Kodlayıcı (codec) bayt ↔ nav_msg_t çevirir: bugün JSON,
  * ileride ikili paket + CRC aynı arayüzle eklenir.
  *
- * Telefon → ESP:  hello, start, upd, stop, ping, loc, alert
- * ESP → telefon:  status (hello yanıtı), pong, mapack, mapreq
+ * Telefon → ESP:  hello, start, upd, stop, ping, loc, alert, gnss, rcfg (ROLL)
+ * ESP → telefon:  status (hello yanıtı + mod değişiminde), pong, mapack, mapreq, rcfgack
  *
  * upd'de yalnızca gelen alanlar uygulanır (fields bitleri); kaynak bir alanı
  * bilmiyorsa (ör. Yandex sokak adı) göndermez, ekrandaki değer korunur. */
@@ -32,6 +33,9 @@ typedef enum {
     NAV_MSG_MAP,       /* harita resmi başlığı; baytlar MAP kanalından */
     NAV_MSG_MAP_ACK,   /* ESP → telefon: harita sonucu (map.id, ok, src = neden) */
     NAV_MSG_MAP_REQ,   /* ESP → telefon: harita iste (src = "fit" | "follow", map.zoom) */
+    NAV_MSG_GNSS,      /* telefon GNSS fix'i (ROLL): Doppler hızı, doğruluk, rakım */
+    NAV_MSG_RCFG,      /* ROLL ayarları (gövde roll_cfg_parse_json ile okunur) */
+    NAV_MSG_RCFG_ACK,  /* ESP → telefon: ayar sonucu (src boş = ok, değilse neden) */
 } nav_msg_type_t;
 
 enum {
@@ -46,6 +50,7 @@ enum {
     NAV_F_DEST    = 1 << 8,
     NAV_F_POS     = 1 << 9,
     NAV_F_TIME    = 1 << 10,   /* hello / ping: telefon saati (ts, tz) */
+    NAV_F_MONO    = 1 << 11,   /* ping: telefon monoton saati (m) — saat senkronu */
 };
 
 typedef struct {
@@ -62,13 +67,17 @@ typedef struct {
     char           road[NAV_TEXT_LEN];
     char           next_road[NAV_TEXT_LEN];
     char           destination[NAV_TEXT_LEN];
-    char           src[16];           /* hello: veri kaynağı ("yandex", "gmaps") */
+    char           src[16];           /* hello: veri kaynağı ("yandex", "gmaps");
+                                         status: ESP modu ("obd", "nav", "roll") */
     double         lat;
     double         lon;
     int64_t        ts;                /* NAV_F_TIME: UTC epoch saniye */
     int16_t        tz_min;            /* NAV_F_TIME: yerel ofset, dakika */
     nav_alert_t    alert;             /* NAV_MSG_ALERT */
     nav_map_hdr_t  map;               /* NAV_MSG_MAP */
+    int64_t        mono_us;           /* NAV_F_MONO: ping'de telefon µs; pong'da yankı */
+    int64_t        esp_us;            /* pong: ESP µs (esp_timer) */
+    roll_gnss_t    gnss;              /* NAV_MSG_GNSS */
 } nav_msg_t;
 
 typedef struct {

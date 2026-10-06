@@ -6,7 +6,11 @@
 #include "nav_track.h"
 #include "app_log.h"
 #include "clock.h"
+#include "roll_feed.h"
+#include "roll_cfg.h"
 #include "sdkconfig.h"
+
+#include "esp_timer.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -25,11 +29,24 @@ static const char *TAG = "nav";
 static const nav_transport_t *s_transport = &nav_transport_ble;
 static const nav_codec_t     *s_codec = &nav_codec_json;
 static bool s_trip_open;   /* start geldi, stop gelmedi */
+static const char *s_mode = "obd";   /* status'ta telefona bildirilen ESP modu */
+
+static void send_msg(const nav_msg_t *msg)
+{
+    uint8_t buf[96];
+    size_t n = s_codec->encode(msg, buf, sizeof(buf));
+    if (n) {
+        s_transport->send(buf, n);
+    }
+}
 
 static void reply(nav_msg_type_t type, uint32_t seq)
 {
     nav_msg_t msg = { .type = type, .seq = seq };
-    uint8_t buf[64];
+    if (type == NAV_MSG_STATUS) {
+        snprintf(msg.src, sizeof(msg.src), "%s", s_mode);
+    }
+    uint8_t buf[96];
     size_t n = s_codec->encode(&msg, buf, sizeof(buf));
     if (n) {
         s_transport->send(buf, n);
@@ -64,6 +81,28 @@ static void on_rx(int ch, const uint8_t *data, size_t len)
     nav_msg_t msg;
     if (!s_codec->decode(data, len, &msg)) {
         app_log_warn(TAG, "Bad message (%u bytes)", (unsigned)len);
+        return;
+    }
+
+    if (msg.type == NAV_MSG_GNSS) {
+        if (!msg.gnss.synced) {
+            msg.gnss.t_us = esp_timer_get_time();   /* senkron yok: varış zamanı */
+        }
+        roll_feed_gnss(&msg.gnss);
+        return;
+    }
+    if (msg.type == NAV_MSG_RCFG) {
+        roll_cfg_t cfg;
+        const char *why = "json";
+        nav_msg_t ack = { .type = NAV_MSG_RCFG_ACK };
+        if (roll_cfg_parse_json((const char *)data, len, &cfg) && roll_cfg_set(&cfg, &why)) {
+            why = NULL;
+        }
+        if (why) {
+            app_log_warn(TAG, "ROLL settings rejected: %s", why);
+            snprintf(ack.src, sizeof(ack.src), "%s", why);
+        }
+        send_msg(&ack);
         return;
     }
 
@@ -122,7 +161,13 @@ static void on_rx(int ch, const uint8_t *data, size_t len)
         app_log_info(TAG, "Hello from %s (v%u)", msg.src[0] ? msg.src : "?", msg.version);
         reply(NAV_MSG_STATUS, msg.seq);
     } else if (msg.type == NAV_MSG_PING) {
-        reply(NAV_MSG_PONG, msg.seq);
+        nav_msg_t pong = { .type = NAV_MSG_PONG, .seq = msg.seq };
+        if (msg.fields & NAV_F_MONO) {
+            pong.fields = NAV_F_MONO;
+            pong.mono_us = msg.mono_us;
+            pong.esp_us = esp_timer_get_time();
+        }
+        send_msg(&pong);
     } else if (msg.type == NAV_MSG_START || msg.type == NAV_MSG_STOP) {
         app_log_info(TAG, "Route %s", msg.type == NAV_MSG_START ? "started" : "stopped");
     }
@@ -145,6 +190,7 @@ static void on_map_result(uint8_t id, const char *why)
 
 static void on_link(bool up)
 {
+    roll_feed_set_phone(up);
     if (up) {
         nav_state_t *st = nav_state_begin();
         st->connected = true;
@@ -160,6 +206,9 @@ void nav_service_init(void)
     nav_track_init();
     nav_map_init();
     nav_map_set_result_cb(on_map_result);
+    if (s_transport->init) {
+        s_transport->init();
+    }
 }
 
 void nav_service_start(void)
@@ -182,6 +231,17 @@ void nav_service_stop(void)
     }
     nav_state_reset();
     app_log_info(TAG, "Nav service stopped");
+}
+
+void nav_service_set_mode(const char *mode)
+{
+    s_mode = mode;
+    reply(NAV_MSG_STATUS, 0);   /* bağlı değilse send sessizce düşer */
+}
+
+bool nav_service_send_tel(const uint8_t *data, size_t len)
+{
+    return !NAV_USE_MOCK && s_transport->send_tel && s_transport->send_tel(data, len);
 }
 
 void nav_service_request_map(bool fit, int zoom)

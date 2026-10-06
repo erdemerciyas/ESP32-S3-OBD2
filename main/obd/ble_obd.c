@@ -6,13 +6,11 @@
 #include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
+#include "ble_host.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/util/util.h"
-#include "services/gap/ble_svc_gap.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -28,6 +26,13 @@ static const char *NVS_KEY_ADDR = "addr";
 #define GATT_DISCOVERY_TIMEOUT_MS 6000  /* servis keşfi asılı kalırsa kurtar */
 #define DIRECT_FAIL_MAX    3            /* bu kadar direkt hatadan sonra scan'e düş (adres korunur) */
 #define BACKOFF_MAX_MS     10000        /* scan bulunamayınca üst sınır bekleme */
+
+/* Tarama/bağlantı başlatma penceresi (0.625 ms birim). Yığın yalnız bizimken
+ * %100 (en hızlı bulma); telefonla paylaşılırken (ROLL) %30 — aksi halde
+ * adaptör yokken sürekli tarama telefon bağlantısının radyo zamanını yer. */
+#define SCAN_ITVL_SHARED   0x00A0       /* 100 ms */
+#define SCAN_WIN_SHARED    0x0030       /* 30 ms */
+#define SCAN_FAST          0x0010       /* 10 ms / 10 ms */
 
 static ble_obd_rx_cb_t s_rx_cb;
 static ble_obd_state_t s_state = BLE_OBD_DISCONNECTED;
@@ -69,7 +74,6 @@ static int ble_obd_on_disc_svc(uint16_t conn_handle, const struct ble_gatt_error
                                const struct ble_gatt_svc *svc, void *arg);
 static void ble_obd_on_sync(void);
 static void ble_obd_on_reset(int reason);
-static void ble_obd_host_task(void *param);
 static void schedule_reconnect(uint32_t delay_ms);
 static void cancel_connect_watchdog(void);
 static void start_connect_watchdog(uint32_t timeout_ms);
@@ -399,11 +403,12 @@ static void start_scan(void)
     if (!s_running) {
         return;   /* durdurulurken gelen iptal olayı taramayı tetiklemesin */
     }
+    bool shared = ble_host_client_count() > 1;
     struct ble_gap_disc_params params = {
         .passive = 0,
         .filter_duplicates = 1,
-        .itvl = 0x0010,               /* 10ms */
-        .window = 0x0010,             /* 10ms */
+        .itvl = shared ? SCAN_ITVL_SHARED : SCAN_FAST,
+        .window = shared ? SCAN_WIN_SHARED : SCAN_FAST,
     };
 
     s_state = BLE_OBD_SCANNING;
@@ -422,9 +427,10 @@ static void start_scan(void)
 
 static int connect_peer(const ble_addr_t *addr, const char *name)
 {
+    bool shared = ble_host_client_count() > 1;
     struct ble_gap_conn_params conn_params = {
-        .scan_itvl = 0x0010,           /* 10ms */
-        .scan_window = 0x0010,         /* 10ms */
+        .scan_itvl = shared ? SCAN_ITVL_SHARED : SCAN_FAST,
+        .scan_window = shared ? SCAN_WIN_SHARED : SCAN_FAST,
         .itvl_min = 6,                 /* 7.5ms — min allowed by BLE spec */
         .itvl_max = 12,                /* 15ms — tight for max throughput */
         .latency = 0,
@@ -563,7 +569,9 @@ static void ble_obd_on_reset(int reason)
 
 static void ble_obd_on_sync(void)
 {
-    ble_svc_gap_device_name_set("OBD-Dashboard");
+    if (!s_running) {
+        return;
+    }
     load_saved_addr();
 
     if (s_has_saved_addr && !addr_is_valid(s_saved_addr)) {
@@ -574,11 +582,10 @@ static void ble_obd_on_sync(void)
     try_auto_connect();
 }
 
-static void ble_obd_host_task(void *param)
-{
-    nimble_port_run();
-    nimble_port_freertos_deinit();
-}
+static const ble_host_client_t s_client = {
+    .on_sync = ble_obd_on_sync,
+    .on_reset = ble_obd_on_reset,
+};
 
 void ble_obd_init(void)
 {
@@ -594,27 +601,20 @@ void ble_obd_init(void)
     esp_timer_create(&connect_args, &s_connect_timer);
 }
 
-/* Yığını aç; sync_cb tarama/bağlantıyı başlatır. */
+/* Paylaşılan yığına katıl; sync tarama/bağlantıyı başlatır. */
 void ble_obd_start(void)
 {
     if (s_running) {
         return;
     }
-    esp_err_t ret = nimble_port_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NimBLE init failed: %s", esp_err_to_name(ret));
-        return;
-    }
-
-    ble_hs_cfg.sync_cb = ble_obd_on_sync;
-    ble_hs_cfg.reset_cb = ble_obd_on_reset;
-
     s_running = true;
-    nimble_port_freertos_init(ble_obd_host_task);
+    if (!ble_host_acquire(&s_client)) {
+        s_running = false;
+    }
 }
 
-/* Yığını tamamen kapat (kontrolcü dahil): WiFi radyoyu tek başına kullansın,
- * modem-sleep'siz çalışabilsin. */
+/* Adaptör bağlantısını kapat; yığının son kullanıcısıysak yığın da kapanır
+ * (kontrolcü dahil): WiFi radyoyu tek başına kullansın. */
 void ble_obd_stop(void)
 {
     if (!s_running) {
@@ -623,8 +623,15 @@ void ble_obd_stop(void)
     s_running = false;   /* zamanlayıcı/olay yolları artık yeniden bağlanmaz */
     cancel_connect_watchdog();
     esp_timer_stop(s_reconnect_timer);
-    nimble_port_stop();  /* bağlantıları/taramayı kapatır, host görevi biter */
-    nimble_port_deinit();
+    if (s_scan_active) {
+        ble_gap_disc_cancel();
+    }
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    } else if (s_state == BLE_OBD_CONNECTING) {
+        ble_gap_conn_cancel();
+    }
+    ble_host_release(&s_client);
 
     s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
     s_write_handle = 0;
@@ -636,7 +643,7 @@ void ble_obd_stop(void)
     s_direct_fail_count = 0;
     s_scan_fail_count = 0;
     s_prefer_scan = false;
-    app_log_info(TAG, "BLE stack stopped");
+    app_log_info(TAG, "Adapter link stopped");
 }
 
 void ble_obd_scan(void)

@@ -42,3 +42,6 @@ uint32_t elm327_timeout_count(void);
 
 /* WiFi gecikme payı (ms): kuyruktaki her zaman aşımına eklenir; BLE'de 0. */
 uint32_t elm327_timeout_margin_ms(void);
+
+/* Yanıt geri çağrısı içinde: o komutun adaptöre gönderildiği an (esp_timer µs). */
+int64_t elm327_inflight_tx_us(void);

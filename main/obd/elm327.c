@@ -5,6 +5,7 @@
 #include "app_log.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -53,6 +54,7 @@ static char s_inflight_expect[8];
 static bool s_inflight_at;          /* uçuştaki komut AT komutu mu */
 static volatile bool s_prompt_pending; /* gönderildi, henüz '>' gelmedi */
 static volatile uint32_t s_margin_ms;  /* taşıma gecikme payı (WiFi) */
+static int64_t s_tx_us;                /* uçuştaki komutun adaptöre gönderildiği an */
 static char s_proto_hint;           /* son tespit edilen protokol (ATDPN), 0 = yok */
 static uint32_t s_done_count;       /* yanıtlanan kuyruk komutları */
 static uint32_t s_timeout_count;    /* zaman aşımına uğrayan kuyruk komutları */
@@ -654,6 +656,7 @@ static void elm327_task(void *arg)
             s_state = ELM_STATE_READY;
             continue;
         }
+        s_tx_us = esp_timer_get_time();
 
         if (wait_response(cmd.timeout_ms + s_margin_ms)) {
             s_done_count++;
@@ -669,6 +672,11 @@ static void elm327_task(void *arg)
         s_inflight_expect[0] = '\0';
         s_state = ELM_STATE_READY;
     }
+}
+
+int64_t elm327_inflight_tx_us(void)
+{
+    return s_tx_us;
 }
 
 void elm327_init(void)

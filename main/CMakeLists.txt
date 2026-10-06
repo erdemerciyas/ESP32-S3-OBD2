@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "app_mode.c"
+        "ble_host.c"
         "bsp/bsp_display.cpp"
         "bsp/lvgl_v8_port.cpp"
         "data/vehicle_data.c"
@@ -24,6 +25,8 @@ idf_component_register(
         "nav/nav_transport_ble.c"
         "nav/nav_track.c"
         "nav/nav_map.c"
+        "roll/roll_feed.c"
+        "roll/roll_cfg.c"
         "ui/theme.c"
         "ui/ui.c"
         "ui/screen_splash.c"
@@ -39,6 +42,7 @@ idf_component_register(
         "ui/screen_nav_map.c"
         "ui/screen_nav_trip.c"
         "ui/screen_nav_bg.c"
+        "ui/screen_roll.c"
         "ui/ui_shots.c"
         "ui/fx3d.c"
         "ui/lv_font_montserrat_56.c"
@@ -52,6 +56,7 @@ idf_component_register(
         "imu"
         "obd"
         "nav"
+        "roll"
         "ui"
     REQUIRES
         nvs_flash

@@ -14,12 +14,16 @@ typedef void (*nav_transport_link_cb_t)(bool up);
 
 typedef struct {
     const char *name;
+    /* Açılışta bir kez (GATT tablosu vb.). */
+    void (*init)(void);
     /* Radyoyu açar, telefonu beklemeye başlar. */
     bool (*start)(nav_transport_rx_cb_t rx, nav_transport_link_cb_t link);
-    /* Radyoyu tamamen kapatır (bloklar). */
+    /* Telefon bağlantısını kapatır; radyonun son kullanıcısıysa radyoyu da (bloklar). */
     void (*stop)(void);
     /* Telefona tek mesaj; bağlı/abone değilse false. */
     bool (*send)(const uint8_t *data, size_t len);
+    /* Telefona ikili telemetri (ROLL); bağlı/abone değilse false. */
+    bool (*send_tel)(const uint8_t *data, size_t len);
 } nav_transport_t;
 
 extern const nav_transport_t nav_transport_ble;

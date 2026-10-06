@@ -32,6 +32,7 @@ class TripService : Service(), LocationListener {
     override fun onCreate() {
         super.onCreate()
         BleLink.init(this)
+        Roll.init(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "AURA köprü", NotificationManager.IMPORTANCE_LOW)
@@ -65,10 +66,12 @@ class TripService : Service(), LocationListener {
             stopSelf()
         }
         BleLink.start()
+        Roll.evaluate()   // ESP zaten ROLL modundaysa ölçüm başlar
     }
 
     override fun onDestroy() {
         running = false
+        Roll.evaluate()
         (getSystemService(Context.LOCATION_SERVICE) as LocationManager).removeUpdates(this)
         BridgeLog.add("GPS kapalı")
         super.onDestroy()

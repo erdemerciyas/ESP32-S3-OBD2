@@ -12,6 +12,8 @@
 #include "ui.h"
 #include "imu_data.h"
 #include "app_mode.h"
+#include "roll_feed.h"
+#include "roll_cfg.h"
 #include "clock.h"
 
 static const char *TAG = "main";
@@ -25,7 +27,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "AURA v%s (OBD2 + NAV) starting", esp_app_get_description()->version);
+    ESP_LOGI(TAG, "AURA v%s (OBD2 + NAV + ROLL) starting", esp_app_get_description()->version);
 
     vehicle_data_init();
     vehicle_profile_init();
@@ -41,7 +43,9 @@ void app_main(void)
     imu_start();
 
     obd_dtc_init();   /* UI açılışta son DTC kaydını gösterir */
-    app_mode_init();  /* son mod (OBD / NAV); UI açılışta onu gösterir */
+    roll_cfg_init();
+    roll_feed_init();
+    app_mode_init();  /* son mod (OBD / NAV / ROLL); UI açılışta onu gösterir */
     ui_init();
     ui_start_update_timer();
 

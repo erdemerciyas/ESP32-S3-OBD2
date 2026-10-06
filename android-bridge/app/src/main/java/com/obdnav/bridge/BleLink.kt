@@ -35,6 +35,7 @@ object BleLink {
     private val RX: UUID = UUID.fromString("7c6a0002-2f4b-4b8e-9d3a-5e1f0c2a9b10")
     private val TX: UUID = UUID.fromString("7c6a0003-2f4b-4b8e-9d3a-5e1f0c2a9b10")
     private val MAP: UUID = UUID.fromString("7c6a0004-2f4b-4b8e-9d3a-5e1f0c2a9b10")
+    private val TEL: UUID = UUID.fromString("7c6a0005-2f4b-4b8e-9d3a-5e1f0c2a9b10")   // ROLL ham telemetri (ikili)
     private val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     enum class State { IDLE, SCANNING, CONNECTING, READY }
@@ -48,8 +49,11 @@ object BleLink {
     private var gatt: BluetoothGatt? = null
     private var rx: BluetoothGattCharacteristic? = null
     private var mapChr: BluetoothGattCharacteristic? = null
+    private var tel: BluetoothGattCharacteristic? = null
+    private var telOn = false
     private val queue = ArrayDeque<ByteArray>()
     private val bulk = ArrayDeque<ByteArray>()      // harita parçaları (MAP, yanıtsız)
+    private var cfgMsg: ByteArray? = null           // ROLL ayarları: tek yuva, kuyruktan önce, atılmaz
     private var mtu = 23
 
     /** Harita aktarımı sürüyor mu (yenisini başlatmadan önce bakılır). */
@@ -60,6 +64,7 @@ object BleLink {
 
     fun init(ctx: Context) {
         if (!::app.isInitialized) app = ctx.applicationContext
+        RollSettings.init(ctx)
     }
 
     private fun prefs() = app.getSharedPreferences("bridge", Context.MODE_PRIVATE)
@@ -158,9 +163,14 @@ object BleLink {
         gatt = null
         rx = null
         mapChr = null
+        tel = null
+        telOn = false
         queue.clear()
         bulk.clear()
+        cfgMsg = null
         writing = false
+        Roll.onLinkDown()
+        RollSettings.onLinkDown()
     }
 
     /** Tek mesaj gönder (sıraya alınır; bağlı değilse atılır). */
@@ -170,6 +180,20 @@ object BleLink {
         while (queue.size >= 8) queue.removeFirst()   // tıkanırsa eskileri at
         queue.addLast(json.toByteArray(Charsets.UTF_8))
         pump()
+    }
+
+    /**
+     * ROLL ayarları (rcfg): kuyruk taşmasında atılmasın diye ayrı yuvada; uzun
+     * mesaj (> MTU) onaylı uzun yazımla gider. Ana iş parçacığından çağrılır.
+     * Döner: henüz yazılmamış eski ayar mesajının yerini aldıysa true.
+     */
+    fun sendCfg(json: String): Boolean {
+        if (state != State.READY) return false
+        val replaced = cfgMsg != null
+        cfgMsg = json.toByteArray(Charsets.UTF_8)
+        if (writing && SystemClock.elapsedRealtime() - writeStart > 2000) writing = false
+        pump()
+        return replaced
     }
 
     /**
@@ -199,10 +223,15 @@ object BleLink {
     private fun pump() {
         val g = gatt ?: return
         if (writing) return
-        // Mesajlar önce; harita parçaları araya girer ama mesajı geciktirmez
-        val isMsg = queue.isNotEmpty()
+        // Ayar mesajı, sonra mesajlar; harita parçaları araya girer ama mesajı geciktirmez
+        val cfg = cfgMsg
+        val isMsg = cfg != null || queue.isNotEmpty()
         val c = (if (isMsg) rx else mapChr) ?: return
-        val data = (if (isMsg) queue.removeFirstOrNull() else bulk.removeFirstOrNull()) ?: return
+        val data = when {
+            cfg != null -> { cfgMsg = null; cfg }
+            isMsg -> queue.removeFirstOrNull()
+            else -> bulk.removeFirstOrNull()
+        } ?: return
         writing = true
         writeStart = SystemClock.elapsedRealtime()
         // Harita parçaları da onaylı: ESP tamponu taşıp parça kaybolmasın (resim çöpe gider)
@@ -218,7 +247,11 @@ object BleLink {
         }
         if (!ok) {
             writing = false
-            if (isMsg) queue.addFirst(data) else bulk.addFirst(data)   // yığın meşgul: az sonra tekrar
+            when {   // yığın meşgul: az sonra tekrar (daha yeni ayar geldiyse eskisi atılır)
+                data === cfg -> if (cfgMsg == null) cfgMsg = data
+                isMsg -> queue.addFirst(data)
+                else -> bulk.addFirst(data)
+            }
             main.postDelayed({ pump() }, 20)
         }
     }
@@ -244,6 +277,7 @@ object BleLink {
         pump()
         NavListenerService.onLinkReady()
         MapFeeder.reset()
+        main.postDelayed({ RollSettings.onStatus() }, 2000)   // status gelmezse de ayarları gönder
     }
 
     private val callback = object : BluetoothGattCallback() {
@@ -283,12 +317,18 @@ object BleLink {
                 }
                 rx = r
                 mapChr = svc.getCharacteristic(MAP)   // eski ESP firmware'inde yok: harita gönderilmez
+                tel = svc.getCharacteristic(TEL)      // eski firmware'de yok: ROLL telemetrisi gelmez
                 enableNotify(g, t)
             }
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            main.post { if (g == gatt && state != State.READY) onReady() }
+            // CCCD yazımları sıralı: önce TX, sonra (varsa) TEL, ardından hazır
+            main.post {
+                if (g != gatt || state == State.READY) return@post
+                val t = tel
+                if (t != null && !telOn) { telOn = true; enableNotify(g, t) } else onReady()
+            }
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
@@ -300,13 +340,14 @@ object BleLink {
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
-            onReply(value)
+            if (c.uuid == TEL) Roll.onTel(value) else onReply(value)
         }
 
         @Deprecated("API < 33")
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
-            c.value?.let { onReply(it) }
+            val v = c.value ?: return
+            if (c.uuid == TEL) Roll.onTel(v) else onReply(v)
         }
     }
 
@@ -326,6 +367,31 @@ object BleLink {
             } catch (_: Exception) { }
             return
         }
-        if (!s.contains("\"pong\"")) BridgeLog.add("ESP: $s")
+        if (s.contains("\"rcfgack\"")) {
+            try {
+                val o = org.json.JSONObject(s)
+                main.post { RollSettings.onAck(o.optBoolean("ok"), o.optString("why")) }
+            } catch (_: Exception) { }
+            return
+        }
+        if (s.contains("\"pong\"")) {
+            val t2 = Roll.nowUs()   // varış anı: ana iş parçacığı gecikmesi RTT'ye girmesin
+            try {
+                val o = org.json.JSONObject(s)
+                if (o.has("m") && o.has("e")) {
+                    val m = o.getLong("m")
+                    val e = o.getLong("e")
+                    main.post { Roll.onPong(m, e, t2) }
+                }
+            } catch (_: Exception) { }
+            return
+        }
+        if (s.contains("\"status\"")) {
+            try {
+                val mode = org.json.JSONObject(s).optString("mode")
+                main.post { Roll.onStatus(mode); RollSettings.onStatus() }
+            } catch (_: Exception) { }
+        }
+        BridgeLog.add("ESP: $s")
     }
 }

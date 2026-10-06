@@ -19,6 +19,35 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 ---
 
+## v1.2.0 — 2026-10-07 — ROLL: performans ölçümü (F0 ölçüm zinciri) + ayarlar + kayıt görüntüleyici
+
+Üçüncü mod **ROLL**: Dragy benzeri hızlanma / mesafe / fren ölçümü. Harici GNSS yok; hız kaynağı önceliği: telefon bağlı ve GPS fix'i yeterliyse **telefon GPS'i** (Doppler), değilse **BLE ELM327 üzerinden ECU hızı**; aradaki boşlukları IMU (100 Hz) doldurur. Bu sürüm F0: ölçüm altyapısı + kayıt + analiz; cihazdaki koşu motoru (hazırlanma, canlı süre, timeslip) F2'de, gerçek kayıtlarla ayarlanacak.
+
+**Araştırma özeti (karar gerekçesi):** zamanlama hatası ≈ hız hatası ÷ ivme. Kalos'ta (100 km/h'de ~1.3 m/s²) 1 km/h hata ≈ 0.2 s, %0.1 eğim ≈ 0.055 s. Beklenen 0-100 doğruluğu: yalnız OBD ±0.2–0.5 s, yalnız telefon GPS (1 Hz) ±0.2–0.5 s, **telefon GPS + IMU + koşu sonrası yumuşatma ≈ ±0.1 s**, harici 10–25 Hz GNSS ±0.05 s. PID 0x0D: 1 km/h adım, 255 km/h tavanı, ~3 km/h altı yok, ECU filtre gecikmesi.
+
+**ESP**
+- **Paylaşılan NimBLE yığını** (`ble_host.c`): `ble_obd` (central) ve `nav_transport_ble` (peripheral) artık yığını kendileri açıp kapatmıyor, istemci olarak katılıyor; ilk katılan açar, son çıkan kapatır. `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=2`, host görev yığını 6144 (iki bağlantı + telemetri + rcfg JSON; ilk denemede bir kez taşma görüldü). NimBLE log seviyesi WARN (her bildirimi INFO yazması telemetriyi düşürüyordu). Yığın paylaşılırken OBD tarama/bağlantı başlatma penceresi %100 → %30 (adaptör yokken sürekli tarama telefon bağlantısının radyo zamanını yiyordu).
+- **`APP_MODE_ROLL`** (`app_mode.c`): mod başına radyo politikası — OBD: OBD; NAV: telefon; ROLL: telefon + BLE OBD (WiFi seçiliyse yalnız telefon). NAV ↔ ROLL geçişinde telefon bağlantısı kopmaz; mod değişince telefona `status` (`mode`) gönderilir.
+- **`roll/roll_feed.c`**: tüm örnekler alındıkları anda `esp_timer` µs ile damgalanır. Telefon GNSS (`gnss`), OBD hızı (ham, filtresiz; istek gönderim + yanıt zamanı — `elm327_inflight_tx_us()`), IMU (araç ekseni ivme, yaw, pitch). Kaynak seçimi + IMU ile hız taşıma (≤1.5 s), oran ölçümü, TEL halkaları (IMU 128 / OBD 32 kayıt) ve 20 Hz telemetri görevi.
+- **OBD**: ROLL'de yalnız hız PID'i sorgulanır (K-line'da RPM'i bırakmak hız örnek sıklığını ~2 katına çıkarır).
+- **Protokol** (geriye uyumlu eklemeler): `gnss` (Doppler hızı, doğruluk, MSL rakım, uydu; `e` = ESP saatinde fix zamanı), `ping.m` / `pong.m,e` (NTP tarzı saat senkronu), `status.mode`, `rcfg` / `rcfgack`, yeni **TEL** karakteristiği `7c6a0005` (ikili IMU 14 B / OBD 9 B kayıt çerçeveleri).
+- **`roll/roll_cfg.c`**: kişisel ROLL ayarları (NVS `roll/cfg`): kaynak (otomatik / GPS / OBD), birim, ≤10 hız aralığı, ≤6 mesafe, ≤3 fren hedefi, başlatma (otomatik / ağaç 0.4–0.5 s), rollout, eğim sınırı + düzeltmeli süre, GPS hız doğruluğu ve uydu eşikleri, OBD hız çarpanı, araç adı / kütle / çekiş, bip, sonuç süresi. Şimdiden uygulananlar: kaynak tercihi, GPS eşikleri, mph, araç adı.
+- **ROLL ekranı** (`screen_roll.c`): 300° hız yayı (renk = kaynak), büyük hız, araç adı, kaynak rozeti, doğruluk notu, GPS / OBD / IMU hapları, kayıt göstergesi, MENÜ. **Ana menü**: üçgen dizilmiş üç karo (OBD, NAV, çizilmiş kronometre simgeli ROLL).
+- Ekran görüntüsü turuna ROLL eklendi (demo anlık görüntüsü, `roll_feed_demo`); `docs/screenshots/roll.png` + yeni `home.png`.
+
+**Android (AURA Köprü)**
+- `Roll.kt`: ESP ROLL'e geçince en hızlı `GPS_PROVIDER` + kullanılan uydu, 1 sn saat senkronu (en düşük RTT örneği), her fix için `gnss`, TEL çözme, CSV kaydı (`filesDir/roll/roll_*.csv`: G / I / O / S / M satırları, ayrı yazma iş parçacığı).
+- **ROLL ayarları** (`RollSettingsActivity`): tüm ayarlar kart kart, anında kaydedilir, 300 ms birleştirmeyle ESP'ye gönderilir, senkron durumu üstte; mph'de gösterim dönüştürülür, km/h saklanır; ham kayıt aç/kapa, otomatik silme.
+- **ROLL kayıtları / görüntüleyici** (`RollLogActivity`, `RollRunActivity`, `RollAnalysis.kt`, `RollChart.kt`): listede koşu özeti; dokununca en iyi sonuç kutucukları, hız–zaman grafiği (füzyon eğrisi, GPS / OBD noktaları, kalkış işaretleri, yakınlaştırma, imleç) + boyuna g şeridi, koşu kartları (GPS / OBD karşılaştırması, eğim, doğrulama), kaynak kalitesi; **sonuç CSV** ve **ham CSV** dışa aktarma (Download/AURA) ve paylaşma. Analiz `scripts/roll_analyze.py` ile birebir aynı sayıları verir (JVM'de sentetik kayıtla doğrulandı).
+
+**Araçlar**
+- `scripts/roll_analyze.py`: kaynak istatistikleri, OBD ölçek k ve gecikme τ (GPS'e göre), kalkış algısı (yalnız duruştan), aralık süreleri (GPS / füzyon / OBD / OBD+IMU / OBD-k), eğim (GPS rakımı / IMU), `--plot`. Sentetik koşu (gerçek 0-100 = 15.17 s): füzyon 15.22 s, ham OBD 16.76 s, k/τ düzeltmeli OBD 15.09 s.
+- `scripts/roll_bridge_sim.py`: telefonsuz ROLL testi (saat senkronu, sentetik GNSS rampası, TEL sayaçları).
+
+**Doğrulama:** firmware derlenir (%40 boş), cihazda ROLL açılışı + telefon bağlantısı + TEL akışı 60 sn kayıpsız. Henüz yapılmadı: telefon + BLE ELM327 aynı anda sahada, gerçek sürüş kayıtları, rcfg gidiş-dönüşü telefonda.
+
+---
+
 ## v1.1.1 — 2026-10-06 — Kanca betikleri LF
 
 - `.gitattributes`: `*.sh` ve `.githooks/*` her platformda LF (Windows'ta CRLF'ye çevrilirse Linux/macOS klonunda bash `\r` hatası verir).

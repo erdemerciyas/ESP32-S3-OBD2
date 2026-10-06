@@ -7,6 +7,7 @@
 #include "clock.h"
 #include "nav_mock.h"
 #include "nav_state.h"
+#include "roll_feed.h"
 #include "vehicle_data.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -100,6 +101,22 @@ static void p_tab(int tab)        { ui_show_view(UI_VIEW_OBD); ui_show_tab(tab);
 static void p_clock(int on)       { if (on) screen_clock_show(); else screen_clock_hide(); }
 static void p_nav_page(int n)     { while (n-- > 0) screen_nav_next_page(); }
 
+/* ROLL: telefon GPS'iyle hızlanma anı (demo) */
+static void p_roll(int on)
+{
+    static const roll_snapshot_t demo = {
+        .src = ROLL_SRC_GPS, .speed_kmh = 87.4f, .phone = true, .tel = true,
+        .gps_ok = true, .gps_synced = true, .gps_age_ms = 300, .gps_hz = 1.0f,
+        .gps_kmh = 86.9f, .gps_acc_kmh = 1.1f, .gps_sats = 14, .gps_alt = 912.0f,
+        .obd_ok = true, .obd_age_ms = 120, .obd_hz = 6.4f, .obd_kmh = 85,
+        .a_long = 2.1f, .pitch_deg = 0.6f,
+    };
+    roll_feed_demo(on ? &demo : NULL);
+    if (on) {
+        ui_show_view(UI_VIEW_ROLL);
+    }
+}
+
 static void p_nav_idle(int arg)
 {
     (void)arg;
@@ -140,6 +157,8 @@ static const step_t STEPS[] = {
     { p_tab,      UI_TAB_DTC,       1500,  NULL,        "obd_dtc" },
     { p_tab,      UI_TAB_GYRO,      2000,  NULL,        "obd_gyro" },
     { p_tab,      UI_TAB_SETTINGS,  1500,  NULL,        "obd_settings" },
+    { p_roll,     1,                2000,  NULL,        "roll" },
+    { p_roll,     0,                100,   NULL,        NULL },
     { p_clock,    1,                2500,  NULL,        "clock" },
     { p_clock,    0,                300,   NULL,        NULL },
     { p_view,     UI_VIEW_NAV,      300,   NULL,        NULL },

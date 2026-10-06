@@ -45,6 +45,17 @@
 
         <activity android:name=".TripListActivity" android:exported="false" />
         <activity android:name=".TripViewActivity" android:exported="false" />
+        <activity android:name=".RollLogActivity" android:exported="false" />
+        <activity android:name=".RollRunActivity" android:exported="false" />
+        <activity android:name=".RollSettingsActivity" android:exported="false"
+            android:windowSoftInputMode="stateAlwaysHidden|adjustResize" />
+
+        <!-- ROLL kayıtlarını paylaşmak için salt okunur içerik sağlayıcı (androidx yok) -->
+        <provider
+            android:name=".RollFileProvider"
+            android:authorities="${applicationId}.rollfiles"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <service
             android:name=".TripService"

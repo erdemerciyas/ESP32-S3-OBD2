@@ -5,7 +5,11 @@
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
 #include "ui.h"
+#include "app_mode.h"
+#include "roll_feed.h"
 #include "app_log.h"
+
+#include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -546,9 +550,13 @@ static void update_pid_value(uint8_t pid, const char *resp)
         s_rpm_samples++;
         apply_filtered_float(0x0C, decode_rpm(data), &vd->rpm);
         break;
-    case 0x0D:
-        apply_filtered_float(0x0D, decode_speed(data), &vd->speed);
+    case 0x0D: {
+        float kmh = decode_speed(data);
+        /* ROLL: filtresiz hız + istek/yanıt zamanı (EMA gecikmesi ölçüme girmesin) */
+        roll_feed_obd_speed(elm327_inflight_tx_us(), esp_timer_get_time(), (int)kmh);
+        apply_filtered_float(0x0D, kmh, &vd->speed);
         break;
+    }
     case 0x05:
         apply_filtered_float(0x05, decode_temp(data), &vd->coolant);
         break;
@@ -1175,6 +1183,13 @@ static bool run_dash_poll(uint32_t now)
     return any_queued;
 }
 
+/* ROLL: yalnız hız. K-line tek komut uçuşta taşıdığı için RPM'i bırakmak
+ * hız örnek sıklığını ~2 katına çıkarır (ölçüm doğruluğu için kritik). */
+static bool run_roll_poll(uint32_t now)
+{
+    return poll_entry_by_pid(DASH_PID_SPEED, now, true);
+}
+
 static bool run_grid_poll(uint32_t now)
 {
     size_t total = s_fast_count + s_slow_count;
@@ -1280,7 +1295,9 @@ static void poll_task(void *arg)
         bool grid_focus = tab == UI_TAB_GRID;
 
         bool queued = false;
-        if (grid_focus) {
+        if (app_mode_get() == APP_MODE_ROLL) {
+            queued = run_roll_poll(now);
+        } else if (grid_focus) {
             poll_voltage(now);
             queued = run_grid_poll(now);
         } else {

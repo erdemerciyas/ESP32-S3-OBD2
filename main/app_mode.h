@@ -2,12 +2,17 @@
 
 #include <stdbool.h>
 
-/* Uygulama modu: OBD ve NAV birbirini dışlar — NAV'dayken OBD radyosu
- * (BLE/WiFi) tamamen kapalıdır. Son mod NVS'de tutulur, açılışta o başlar. */
+/* Uygulama modu. Radyo politikası:
+ *   OBD : OBD bağlantısı (BLE ya da WiFi)
+ *   NAV : yalnız telefon (OBD radyosu tamamen kapalı)
+ *   ROLL: telefon + OBD adaptörü aynı BLE yığınında (OBD WiFi seçiliyse
+ *         yalnız telefon — WiFi ile BLE birlikte çalıştırılmaz)
+ * Son mod NVS'de tutulur, açılışta o başlar. */
 
 typedef enum {
     APP_MODE_OBD = 0,
     APP_MODE_NAV,
+    APP_MODE_ROLL,
 } app_mode_t;
 
 void app_mode_init(void);

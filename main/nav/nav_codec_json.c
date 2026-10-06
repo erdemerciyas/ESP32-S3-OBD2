@@ -14,6 +14,25 @@
  *   {"t":"loc","lat":39.92,"lon":32.85,"spd":54,"hdg":90}
  *   {"t":"alert","k":"cam","d":350,"lim":50,"txt":"Radar"}   k: cam traffic hazard info none
  *   {"t":"map","id":7,"len":34567,"w":460,"h":460,"clat":39.92,"clon":32.85,"z":15}
+ *   {"t":"gnss","e":987654321,"v":27.53,"sa":0.31,"alt":912.4,"va":3.0,"ha":3.5,
+ *    "hdg":91.2,"sat":14,"lat":39.92,"lon":32.85}
+ *
+ * ESP → telefon:
+ *   {"t":"status","v":1,"dev":"AURA","mode":"roll"}   (hello yanıtı + mod değişiminde)
+ *   {"t":"pong","seq":7,"m":123456789012,"e":987654321}
+ *
+ * Saat senkronu (ROLL): ping'deki "m" telefonun monoton µs saatidir (sayı;
+ * upd'deki "m" ise manevra kodu — metin), pong onu yankılar ve ESP µs'yi "e"
+ * ile ekler. Telefon ofset = e − (m + varış)/2 hesaplar; gnss "e" = fix
+ * zamanı ESP µs (senkron yoksa yok: ESP varış zamanını kullanır).
+ * gnss: v m/s (Doppler), sa hız doğruluğu m/s, alt m (MSL), va/ha m, hdg °,
+ * sat fix'te kullanılan uydu; bilinmeyenler −1.
+ *
+ * ROLL ayarları (telefon → ESP, alanlar roll/roll_cfg.c'de):
+ *   {"t":"rcfg","v":1,"src":"auto","unit":"kmh","spd":"0-100,60-120","dst":"18.288,402.336",
+ *    "brk":"100-0","start":"auto","tree":0.4,"ro":0,"slope":1.0,"slc":1,"gacc":1.0,
+ *    "sats":6,"obdk":0,"mass":1100,"drive":"fwd","name":"Kalos","beep":1,"hold":10}
+ *   yanıt: {"t":"rcfgack","ok":true} | {"t":"rcfgack","ok":false,"why":"spd"}
  *
  * m: S düz, L sol, R sağ, SL hafif sol, SR hafif sağ, U u-dönüşü,
  *    RB döner kavşak, A varış; diğer her şey bilinmeyen.
@@ -48,6 +67,8 @@ static const struct {
     { "loc",    NAV_MSG_LOC },
     { "alert",  NAV_MSG_ALERT },
     { "map",    NAV_MSG_MAP },
+    { "gnss",   NAV_MSG_GNSS },
+    { "rcfg",   NAV_MSG_RCFG },
 };
 
 /* UTF-8 karakterini ortadan bölmeden kopyala (ekranda bozuk glif olmasın). */
@@ -166,6 +187,29 @@ static bool json_decode(const uint8_t *buf, size_t len, nav_msg_t *out)
         out->lat = lat;
         out->lon = lon;
     }
+    if (get_num(root, "m", &v)) {   /* sayıysa monoton saat (upd'de "m" metindir) */
+        out->fields |= NAV_F_MONO;
+        out->mono_us = (int64_t)v;
+    }
+    if (out->type == NAV_MSG_GNSS) {
+        roll_gnss_t *g = &out->gnss;
+        g->speed_acc = g->alt_acc = g->heading = -1.0f;
+        g->h_acc = -1.0f;
+        g->sats = -1;
+        if (get_num(root, "e", &v) && v > 0) {
+            g->t_us = (int64_t)v;
+            g->synced = true;
+        }
+        g->speed_ms = get_num(root, "v", &v) ? (float)v : -1.0f;   /* <0: fix'te hız yok */
+        if (get_num(root, "sa", &v))  g->speed_acc = (float)v;
+        if (get_num(root, "alt", &v)) g->alt_m = (float)v;
+        if (get_num(root, "va", &v))  g->alt_acc = (float)v;
+        if (get_num(root, "ha", &v))  g->h_acc = (float)v;
+        if (get_num(root, "hdg", &v)) g->heading = (float)v;
+        if (get_num(root, "sat", &v)) g->sats = (int16_t)v;
+        g->lat = out->lat;
+        g->lon = out->lon;
+    }
     if (get_num(root, "ts", &v) && v > 0) {
         out->fields |= NAV_F_TIME;
         out->ts = (int64_t)v;
@@ -207,15 +251,27 @@ static size_t json_encode(const nav_msg_t *msg, uint8_t *buf, size_t cap)
     int n;
     switch (msg->type) {
     case NAV_MSG_STATUS:
-        n = snprintf((char *)buf, cap, "{\"t\":\"status\",\"v\":%d,\"dev\":\"AURA\"}",
-                     NAV_PROTO_VERSION);
+        n = snprintf((char *)buf, cap, "{\"t\":\"status\",\"v\":%d,\"dev\":\"AURA\",\"mode\":\"%s\"}",
+                     NAV_PROTO_VERSION, msg->src);
         break;
     case NAV_MSG_PONG:
-        n = snprintf((char *)buf, cap, "{\"t\":\"pong\",\"seq\":%u}", (unsigned)msg->seq);
+        if (msg->fields & NAV_F_MONO) {
+            n = snprintf((char *)buf, cap, "{\"t\":\"pong\",\"seq\":%u,\"m\":%lld,\"e\":%lld}",
+                         (unsigned)msg->seq, (long long)msg->mono_us, (long long)msg->esp_us);
+        } else {
+            n = snprintf((char *)buf, cap, "{\"t\":\"pong\",\"seq\":%u}", (unsigned)msg->seq);
+        }
         break;
     case NAV_MSG_MAP_REQ:
         n = snprintf((char *)buf, cap, "{\"t\":\"mapreq\",\"mode\":\"%s\",\"z\":%u}",
                      msg->src, msg->map.zoom);
+        break;
+    case NAV_MSG_RCFG_ACK:
+        if (msg->src[0]) {
+            n = snprintf((char *)buf, cap, "{\"t\":\"rcfgack\",\"ok\":false,\"why\":\"%s\"}", msg->src);
+        } else {
+            n = snprintf((char *)buf, cap, "{\"t\":\"rcfgack\",\"ok\":true}");
+        }
         break;
     case NAV_MSG_MAP_ACK:
         n = snprintf((char *)buf, cap, "{\"t\":\"mapack\",\"id\":%u,\"ok\":%s,\"why\":\"%s\"}",

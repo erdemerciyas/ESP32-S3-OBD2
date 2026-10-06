@@ -38,6 +38,14 @@ class MainActivity : Activity() {
     private lateinit var mapSub: TextView
     private lateinit var tripVal: TextView
     private lateinit var tripSub: TextView
+    private lateinit var rollDot: View
+    private lateinit var rollSub: TextView
+    private lateinit var rollMode: TextView
+    private lateinit var rollGps: TextView
+    private lateinit var rollSpeed: TextView
+    private lateinit var rollSync: TextView
+    private lateinit var rollTel: TextView
+    private lateinit var rollFile: TextView
     private lateinit var setupCard: LinearLayout
     private lateinit var setupNotif: View
     private lateinit var setupPerm: View
@@ -49,19 +57,21 @@ class MainActivity : Activity() {
     private val refresher = object : Runnable {
         override fun run() {
             refresh()
-            main.postDelayed(this, 1000)
+            main.postDelayed(this, 500)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         BleLink.init(this)
+        Roll.init(this)
         Ui.applyWindow(this)
 
         val col = Ui.column(this, 20)
         col.addView(header(), Ui.lp(this, bottomDp = 20))
         col.addView(hero(), Ui.lp(this, bottomDp = 12))
         col.addView(stats(), Ui.lp(this, bottomDp = 12))
+        col.addView(rollCard(), Ui.lp(this, bottomDp = 12))
         col.addView(setup(), Ui.lp(this, bottomDp = 12))
         col.addView(actions(), Ui.lp(this, bottomDp = 12))
         col.addView(tools(), Ui.lp(this, bottomDp = 12))
@@ -131,6 +141,41 @@ class MainActivity : Activity() {
             }, Ui.lp(this, bottomDp = 12))
         }
         return grid
+    }
+
+    /** ROLL (performans zamanlayıcı) ölçüm durumu: GNSS hızı, senkron, telemetri, kayıt. */
+    private fun rollCard(): View = Ui.card(this).apply {
+        rollDot = Ui.dot(context, Ui.DIM)
+        addView(Ui.row(context).apply {
+            addView(rollDot)
+            addView(Ui.text(context, "ROLL ölçümü", 17f, Ui.TEXT, true))
+        })
+        rollSub = Ui.text(context, "", 13f, Ui.DIM).apply { setPadding(Ui.dp(context, 20), Ui.dp(context, 2), 0, Ui.dp(context, 8)) }
+        addView(rollSub)
+        rollMode = kv("ESP modu")
+        rollGps = kv("GPS")
+        rollSpeed = kv("Hız")
+        rollSync = kv("Senkron")
+        rollTel = kv("Telemetri")
+        rollFile = kv("Kayıt")
+        addView(Ui.row(context).apply {
+            addView(Ui.button(context, "ROLL ayarları", Ui.Style.PRIMARY) {
+                startActivity(Intent(context, RollSettingsActivity::class.java))
+            }, Ui.lp(context, 0, weight = 1f).apply { marginEnd = Ui.dp(context, 6) })
+            addView(Ui.button(context, "ROLL kayıtları", Ui.Style.SECONDARY) {
+                startActivity(Intent(context, RollLogActivity::class.java))
+            }, Ui.lp(context, 0, weight = 1f).apply { marginStart = Ui.dp(context, 6) })
+        }, Ui.lp(context).apply { topMargin = Ui.dp(context, 10) })
+    }
+
+    private fun LinearLayout.kv(label: String): TextView {
+        val v = Ui.text(context, "—", 14f, Ui.TEXT).apply { gravity = Gravity.END }
+        addView(Ui.row(context).apply {
+            setPadding(0, Ui.dp(context, 3), 0, Ui.dp(context, 3))
+            addView(Ui.text(context, label, 13f, Ui.DIM), Ui.lp(context, 0, weight = 1f))
+            addView(v)
+        })
+        return v
     }
 
     private fun setupRow(label: String, action: String, onClick: () -> Unit): View {
@@ -296,6 +341,8 @@ class MainActivity : Activity() {
             tripSub.text = "kayıtlı sürüş"
         }
 
+        refreshRoll()
+
         Ui.setDot(setupNotif, if (notifOk) Ui.OK else Ui.WARN)
         Ui.setDot(setupPerm, if (permOk) Ui.OK else Ui.WARN)
         Ui.setDot(setupEsp, if (espKnown) Ui.OK else Ui.WARN)
@@ -303,6 +350,37 @@ class MainActivity : Activity() {
         bridgeBtn.text = if (TripService.running) "Köprü: Açık" else "Köprü: Kapalı"
         bridgeBtn.setTextColor(if (TripService.running) Ui.OK else Ui.DIM)
         if (log.visibility == View.VISIBLE) log.text = BridgeLog.text()
+    }
+
+    private fun refreshRoll() {
+        val mode = Roll.espMode
+        val (color, sub) = when {
+            Roll.active -> Ui.OK to "Ölçüm ve kayıt sürüyor"
+            BleLink.state != BleLink.State.READY -> Ui.DIM to "ESP bağlı değil"
+            mode == "roll" && !TripService.running -> Ui.WARN to "ROLL için köprüyü başlat"
+            mode == "roll" -> Ui.WARN to "Başlatılıyor…"
+            else -> Ui.DIM to "Cihazda ROLL modunu seçin"
+        }
+        Ui.setDot(rollDot, color)
+        rollSub.text = sub
+        rollMode.text = if (mode.isNullOrEmpty()) "—" else mode.uppercase(java.util.Locale.US)
+        rollGps.text = if (Roll.active)
+            "%.1f Hz · %s uydu".format(Roll.gpsRate.rate(), if (Roll.sats >= 0) "${Roll.sats}" else "—") else "—"
+        rollSpeed.text = when {
+            Roll.lastSpeed < 0 -> "—"
+            Roll.lastSa >= 0 -> "%.1f km/h · ±%.2f m/s".format(Roll.lastSpeed * 3.6f, Roll.lastSa)
+            else -> "%.1f km/h".format(Roll.lastSpeed * 3.6f)
+        }
+        rollSync.text = when {
+            Roll.syncValid -> "ofset ${Roll.offsetUs / 1000} ms · rtt %.1f ms".format(Roll.rttUs / 1000f)
+            mode == "roll" -> "bekleniyor (${Roll.syncGood}/3)"
+            else -> "—"
+        }
+        val imu = Roll.imuRate.rate()
+        val obd = Roll.obdRate.rate()
+        rollTel.text = if (imu > 0 || obd > 0)
+            "IMU %.0f/s · OBD %.1f/s%s".format(imu, obd, if (Roll.lastObdKmh >= 0) " · ${Roll.lastObdKmh} km/h" else "") else "—"
+        rollFile.text = Roll.file?.let { "${it.name} · ${Roll.sizeText(Roll.fileBytes)}" } ?: "—"
     }
 
     private fun requestPermissions() {

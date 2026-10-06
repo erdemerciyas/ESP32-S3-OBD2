@@ -1,7 +1,9 @@
 #include "imu_data.h"
 #include "qmi8658.h"
 #include "vehicle_data.h"
+#include "roll_feed.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -206,6 +208,7 @@ static void imu_task(void *arg)
             vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10));
             continue;
         }
+        int64_t t_us = esp_timer_get_time();   /* ROLL: örnek anı */
         uint32_t now = lv_tick_get();
         float dt = last_ms ? (now - last_ms) / 1000.0f : DT_NOM;
         if (dt <= 0) dt = 0.001f;
@@ -374,6 +377,12 @@ static void imu_task(void *arg)
         v3 lin = to_vehicle(&m, v_sub(v_mul(a, 1.0f / gr), gs));
         glong += G_LPF * (lin.x - glong);
         glat += G_LPF * (lin.y - glat);
+        if (roll_feed_active()) {
+            /* ROLL: süzülmemiş araç ekseni ivmesi (ölçek telafili) + yerçekimsiz boyuna */
+            v3 av = v_mul(to_vehicle(&m, a), G0 / gr);
+            const float a3[3] = { av.x, av.y, av.z };
+            roll_feed_imu(t_us, a3, lin.x * G0, wv.z, pitch);
+        }
 
         if (cal_n < 0) {
             peak_p = fmaxf(peak_p, fabsf(pitch));

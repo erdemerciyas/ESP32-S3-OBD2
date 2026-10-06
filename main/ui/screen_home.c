@@ -6,19 +6,23 @@
 #include "esp_app_desc.h"
 #include <math.h>
 
-/* Mod seçimi — iki büyük yuvarlak karo: OBD (araç verisi) ve NAV (telefon
- * navigasyonu). Seçilen mod vurgulanır; dokununca radyo geçişi arka planda
- * başlar ve ilgili görünüm hemen açılır. Arka planda yavaş dönen sönük tel
- * kafes (fx3d) — yalnızca ekran görünürken, 15 fps. */
+/* Mod seçimi — üçgen dizilmiş üç yuvarlak karo: OBD (araç verisi), NAV
+ * (telefon navigasyonu) ve ROLL (hızlanma ölçümü). Seçilen mod vurgulanır;
+ * dokununca radyo geçişi arka planda başlar ve ilgili görünüm hemen açılır.
+ * Arka planda yavaş dönen sönük tel kafes (fx3d) — yalnızca ekran
+ * görünürken, 15 fps. */
 
-#define HM_TILE_D   168
-#define HM_TILE_DX  92
+#define HM_TILE_D   128
+#define HM_TILE_DX  74
+#define HM_TOP_Y    (-30)
+#define HM_BOT_Y    100
 #define HM_TITLE_Y  (-158)
 #define HM_SUB_Y    (-130)
-#define HM_RING_D   (HM_TILE_D + 16)
+#define HM_RING_D   (HM_TILE_D + 14)
 #define HM_BG_SZ    360
 #define HM_BG_MS    66
-#define HM_INFO_Y   150
+#define HM_INFO_Y   196
+#define HM_TILES    3
 
 typedef struct {
     lv_obj_t  *obj;
@@ -27,7 +31,7 @@ typedef struct {
     lv_color_t accent;
 } home_tile_t;
 
-static home_tile_t s_tiles[2];
+static home_tile_t s_tiles[HM_TILES];
 static lv_obj_t *s_info;
 static int s_prev_sel = -1;
 static int s_prev_busy = -1;
@@ -40,10 +44,55 @@ static void tile_click_cb(lv_event_t *e)
 {
     app_mode_t m = (app_mode_t)(intptr_t)lv_event_get_user_data(e);
     app_mode_set(m);
-    ui_show_view(m == APP_MODE_NAV ? UI_VIEW_NAV : UI_VIEW_OBD);
+    ui_show_view(m == APP_MODE_NAV ? UI_VIEW_NAV : m == APP_MODE_ROLL ? UI_VIEW_ROLL : UI_VIEW_OBD);
 }
 
-static void create_tile(lv_obj_t *root, app_mode_t m, lv_coord_t x, const char *icon,
+/* Kronometre simgesi (yazı tipinde yok): halka + taç + ibre */
+static lv_obj_t *create_stopwatch(lv_obj_t *parent)
+{
+    lv_obj_t *ic = lv_obj_create(parent);
+    lv_obj_remove_style_all(ic);
+    lv_obj_set_size(ic, 30, 34);
+    lv_obj_clear_flag(ic, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *ring = lv_obj_create(ic);
+    lv_obj_remove_style_all(ring);
+    lv_obj_set_size(ring, 28, 28);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(ring, 3, 0);
+    lv_obj_align(ring, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    lv_obj_t *crown = lv_obj_create(ic);
+    lv_obj_remove_style_all(crown);
+    lv_obj_set_size(crown, 8, 4);
+    lv_obj_set_style_radius(crown, 1, 0);
+    lv_obj_set_style_bg_opa(crown, LV_OPA_COVER, 0);
+    lv_obj_align(crown, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t *hand = lv_obj_create(ic);
+    lv_obj_remove_style_all(hand);
+    lv_obj_set_size(hand, 3, 10);
+    lv_obj_set_style_radius(hand, 1, 0);
+    lv_obj_set_style_bg_opa(hand, LV_OPA_COVER, 0);
+    lv_obj_align(hand, LV_ALIGN_BOTTOM_MID, 0, -14);
+    return ic;
+}
+
+static void set_icon_color(lv_obj_t *icon, lv_color_t c)
+{
+    if (lv_obj_check_type(icon, &lv_label_class)) {
+        lv_obj_set_style_text_color(icon, c, 0);
+        return;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_cnt(icon); i++) {
+        lv_obj_t *ch = lv_obj_get_child(icon, i);
+        lv_obj_set_style_border_color(ch, c, 0);
+        lv_obj_set_style_bg_color(ch, c, 0);
+    }
+}
+
+/* icon NULL: kronometre çizilir */
+static void create_tile(lv_obj_t *root, app_mode_t m, lv_coord_t x, lv_coord_t y, const char *icon,
                         const char *name, const char *sub, lv_color_t accent)
 {
     const ui_theme_t *t = theme_get();
@@ -57,33 +106,37 @@ static void create_tile(lv_obj_t *root, app_mode_t m, lv_coord_t x, const char *
     lv_obj_set_size(tl->ring, HM_RING_D, HM_RING_D);
     lv_obj_set_style_radius(tl->ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_border_width(tl->ring, 2, 0);
-    lv_obj_align(tl->ring, LV_ALIGN_CENTER, x, 0);
+    lv_obj_align(tl->ring, LV_ALIGN_CENTER, x, y);
     lv_obj_clear_flag(tl->ring, LV_OBJ_FLAG_CLICKABLE);
 
     tl->obj = lv_obj_create(root);
     theme_apply_lens(tl->obj, HM_TILE_D);
-    lv_obj_align(tl->obj, LV_ALIGN_CENTER, x, 0);
+    lv_obj_align(tl->obj, LV_ALIGN_CENTER, x, y);
     lv_obj_set_style_border_width(tl->obj, 3, 0);
     lv_obj_set_style_border_opa(tl->obj, LV_OPA_COVER, 0);
     lv_obj_add_flag(tl->obj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(tl->obj, tile_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)m);
 
-    tl->icon = lv_label_create(tl->obj);
-    lv_label_set_text_static(tl->icon, icon);
-    lv_obj_set_style_text_font(tl->icon, t->font_lg, 0);
-    lv_obj_align(tl->icon, LV_ALIGN_CENTER, 0, -36);
+    if (icon) {
+        tl->icon = lv_label_create(tl->obj);
+        lv_label_set_text_static(tl->icon, icon);
+        lv_obj_set_style_text_font(tl->icon, t->font_lg, 0);
+    } else {
+        tl->icon = create_stopwatch(tl->obj);
+    }
+    lv_obj_align(tl->icon, LV_ALIGN_CENTER, 0, -32);
 
     lv_obj_t *nm = lv_label_create(tl->obj);
     lv_label_set_text_static(nm, name);
     lv_obj_set_style_text_font(nm, t->font_lg, 0);
     lv_obj_set_style_text_color(nm, t->text, 0);
-    lv_obj_align(nm, LV_ALIGN_CENTER, 0, 8);
+    lv_obj_align(nm, LV_ALIGN_CENTER, 0, 2);
 
     lv_obj_t *sb = lv_label_create(tl->obj);
     lv_label_set_text_static(sb, sub);
     lv_obj_set_style_text_font(sb, t->font_tr_sm, 0);
     lv_obj_set_style_text_color(sb, t->text_dim, 0);
-    lv_obj_align(sb, LV_ALIGN_CENTER, 0, 42);
+    lv_obj_align(sb, LV_ALIGN_CENTER, 0, 30);
 }
 
 lv_obj_t *screen_home_create(lv_obj_t *parent)
@@ -118,8 +171,9 @@ lv_obj_t *screen_home_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(sub, t->text_dim, 0);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, HM_SUB_Y);
 
-    create_tile(root, APP_MODE_OBD, -HM_TILE_DX, LV_SYMBOL_CHARGE, "OBD", "Araç verisi", t->primary);
-    create_tile(root, APP_MODE_NAV, HM_TILE_DX, LV_SYMBOL_GPS, "NAV", "Navigasyon", t->secondary);
+    create_tile(root, APP_MODE_OBD, -HM_TILE_DX, HM_TOP_Y, LV_SYMBOL_CHARGE, "OBD", "Araç verisi", t->primary);
+    create_tile(root, APP_MODE_NAV, HM_TILE_DX, HM_TOP_Y, LV_SYMBOL_GPS, "NAV", "Navigasyon", t->secondary);
+    create_tile(root, APP_MODE_ROLL, 0, HM_BOT_Y, NULL, "ROLL", "Hızlanma", t->accent);
 
     s_info = lv_label_create(root);
     lv_label_set_text_static(s_info, "");
@@ -176,10 +230,10 @@ void screen_home_update(void)
 
     if (sel != s_prev_sel) {
         s_prev_sel = sel;
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < HM_TILES; i++) {
             bool on = i == sel;
             lv_obj_set_style_border_color(s_tiles[i].obj, on ? s_tiles[i].accent : t->border, 0);
-            lv_obj_set_style_text_color(s_tiles[i].icon, on ? s_tiles[i].accent : t->text_dim, 0);
+            set_icon_color(s_tiles[i].icon, on ? s_tiles[i].accent : t->text_dim);
             lv_obj_set_style_border_color(s_tiles[i].ring, on ? s_tiles[i].accent : t->border, 0);
             lv_obj_set_style_border_opa(s_tiles[i].ring, on ? LV_OPA_50 : LV_OPA_20, 0);
         }

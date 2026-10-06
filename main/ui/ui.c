@@ -19,6 +19,7 @@ static int s_active_tab;
 static bool s_was_connected;
 static lv_obj_t *s_home_root;
 static lv_obj_t *s_nav_root;
+static lv_obj_t *s_roll_root;
 static int s_view = -1;
 
 static bool adapter_connected(obd_state_t state)
@@ -35,7 +36,8 @@ static void splash_finish_cb(lv_timer_t *timer)
         lv_obj_del(s_splash_root);
         s_splash_root = NULL;
     }
-    ui_show_view(app_mode_get() == APP_MODE_NAV ? UI_VIEW_NAV : UI_VIEW_OBD);
+    app_mode_t m = app_mode_get();
+    ui_show_view(m == APP_MODE_NAV ? UI_VIEW_NAV : m == APP_MODE_ROLL ? UI_VIEW_ROLL : UI_VIEW_OBD);
 }
 
 static void home_click_cb(lv_event_t *e)
@@ -178,6 +180,10 @@ static void ui_update_cb(lv_timer_t *timer)
         screen_home_update();
         return;
     }
+    if (s_view == UI_VIEW_ROLL) {
+        screen_roll_update();
+        return;
+    }
 
     vehicle_data_snapshot_t snap;
     vehicle_data_snapshot(&snap);
@@ -284,6 +290,8 @@ void ui_init(void)
     lv_obj_add_flag(s_home_root, LV_OBJ_FLAG_HIDDEN);
     s_nav_root = screen_nav_create(scr);
     lv_obj_add_flag(s_nav_root, LV_OBJ_FLAG_HIDDEN);
+    s_roll_root = screen_roll_create(scr);
+    lv_obj_add_flag(s_roll_root, LV_OBJ_FLAG_HIDDEN);
 
     screen_clock_create();
 
@@ -360,6 +368,7 @@ void ui_show_view(int view)
     set_hidden(s_dot_row, view != UI_VIEW_OBD);
     set_hidden(s_home_root, view != UI_VIEW_HOME);
     set_hidden(s_nav_root, view != UI_VIEW_NAV);
+    set_hidden(s_roll_root, view != UI_VIEW_ROLL);
 }
 
 void ui_show_dash(void)

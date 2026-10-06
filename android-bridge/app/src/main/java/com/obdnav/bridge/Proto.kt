@@ -1,6 +1,8 @@
 package com.obdnav.bridge
 
+import android.os.SystemClock
 import org.json.JSONObject
+import java.util.Locale
 
 /** Navigasyon verisi — null alanlar ESP'ye gönderilmez (ekrandaki değer korunur). */
 data class NavData(
@@ -17,7 +19,28 @@ object Proto {
     fun hello(src: String) = withTime(JSONObject().put("t", "hello").put("v", 1).put("src", src)).toString()
     fun start() = JSONObject().put("t", "start").toString()
     fun stop() = JSONObject().put("t", "stop").toString()
-    fun ping(seq: Int) = withTime(JSONObject().put("t", "ping").put("seq", seq)).toString()
+    /** m = telefon monotonik saati (µs); ESP pong'da geri yollar → saat senkronu (Roll). */
+    fun ping(seq: Int) = withTime(JSONObject().put("t", "ping").put("seq", seq))
+        .put("m", SystemClock.elapsedRealtimeNanos() / 1000).toString()
+
+    /**
+     * ROLL: tek GNSS ölçümü. e = ölçüm anı (ESP µs; senkron yoksa yok),
+     * bilinmeyen alanlar -1 (alt bilinmiyorsa hiç yazılmaz). Tek BLE yazımına sığar (~150 B).
+     */
+    fun gnss(espUs: Long?, v: Float, sa: Float, alt: Double?, va: Float, ha: Float, hdg: Float,
+             sat: Int, lat: Double, lon: Double): String {
+        val sb = StringBuilder(160).append("{\"t\":\"gnss\"")
+        espUs?.let { sb.append(",\"e\":").append(it) }
+        sb.append(",\"v\":").append(f(v, 2)).append(",\"sa\":").append(f(sa, 2))
+        alt?.let { sb.append(",\"alt\":").append(f(it, 1)) }
+        sb.append(",\"va\":").append(f(va, 1)).append(",\"ha\":").append(f(ha, 1))
+            .append(",\"hdg\":").append(f(hdg, 1)).append(",\"sat\":").append(sat)
+            .append(",\"lat\":").append(f(lat, 6)).append(",\"lon\":").append(f(lon, 6)).append('}')
+        return sb.toString()
+    }
+
+    /** Noktalı ondalık (yerel ayardan bağımsız) — JSON ve CSV için. */
+    fun f(x: Number, dec: Int): String = String.format(Locale.US, "%.${dec}f", x.toDouble())
 
     /** ESP saat senkronu: ts = UTC epoch saniye, tz = yerel ofset (dakika, yaz saati dahil). */
     private fun withTime(o: JSONObject): JSONObject {
