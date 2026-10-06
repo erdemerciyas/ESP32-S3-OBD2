@@ -17,6 +17,20 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 ---
 
+## 2026-10-06 — WiFi: ESP güç kaybı sonrası adaptörde kalan ölü TCP oturumu
+
+**Belirti (fotoğraflı):** İlk bağlantı hızlı ve veri akıyor. Araç kapatılıp ESP sökülüp takılınca "Opening TCP..."ta kalıyor, ya da "Connected" olup veri gelmiyor / hemen kopuyor.
+
+**Teşhis:** Adaptör OBD soketinden sürekli besleniyor; ESP'nin elektriği kesilince FIN gitmiyor, adaptör ölü oturumu açık sanıp **tek istemci yuvasını** tutuyor. Yeni bağlantı reddediliyor/askıda kalıyor ya da veri eski oturuma gidiyor. Önceki keepalive/bekçi düzeltmeleri bunu çözmüyordu.
+
+- **Sabit yerel TCP portu** (`wifi_obd.c`): 35001–35008 aralığı, son kullanılan NVS'de (`obd_wifi/lport`). Yeniden açılışta aynı IP + aynı port ile gelen SYN adaptördeki ölü oturuma denk gelir → adaptör ACK döner → lwIP (SYN_SENT) RST basıp SYN'i hemen yineler → adaptör ölü oturumu bırakır (RFC 793/5961 yarı-açık bağlantı kurtarma). Kendi TIME_WAIT'imiz porta denk gelirse (`EADDRINUSE`) aralıktaki sonraki port.
+- **`CONFIG_LWIP_DHCP_RESTORE_LAST_IP=y`**: yeniden açılışta adaptörün DHCP'sinden önceki IP istenir (aynı 4'lü için gerekli). Statik yedek `.123` zaten sabit.
+- TCP connect zaman aşımı 3 → 4 sn (SYN yinelemesine yer), durdurma bekleme 9 → 11 sn. Log: yerel port, errno, alınan IP.
+- Dash üst durum simgesi WiFi'deyken WiFi simgesi gösteriyor (önce hep Bluetooth'tu).
+- Build uyarısız, COM3'ten flash, açılış OK (`v1.0.0-2-gbb560ec`). Adaptör o an kapalıydı (`reason=201` AP yok); `reconnect_test.ps1` (RTS ile donanım reset = FIN'siz kopma, 4 tur) adaptörü bekliyor.
+
+---
+
 ## 2026-10-06 — WiFi: zaman aşımı payı + adaptör başına voltaj kalibrasyonu
 
 **Belirti:** WiFi zor bağlanıyor; "Connected" olup veri hiç/kısmen gelmiyor. BLE hızlı. Voltaj: WiFi klon 14.x, BLE klon ~16 V (aynı araç).

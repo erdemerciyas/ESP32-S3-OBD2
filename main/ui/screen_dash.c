@@ -4,6 +4,7 @@
 #include "vehicle_data.h"
 #include "vehicle_profile.h"
 #include "obd_dtc.h"
+#include "obd_link.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
@@ -562,6 +563,8 @@ static void update_status(bool connected, const vehicle_data_snapshot_t *snap)
     if ((int8_t)connected != s_prev_connected) {
         s_prev_connected = (int8_t)connected;
         if (connected) {
+            lv_label_set_text_static(s_bt_icon, obd_link_get_type() == OBD_LINK_WIFI ? LV_SYMBOL_WIFI
+                                                                              : LV_SYMBOL_BLUETOOTH);
             lv_obj_clear_flag(s_bt_icon, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_bt_icon, LV_OBJ_FLAG_HIDDEN);

@@ -33,20 +33,23 @@
 static const char *TAG = "wifi_obd";
 static const char *NVS_NS = "obd_wifi";
 static const char *NVS_KEY_SSID = "ssid";
+static const char *NVS_KEY_LPORT = "lport";
 
 #define DEFAULT_HOST        "192.168.0.10"
 #define STATIC_IP_LAST      123         /* DHCP yoksa adaptör alt ağında bu adres */
 #define MAX_SCAN_APS        16
 #define ASSOC_TIMEOUT_MS    8000
 #define DHCP_TIMEOUT_MS     5000
-#define TCP_CONNECT_MS      3000
+#define TCP_CONNECT_MS      4000        /* SYN yinelemesine (RTO 1.5 sn) yer kalsın */
+#define LOCAL_PORT_BASE     35001
+#define LOCAL_PORT_COUNT    8
 #define RX_POLL_MS          100
 #define TX_TIMEOUT_MS       1000
 #define RETRY_MS            1500
 #define BACKOFF_MAX_MS      10000
 #define TCP_FAIL_MAX        3           /* sonra WiFi'yi baştan kur */
 #define JOIN_FAIL_MAX       2           /* kayıtlı SSID'de sonra taramaya düş */
-#define STOP_TIMEOUT_MS     9000
+#define STOP_TIMEOUT_MS     11000
 #define SILENCE_MS          15000       /* en uzun meşru bekleme 0100 = 12 sn */
 #define DEAD_SESSION_MAX    2
 #define TASK_STACK          4096
@@ -77,6 +80,8 @@ static int s_sock = -1;
 static uint32_t s_gw;                   /* DHCP'den gelen ağ geçidi (ağ bayt sırası) */
 static char s_ssid[33];                 /* şu an kullanılan SSID */
 static char s_saved_ssid[33];
+static uint16_t s_lport = LOCAL_PORT_BASE;   /* TCP yerel portu, NVS'de saklı */
+static uint16_t s_saved_lport;
 static bool s_force_scan;
 static int s_join_fail;
 static wifi_ap_record_t s_aps[MAX_SCAN_APS];
@@ -101,6 +106,12 @@ static void load_saved_ssid(void)
         size_t len = sizeof(s_saved_ssid);
         if (nvs_get_str(h, NVS_KEY_SSID, s_saved_ssid, &len) != ESP_OK) {
             s_saved_ssid[0] = '\0';
+        }
+        uint16_t p;
+        if (nvs_get_u16(h, NVS_KEY_LPORT, &p) == ESP_OK &&
+            p >= LOCAL_PORT_BASE && p < LOCAL_PORT_BASE + LOCAL_PORT_COUNT) {
+            s_lport = p;
+            s_saved_lport = p;
         }
         nvs_close(h);
     }
@@ -253,15 +264,48 @@ static bool join_adapter(void)
     }
 
     save_ssid(ssid);
-    app_log_info(TAG, "Joined %s in %ld ms", ssid,
-                 (long)((esp_timer_get_time() - t0) / 1000));
+    esp_netif_ip_info_t ip = { 0 };
+    esp_netif_get_ip_info(s_netif, &ip);
+    app_log_info(TAG, "Joined %s in %ld ms, IP " IPSTR, ssid,
+                 (long)((esp_timer_get_time() - t0) / 1000), IP2STR(&ip.ip));
     return true;
 }
 
-static int tcp_connect_to(uint32_t addr, int port)
+static void save_local_port(uint16_t port)
+{
+    if (port == s_saved_lport) {
+        return;
+    }
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u16(h, NVS_KEY_LPORT, port);
+        nvs_commit(h);
+        nvs_close(h);
+        s_saved_lport = port;
+    }
+}
+
+/* Sabit yerel port: ESP güç kaybıyla kapanınca adaptör eski oturumu açık
+ * sanıp tek istemci yuvasını tutuyor. Yeniden açılışta aynı IP + aynı port
+ * ile gelen SYN o ölü oturuma çarpar; adaptörün ACK'ine lwIP RST basar ve
+ * SYN'i hemen yineler → adaptör eski oturumu bırakır, bağlantı kurulur. */
+static int tcp_connect_to(uint32_t addr, int port, uint16_t lport, int *err_out)
 {
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) {
+        *err_out = errno;
+        return -1;
+    }
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in la = {
+        .sin_family = AF_INET,
+        .sin_port = htons(lport),
+        .sin_addr.s_addr = htonl(INADDR_ANY),
+    };
+    if (bind(fd, (struct sockaddr *)&la, sizeof(la)) < 0) {
+        *err_out = errno;
+        close(fd);
         return -1;
     }
     struct sockaddr_in sa = {
@@ -273,26 +317,27 @@ static int tcp_connect_to(uint32_t addr, int port)
     int flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     int rc = connect(fd, (struct sockaddr *)&sa, sizeof(sa));
-    if (rc < 0 && errno == EINPROGRESS) {
+    int err = rc < 0 ? errno : 0;
+    if (rc < 0 && err == EINPROGRESS) {
         fd_set wfds;
         FD_ZERO(&wfds);
         FD_SET(fd, &wfds);
         struct timeval tv = { .tv_sec = TCP_CONNECT_MS / 1000, .tv_usec = (TCP_CONNECT_MS % 1000) * 1000 };
-        rc = select(fd + 1, NULL, &wfds, NULL, &tv) == 1 ? 0 : -1;
-        if (rc == 0) {
-            int err = 0;
+        if (select(fd + 1, NULL, &wfds, NULL, &tv) == 1) {
             socklen_t len = sizeof(err);
             getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
-            rc = err ? -1 : 0;
+        } else {
+            err = ETIMEDOUT;
         }
+        rc = err ? -1 : 0;
     }
     if (rc < 0) {
+        *err_out = err;
         close(fd);
         return -1;
     }
     fcntl(fd, F_SETFL, flags);
 
-    int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));   /* "010C\r" hemen gitsin */
     setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof(one));
     /* Gevşek tutuldu: bazı klon TCP yığınları keepalive yoklamasına cevap
@@ -330,11 +375,22 @@ static bool tcp_open(void)
         char host[16];
         snprintf(host, sizeof(host), IPSTR, IP2STR(&a));
         int64_t t0 = esp_timer_get_time();
-        int fd = tcp_connect_to(hosts[i], CONFIG_OBD_WIFI_PORT);
+        int fd = -1, err = 0;
+        for (int k = 0; k < LOCAL_PORT_COUNT; k++) {
+            fd = tcp_connect_to(hosts[i], CONFIG_OBD_WIFI_PORT, s_lport, &err);
+            if (fd >= 0 || err != EADDRINUSE) {
+                break;
+            }
+            /* Kendi TIME_WAIT'imiz bu 4'lüyü tutuyor (temiz kapanış sonrası):
+             * aralıktaki sonraki porta geç. */
+            s_lport = LOCAL_PORT_BASE + (s_lport - LOCAL_PORT_BASE + 1) % LOCAL_PORT_COUNT;
+        }
         if (fd < 0) {
-            app_log_warn(TAG, "TCP %s:%d failed", host, CONFIG_OBD_WIFI_PORT);
+            app_log_warn(TAG, "TCP %s:%d failed (local :%u, errno %d)", host,
+                         CONFIG_OBD_WIFI_PORT, s_lport, err);
             continue;
         }
+        save_local_port(s_lport);
         xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
         s_sock = fd;
         xSemaphoreGive(s_tx_mutex);
@@ -342,8 +398,8 @@ static bool tcp_open(void)
         s_session_rx = false;
         s_connected = true;
         vehicle_data_set_adapter(s_ssid, host);
-        app_log_info(TAG, "TCP %s:%d connected in %ld ms", host, CONFIG_OBD_WIFI_PORT,
-                     (long)((esp_timer_get_time() - t0) / 1000));
+        app_log_info(TAG, "TCP %s:%d connected (local :%u) in %ld ms", host, CONFIG_OBD_WIFI_PORT,
+                     s_lport, (long)((esp_timer_get_time() - t0) / 1000));
         return true;
     }
     vehicle_data_set_state(OBD_STATE_ERROR, "Adapter TCP refused");
@@ -569,7 +625,7 @@ void wifi_obd_stop(void)
     }
     s_running = false;
     xEventGroupSetBits(s_ev, BIT_WAKE);
-    /* Tarama (~2.5 sn) ve TCP connect (2×3 sn) kesilemez; en kötü durumu bekle. */
+    /* Tarama (~2.5 sn) ve TCP connect (2×4 sn) kesilemez; en kötü durumu bekle. */
     if (!(xEventGroupWaitBits(s_ev, BIT_IDLE, pdFALSE, pdFALSE,
                               pdMS_TO_TICKS(STOP_TIMEOUT_MS)) & BIT_IDLE)) {
         app_log_warn(TAG, "WiFi stop timed out");

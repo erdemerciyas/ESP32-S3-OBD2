@@ -10,7 +10,7 @@
 typedef void (*wifi_obd_rx_cb_t)(const uint8_t *data, size_t len);
 
 /* start: ilk çağrıda yığını kurar, radyoyu açıp aramaya başlar.
- * stop: TCP'yi kapatır, radyoyu durdurur (bloklar, en fazla ~9 sn). */
+ * stop: TCP'yi kapatır, radyoyu durdurur (bloklar, en fazla ~11 sn). */
 void wifi_obd_start(void);
 void wifi_obd_stop(void);
 void wifi_obd_rescan(void);
