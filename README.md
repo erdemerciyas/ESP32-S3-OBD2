@@ -437,7 +437,10 @@ Each scene renders only while its view is visible. The NAV background builds its
 │   └── ui/                    # theme, fx3d, splash, home, OBD screens, NAV pages,
 │                              # NAV background, clock screensaver, screenshot tour, fonts
 ├── android-bridge/            # AURA Bridge (Kotlin)
+├── version.txt                # single version source (firmware + Android)
+├── .githooks/                 # pre-commit: version bump required · post-commit: tag
 ├── scripts/
+│   ├── bump_version.sh        # patch / minor / major
 │   ├── capture_screens.py     # tour frames → docs/screenshots/*.png
 │   ├── nav_bridge_sim.py      # PC BLE phone emulator (bleak)
 │   └── verify_round_lcd_layout.py
@@ -470,6 +473,23 @@ idf.py -p COM3 flash
 ```
 
 `capture_screens.py` needs only `pyserial`, which ships in the ESP-IDF Python environment, and writes PNGs without PIL.
+
+### Versioning (required for every commit)
+
+Every commit carries a new version. `version.txt` is the single source of truth. ESP-IDF uses it as the app version, which is shown in the boot log and at the bottom of the Home screen. The Android bridge derives `versionName` and `versionCode` from it (`major·10000 + minor·100 + patch`).
+
+```bash
+git config core.hooksPath .githooks        # once per clone
+scripts/bump_version.sh patch              # or minor / major
+# add "## vX.Y.Z — date — title" to CHANGELOG.md, then commit as usual
+git push --follow-tags
+```
+
+`.githooks/pre-commit` rejects a commit if `version.txt` did not increase or `CHANGELOG.md` has no entry for the new version. `.githooks/post-commit` creates the annotated tag `vX.Y.Z`. Use semantic versioning:
+
+- **patch:** fixes and small changes;
+- **minor:** new features;
+- **major:** incompatible changes, such as the BLE protocol or NVS layout.
 
 ### Other tools
 

@@ -2,6 +2,8 @@
 
 Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce burayı oku;** anlamlı değişiklik yaptıktan sonra güncelle.
 
+**Sürüm kuralı (zorunlu):** her commit yeni bir sürüm alır. `scripts/bump_version.sh [patch|minor|major]` → `version.txt` (firmware + Android ortak tek kaynak), bu dosyaya `## vX.Y.Z — tarih — başlık` girdisi. `.githooks/pre-commit` ikisini denetler, `post-commit` `vX.Y.Z` etiketini atar; push: `git push --follow-tags`. Yeni klonda bir kez: `git config core.hooksPath .githooks`. patch = düzeltme / küçük değişiklik, minor = yeni özellik, major = uyumsuz değişiklik (protokol, NVS biçimi).
+
 ## Mevcut durum (2026-10-05)
 
 | Alan | Değer |
@@ -14,6 +16,14 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 | Son flash | COM3 (USB-JTAG) — BLE/WiFi taşıma seçimi, varsayılan BLE, 2026-10-05 |
 | Git | 2026-10-05 tüm değişiklikler (K-line optimizasyonu, DTC, yuvarlak UI, WiFi adaptör, README) `main`e commit edilip `origin`e gönderildi |
 | Açık işler | WiFi adaptörle araçta test · Araçta ölçüm (Settings → `Link:` satırı) · Faz 3 K-line P3 ayarı · Faz 4 BLE CCCD · `scripts/verify_round_lcd_layout.py` `UI_VIEWPORT_SZ` parse hatası (önceden var) |
+
+---
+
+## v1.1.0 — 2026-10-06 — Sürümleme kuralı + AURA ilk sürüm numarası
+
+- `version.txt` = **1.1.0** (v1.0.0 = yalnız OBD; 1.1.0 = AURA: NAV + Android köprü + saat + fx3d — aşağıdaki 2026-10-06 girdileri, commit `e599120`). ESP-IDF bunu uygulama sürümü yapar: açılış logu `AURA v1.1.0`, ana menüde altta `v1.1.0`.
+- Android köprü sürümünü `version.txt`'den alır: `versionName` = `1.1.0`, `versionCode` = major·10000 + minor·100 + patch (= 10100; eski 8'den büyük, güncelleme olarak kurulur).
+- `scripts/bump_version.sh`, `.githooks/pre-commit` (sürüm artmadıysa / CHANGELOG girdisi yoksa commit'i reddeder), `.githooks/post-commit` (`vX.Y.Z` açıklamalı etiket).
 
 ---
 

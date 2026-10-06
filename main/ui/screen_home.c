@@ -3,6 +3,7 @@
 #include "app_mode.h"
 #include "fx3d.h"
 #include "esp_heap_caps.h"
+#include "esp_app_desc.h"
 #include <math.h>
 
 /* Mod seçimi — iki büyük yuvarlak karo: OBD (araç verisi) ve NAV (telefon
@@ -185,6 +186,10 @@ void screen_home_update(void)
     }
     if (busy != s_prev_busy) {
         s_prev_busy = busy;
-        lv_label_set_text_static(s_info, busy ? "Geçiliyor..." : "");
+        if (busy) {
+            lv_label_set_text_static(s_info, "Geçiliyor...");
+        } else {
+            lv_label_set_text_fmt(s_info, "v%s", esp_app_get_description()->version);
+        }
     }
 }

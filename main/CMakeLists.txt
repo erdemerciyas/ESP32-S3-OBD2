@@ -64,6 +64,7 @@ idf_component_register(
         freertos
         driver
         json
+        esp_app_format
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)

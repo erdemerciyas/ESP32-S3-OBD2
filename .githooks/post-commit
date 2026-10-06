@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Her commit'i sürümüyle etiketler (vX.Y.Z, açıklamalı → push --follow-tags taşır).
+ver=$(tr -d '[:space:]' < version.txt)
+if [ -n "$ver" ] && ! git rev-parse -q --verify "refs/tags/v$ver" >/dev/null; then
+    git tag -a "v$ver" -m "AURA v$ver"
+    echo "post-commit: etiket v$ver"
+fi

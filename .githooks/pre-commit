@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Kural: her commit yeni bir sürüm taşır.
+#  - version.txt bir önceki commit'tekinden büyük olmalı (scripts/bump_version.sh)
+#  - CHANGELOG.md'de "vX.Y.Z" girdisi olmalı
+fail() { echo "pre-commit: $*" >&2; echo "  → scripts/bump_version.sh [patch|minor|major] + CHANGELOG girdisi" >&2; exit 1; }
+
+new=$(git show :version.txt 2>/dev/null | tr -d '[:space:]')
+old=$(git show HEAD:version.txt 2>/dev/null | tr -d '[:space:]')
+[ -n "$new" ] || fail "version.txt commit'te yok"
+echo "$new" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "version.txt X.Y.Z biçiminde değil: $new"
+if [ -n "$old" ]; then
+    top=$(printf '%s\n%s\n' "$old" "$new" | sort -V | tail -1)
+    { [ "$new" != "$old" ] && [ "$top" = "$new" ]; } || fail "sürüm artırılmadı ($old → $new)"
+fi
+git show :CHANGELOG.md 2>/dev/null | grep -q "v$new" || fail "CHANGELOG.md'de v$new girdisi yok"
+exit 0

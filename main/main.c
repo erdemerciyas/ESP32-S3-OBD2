@@ -1,4 +1,5 @@
 #include "esp_log.h"
+#include "esp_app_desc.h"
 #include "nvs_flash.h"
 
 #include "bsp.h"
@@ -24,7 +25,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "AURA (OBD2 + NAV) starting");
+    ESP_LOGI(TAG, "AURA v%s (OBD2 + NAV) starting", esp_app_get_description()->version);
 
     vehicle_data_init();
     vehicle_profile_init();
