@@ -3,59 +3,51 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Snapshot of fused IMU orientation — read by the UI each frame. */
+/* Araç eğim ölçer + G-metre (QMI8658, 100 Hz).
+ *
+ * Sensör → araç dönüşümü montaj kalibrasyonundan (yukarı yön + ileri yön)
+ * gelir; cihaz hangi açıyla takılırsa takılsın pitch/roll araç eksenlerinde
+ * çıkar. Yerçekimi yönü jiroskopla izlenir, ivmeölçer yalnız güvenilir
+ * anlarda (|a| ≈ 1 g, düşük dönüş hızı) düzeltir; OBD hızı varsa viraj
+ * (v·ω) ve hızlanma ivmesi çıkarılır. Araç dururken jiroskop sapması
+ * kendiliğinden öğrenilir. Araç ekseni: x ileri, y sol, z yukarı. */
+
+typedef enum {
+    IMU_CAL_IDLE = 0,
+    IMU_CAL_RUNNING,     /* 3 sn hareketsiz örnekleme */
+    IMU_CAL_OK,
+    IMU_CAL_MOVED,       /* örnekleme sırasında hareket: tekrar dene */
+} imu_calib_state_t;
+
 typedef struct {
-    float pitch_deg;        /* Forward/back tilt (positive = nose up)    */
-    float roll_deg;         /* Left/right tilt (positive = right down)   */
-    float yaw_deg;          /* Heading 0-360 (gyro integration, drifts)  */
-    float pitch_rad;
-    float roll_rad;
-    float yaw_rad;
-    float accel_x;          /* Raw accel m/s² (for diagnostics)          */
-    float accel_y;
-    float accel_z;
-    float gyro_x;           /* Raw gyro rad/s (for diagnostics)          */
-    float gyro_y;
-    float gyro_z;
-    float temperature;      /* °C                                        */
-    uint32_t sample_ts;     /* lv_tick_get() when last sample arrived    */
-    bool    fresh;          /* true if data has been updated recently    */
+    float pitch_deg;        /* + burun yukarı */
+    float roll_deg;         /* + sağ taraf aşağı */
+    float g_long;           /* boyuna ivme, g (+ hızlanma, − fren) */
+    float g_lat;            /* yanal ivme, g (+ sola doğru ivme = sağa dönüşte −) */
+    float peak_pitch;       /* sıfırlamadan beri en büyük |pitch| */
+    float peak_roll;
+    float peak_g;           /* en büyük yatay ivme, g */
+    float temperature;
+    bool  fresh;            /* son 500 ms içinde örnek var */
+    bool  stationary;       /* araç duruyor (sapma öğrenimi açık) */
+    bool  calibrated;       /* montaj kalibrasyonu yapıldı (yoksa dikey montaj varsayımı) */
+    bool  fwd_learned;      /* ileri yön sürüşten öğrenildi */
+    bool  speed_comp;       /* OBD hız telafisi etkin */
+    imu_calib_state_t calib_state;
+    float calib_progress;   /* 0..1 */
 } imu_snapshot_t;
 
-/* ---------------------------------------------------------------------------
- * Public API
- * ------------------------------------------------------------------------- */
-
-/**
- * @brief  Initialise the QMI8658 driver, run gyro calibration, and create
- *         the 100 Hz polling task. Blocks ~3 s during calibration.
- */
 void imu_init(void);
-
-/**
- * @brief  Start (or resume) the IMU polling task.
- */
 void imu_start(void);
-
-/**
- * @brief  Stop the IMU polling task (e.g. to save power).
- */
 void imu_stop(void);
-
-/**
- * @brief  Get a consistent snapshot of the latest fused orientation.
- *         Thread-safe — may be called from the LVGL timer ISR context.
- */
 void imu_get_snapshot(imu_snapshot_t *snap);
-
-/**
- * @brief  Trigger a gyro calibration cycle (vehicle must be stationary).
- *         Blocks the caller for ~2 s.
- */
-void imu_calibrate(void);
-
-/**
- * @brief  Return true if the IMU has delivered fresh data within the last
- *         500 ms.
- */
 bool imu_is_fresh(void);
+
+/* Düz zeminde, araç dururken: 3 sn örnekleme → jiroskop sapması + yukarı
+ * yön. Sonuç snapshot.calib_state ile izlenir. Asenkron. */
+void imu_calib_start(void);
+/* Şu anki duruşu "düz" kabul et (ileri yön korunur) + tepe değerleri sıfırla. */
+void imu_level_zero(void);
+void imu_reset_peaks(void);
+/* Montaj kalibrasyonunu ve sapmayı unut (dikey montaj varsayımına dön). */
+void imu_calib_clear(void);

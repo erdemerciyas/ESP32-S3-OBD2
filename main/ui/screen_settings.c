@@ -4,26 +4,27 @@
 #include "vehicle_profile.h"
 #include "obd_link.h"
 #include "obd_pids.h"
+#include "clock.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 /* Settings — round-panel layout.
- * Five round toggle tiles, three over two (units, link BLE/WiFi, auto
- * connect; centre gauge, profile), title above, a three-line link summary
+ * Six round toggle tiles, three over three (units, link BLE/WiFi, auto
+ * connect; centre gauge, clock screensaver, profile), title above, a three-line link summary
  * below. Tap a tile to toggle; the profile tile cycles through the stored
  * profiles; the link tile switches the adapter transport and starts its scan. */
 
 #define ST_TILE_D       100
 #define ST_TOP_DX       110
-#define ST_BOT_DX       56
+#define ST_BOT_DX       110
 #define ST_TILE_TOP_Y   (-50)
 #define ST_TILE_BOT_Y   62
 #define ST_TITLE_Y      (-146)
 #define ST_INFO_Y       158
 #define ST_INFO_W       260
 
-enum { TILE_UNITS = 0, TILE_LINK, TILE_AUTO, TILE_GAUGE, TILE_PROFILE, TILE_COUNT };
+enum { TILE_UNITS = 0, TILE_LINK, TILE_AUTO, TILE_GAUGE, TILE_CLOCK, TILE_PROFILE, TILE_COUNT };
 
 typedef struct {
     lv_obj_t  *obj;
@@ -90,6 +91,10 @@ static void tile_refresh(int i)
     case TILE_GAUGE:
         lv_label_set_text_static(tl->value, vd->center_gauge_rpm ? "RPM" : "SPEED");
         break;
+    case TILE_CLOCK:
+        on = clock_saver_enabled();
+        lv_label_set_text_static(tl->value, on ? "ON" : "OFF");
+        break;
     case TILE_PROFILE:
         lv_label_set_text(tl->value, vehicle_profile_get()->display_name);
         break;
@@ -109,6 +114,8 @@ static void tile_click_cb(lv_event_t *e)
 
     if (i == TILE_LINK) {
         obd_link_switch(obd_link_get_type() == OBD_LINK_WIFI ? OBD_LINK_BLE : OBD_LINK_WIFI);
+    } else if (i == TILE_CLOCK) {
+        clock_saver_set(!clock_saver_enabled());
     } else if (i == TILE_PROFILE) {
         int count = vehicle_profile_get_count();
         const char *active = vehicle_profile_get_active_id();
@@ -293,6 +300,7 @@ void screen_settings_create(lv_obj_t *parent)
     create_tile(root, TILE_LINK,     0,         ST_TILE_TOP_Y, LV_SYMBOL_BLUETOOTH, "Link",    t->primary);
     create_tile(root, TILE_AUTO,     ST_TOP_DX, ST_TILE_TOP_Y, LV_SYMBOL_LOOP,      "Auto",    t->ok);
     create_tile(root, TILE_GAUGE,   -ST_BOT_DX, ST_TILE_BOT_Y, LV_SYMBOL_REFRESH,   "Centre",  t->secondary);
+    create_tile(root, TILE_CLOCK,    0,         ST_TILE_BOT_Y, LV_SYMBOL_EYE_OPEN,  "Clock",   t->accent);
     create_tile(root, TILE_PROFILE,  ST_BOT_DX, ST_TILE_BOT_Y, LV_SYMBOL_LIST,      "Profile", t->warn);
 
     s_info_lbl = lv_label_create(root);

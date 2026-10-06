@@ -24,3 +24,9 @@ simulator/Screenshot*.png
 
 # AI tool local state (skill copies are re-installable from skills-lock.json)
 .claude/
+
+# Locally built APKs (publish via GitHub Releases)
+dist/
+
+# Screenshot-tour firmware build (scripts/capture_screens.py)
+build_shots/

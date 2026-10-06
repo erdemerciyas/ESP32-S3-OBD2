@@ -1,12 +1,14 @@
 idf_component_register(
     SRCS
         "main.c"
+        "app_mode.c"
         "bsp/bsp_display.cpp"
         "bsp/lvgl_v8_port.cpp"
         "data/vehicle_data.c"
         "data/vehicle_profile.c"
         "data/app_log.c"
         "data/dtc_db.c"
+        "data/clock.c"
         "imu/qmi8658.c"
         "imu/imu_data.c"
         "obd/ble_obd.c"
@@ -15,6 +17,13 @@ idf_component_register(
         "obd/elm327.c"
         "obd/obd_pids.c"
         "obd/obd_dtc.c"
+        "nav/nav_state.c"
+        "nav/nav_service.c"
+        "nav/nav_mock.c"
+        "nav/nav_codec_json.c"
+        "nav/nav_transport_ble.c"
+        "nav/nav_track.c"
+        "nav/nav_map.c"
         "ui/theme.c"
         "ui/ui.c"
         "ui/screen_splash.c"
@@ -24,6 +33,14 @@ idf_component_register(
         "ui/screen_dtc.c"
         "ui/screen_settings.c"
         "ui/screen_gyro.c"
+        "ui/screen_home.c"
+        "ui/screen_clock.c"
+        "ui/screen_nav.c"
+        "ui/screen_nav_map.c"
+        "ui/screen_nav_trip.c"
+        "ui/screen_nav_bg.c"
+        "ui/ui_shots.c"
+        "ui/fx3d.c"
         "ui/lv_font_montserrat_56.c"
         "ui/lv_font_montserrat_94_bold.c"
         "ui/lv_font_tr_16.c"
@@ -34,6 +51,7 @@ idf_component_register(
         "data"
         "imu"
         "obd"
+        "nav"
         "ui"
     REQUIRES
         nvs_flash
@@ -45,6 +63,7 @@ idf_component_register(
         esp_timer
         freertos
         driver
+        json
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)

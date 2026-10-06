@@ -19,15 +19,16 @@
 /* --- Register map -------------------------------------------------------- */
 #define QMI8658_REG_WHO_AM_I        0x00    /* RO, should return 0x05          */
 #define QMI8658_REG_REVISION_ID     0x01    /* RO, silicon revision            */
-#define QMI8658_REG_CTRL1           0x02    /* RW, accel ODR + full-scale       */
-#define QMI8658_REG_CTRL2           0x03    /* RW, gyro ODR + full-scale        */
-#define QMI8658_REG_CTRL3           0x04    /* RW, sensor enable + misc         */
+#define QMI8658_REG_CTRL1           0x02    /* RW, serial interface: addr auto-inc, endian */
+#define QMI8658_REG_CTRL2           0x03    /* RW, accel full-scale + ODR        */
+#define QMI8658_REG_CTRL3           0x04    /* RW, gyro full-scale + ODR         */
 #define QMI8658_REG_CTRL4           0x05    /* RW, sensor enable 2              */
-#define QMI8658_REG_CTRL5           0x06    /* RW, low-pass / bandwidth         */
+#define QMI8658_REG_CTRL5           0x06    /* RW, low-pass filters (a + g)      */
 #define QMI8658_REG_CTRL6           0x07    /* RW, motion detection             */
-#define QMI8658_REG_CTRL7           0x08    /* RW, enable / ack                 */
+#define QMI8658_REG_CTRL7           0x08    /* RW, sensor enable: b0 accel, b1 gyro */
 #define QMI8658_REG_CTRL8           0x09    /* RW, reserved                     */
-#define QMI8658_REG_CTRL9           0x0A    /* W,  command (soft reset = 0xB8)  */
+#define QMI8658_REG_CTRL9           0x0A    /* W,  host command                  */
+#define QMI8658_REG_RESET           0x60    /* W,  0xB0 = soft reset             */
 #define QMI8658_REG_STATUSINT       0x2D    /* RO, data-ready + interrupt flags */
 #define QMI8658_REG_TEMP_L          0x33    /* RO, temperature low byte         */
 #define QMI8658_REG_TEMP_H          0x34    /* RO, temperature high byte        */
@@ -47,50 +48,24 @@
 /* WHO_AM_I expected value */
 #define QMI8658_WHO_AM_I_VAL        0x05
 
-/* CTRL1 – Accelerometer configuration (default: 0x00)
- * [7:5] ODR:  000=8kHz, 001=4kHz, 010=2kHz, 011=1kHz,
- *              100=500Hz, 101=250Hz, 110=125Hz, 111=62.5Hz
- * [4:3] FS:   00=±2g, 01=±4g, 10=±8g, 11=±16g
- * [2:0] reserved */
-#define QMI8658_CTRL1_ODR_125HZ     0x60    /* 110 << 5 = 0x60                  */
-#define QMI8658_CTRL1_ODR_250HZ     0x50
-#define QMI8658_CTRL1_ODR_500HZ     0x40
-#define QMI8658_CTRL1_ODR_1KHZ      0x30
-#define QMI8658_CTRL1_FS_2G         0x00    /* 00 << 3 = 0x00                   */
-#define QMI8658_CTRL1_FS_4G         0x08    /* 01 << 3 = 0x08                   */
-#define QMI8658_CTRL1_FS_8G         0x10    /* 10 << 3 = 0x10                   */
-#define QMI8658_CTRL1_FS_16G        0x18    /* 11 << 3 = 0x18                   */
-
-/* CTRL2 – Gyroscope configuration (default: 0x00)
- * [7:5] ODR:  same encoding as CTRL1
- * [4:3] FS:   00=±16dps, 01=±32dps, 10=±64dps, 11=±128dps
- *             NOTE — extended range via CTRL3[7:6] for ±256/512/1024/2048
- * [2:0] reserved */
-#define QMI8658_CTRL2_ODR_125HZ     0x60
-#define QMI8658_CTRL2_ODR_250HZ     0x50
-#define QMI8658_CTRL2_ODR_500HZ     0x40
-#define QMI8658_CTRL2_FS_512DPS     0x18    /* 11 with extended range via CTRL3 */
-
-/* CTRL3 – Sensor enable / extended range
- * [7] gyro_ext_range_en
- * [6] gyro_ext_range: 0=±256dps, 1=±512dps (combined with CTRL2 FS)
- * [5] reserved
- * [4] accel_en: 1 = accelerometer on
- * [3] gyro_en:  1 = gyroscope on
- * [2:0] reserved */
-#define QMI8658_CTRL3_ACCEL_EN      0x10
-#define QMI8658_CTRL3_GYRO_EN       0x08
-#define QMI8658_CTRL3_GYRO_EXT_512  0xC0    /* ext en + 512 dps                */
-
-/* CTRL7 – Enable
- * [7:1] reserved
- * [0] ctrl7_enable: 1 = enable sensor block */
-#define QMI8658_CTRL7_ENABLE        0x01
-
-/* CTRL9 – Command register
- * 0xB8 = soft reset (triggers and self-clears)
- * 0x00 = no operation */
-#define QMI8658_CTRL9_SOFT_RESET    0xB8
+/* Datasheet (QMI8658A/C) kayıtları — önceki tanımlar yanlış kayıtlara yazıyordu:
+ * jiroskop hiç açılmıyor (CTRL7=0x01), ivme verisi big-endian geliyordu.
+ *
+ * CTRL1: b6 ADDR_AI (burst okuma için adres artırma), b5 BE (0 = little endian)
+ * CTRL2: ivme — b6:4 aFS (0=±2g 1=±4g 2=±8g 3=±16g), b3:0 aODR
+ * CTRL3: jiro — b6:4 gFS (0=±16 … 5=±512 … 7=±2048 dps), b3:0 gODR
+ *        ODR kodu (6DOF): 3=1 kHz, 4=500 Hz, 5=250 Hz, 6=125 Hz, 7=62.5 Hz
+ * CTRL5: b6:5 gLPF_MODE, b4 gLPF_EN, b2:1 aLPF_MODE, b0 aLPF_EN
+ *        mode 3 = ODR'nin %13.37'si (~33 Hz, 250 Hz ODR)
+ * CTRL7: b0 aEN, b1 gEN
+ * RESET: 0xB0 yaz → yazılımsal sıfırlama */
+#define QMI8658_CTRL1_ADDR_AI       0x40
+#define QMI8658_ODR_250HZ           0x05
+#define QMI8658_CTRL2_FS_8G         0x20
+#define QMI8658_CTRL3_FS_512DPS     0x50
+#define QMI8658_CTRL5_LPF_33HZ      0x77    /* gLPF mode3 + en, aLPF mode3 + en */
+#define QMI8658_CTRL7_ACC_GYRO_EN   0x03
+#define QMI8658_RESET_CMD           0xB0
 
 /* Sensitivity conversion factors.
  * At ±8g, 1 LSB = 8g/32768 = 0.244 mg → m/s²: * 9.80665 / 4096

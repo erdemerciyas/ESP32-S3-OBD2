@@ -22,6 +22,7 @@ static volatile obd_link_type_t s_type = OBD_LINK_WIFI;
 static volatile obd_link_type_t s_type = OBD_LINK_BLE;
 #endif
 static volatile bool s_switching;
+static volatile bool s_suspended;   /* NAV modu: OBD radyosu kapalı */
 
 static const char *type_name(obd_link_type_t type)
 {
@@ -58,7 +59,7 @@ void obd_link_start(void)
 
 void obd_link_rescan(void)
 {
-    if (s_switching) {
+    if (s_switching || s_suspended) {
         return;
     }
     if (s_type == OBD_LINK_WIFI) {
@@ -122,6 +123,10 @@ void obd_link_switch(obd_link_type_t type)
         nvs_commit(h);
         nvs_close(h);
     }
+    if (s_suspended) {
+        s_type = type;   /* resume yeni seçimle başlatır */
+        return;
+    }
 
     s_switching = true;
     s_type = type;   /* UI hemen yeni seçimi göstersin */
@@ -131,4 +136,35 @@ void obd_link_switch(obd_link_type_t type)
         app_log_error(TAG, "Switch task create failed");
         s_switching = false;
     }
+}
+
+void obd_link_suspend(void)
+{
+    while (s_switching) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (s_suspended) {
+        return;
+    }
+    s_suspended = true;
+    if (s_type == OBD_LINK_WIFI) {
+        wifi_obd_stop();
+    } else {
+        ble_obd_stop();
+    }
+    vehicle_data_set_adapter("", "");
+    vehicle_data_set_state(OBD_STATE_DISCONNECTED, "NAV mode");
+    app_log_info(TAG, "OBD link suspended");
+}
+
+void obd_link_resume(void)
+{
+    if (!s_suspended) {
+        return;
+    }
+    s_suspended = false;
+    vehicle_data_set_state(OBD_STATE_DISCONNECTED, s_type == OBD_LINK_WIFI ? "Searching WiFi..."
+                                                                           : "Searching BLE...");
+    start_type(s_type);
+    app_log_info(TAG, "OBD link resumed (%s)", type_name(s_type));
 }

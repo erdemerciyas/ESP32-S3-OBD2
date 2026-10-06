@@ -26,3 +26,8 @@ obd_link_type_t obd_link_get_type(void);
 /* Kaydeder; eskisini durdurup yenisini arka planda başlatır (UI bloklanmaz).
  * Geçiş sürerken gelen istekler yok sayılır. */
 void obd_link_switch(obd_link_type_t type);
+
+/* NAV modu: OBD radyosunu (BLE ya da WiFi) tamamen kapatır / seçili taşımayla
+ * yeniden başlatır. suspend bloklar (WiFi'de ~11 sn'ye kadar) — görevden çağır. */
+void obd_link_suspend(void);
+void obd_link_resume(void);

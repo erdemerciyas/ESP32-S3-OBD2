@@ -15,7 +15,15 @@ enum {
     UI_TAB_COUNT,
 };
 
+/* Üst düzey görünümler: mod seçimi, OBD sekmeleri, navigasyon. */
+enum {
+    UI_VIEW_HOME = 0,
+    UI_VIEW_OBD,
+    UI_VIEW_NAV,
+};
+
 void ui_init(void);
+void ui_show_view(int view);
 void ui_start_update_timer(void);
 void ui_show_dash(void);
 void ui_show_tab(int tab);
@@ -38,3 +46,19 @@ void screen_grid_update(const vehicle_data_snapshot_t *snap);
 void screen_dtc_update(const vehicle_data_snapshot_t *snap);
 void screen_settings_update(const vehicle_data_snapshot_t *snap);
 void screen_gyro_update(const imu_snapshot_t *snap);
+
+lv_obj_t *screen_home_create(lv_obj_t *parent);
+lv_obj_t *screen_nav_create(lv_obj_t *parent);
+void screen_home_update(void);
+void screen_nav_update(void);
+void screen_nav_next_page(void);
+
+/* CONFIG_UI_SHOT_TOUR: README ekran görüntüsü turu (yoksa boş) */
+void ui_shots_start(void);
+
+/* Saat ekran koruyucusu (üst katman) */
+void screen_clock_create(void);
+void screen_clock_show(void);
+void screen_clock_hide(void);
+bool screen_clock_visible(void);
+void screen_clock_update(void);

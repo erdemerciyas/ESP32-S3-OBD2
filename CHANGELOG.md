@@ -17,6 +17,149 @@ Bu dosya proje geçmişini ve mevcut durumu tutar. **Yeni sohbetlerde önce bura
 
 ---
 
+## 2026-10-06 — Saat: 4 sn basılı tutma · ekran görüntüsü turu · İngilizce README
+
+- **Saat açma = 4 sn basılı tutma** (her görünümde; 24 px tolerans, kaydırınca süre baştan, basış başına bir kez; bırakış alttaki ekrana tıklamaz). **Pinch kaldırıldı** (CST820 tek nokta — `lvgl_v8_port.cpp` ek I²C okuması ve `bsp_touch_take_pinch` silindi).
+- **NAV'da saat kendiliğinden asla gelmez**; 30 sn boşta otomatik yalnız OBD / ana menüde ve Ayarlar → Clock açıkken.
+- NAV kökündeki "uzun basış → menü" kaldırıldı (4 sn tutuşu 0.4 sn'de bölüyordu); MENÜ hapı duruyor.
+- **Ekran görüntüsü turu** (`CONFIG_UI_SHOT_TOUR`, `ui/ui_shots.c`, ayrı `build_shots/` derlemesi): saat ayarlanır, demo OBD verisi + mock rota, tüm görünümler gezilir, `lv_snapshot` kareleri numaralı base64 satırlarıyla **iki geçişte** USB'ye yazılır. `scripts/capture_screens.py` (yalnız pyserial, PIL yok) toplu okur, eksik satırı diğer geçişten tamamlar, yuvarlak alfa maskeli PNG yazar → `docs/screenshots/` (11 görüntü). İlk denemede pyserial `readline()` yavaşlığından ~%30 satır kaybı → blok okuma + cihazda 4 satırda 2 ms bekleme ile kayıpsız.
+- **README İngilizce baştan yazıldı** (AURA: OBD + NAV + Android köprü + saat, gerçek ekran görüntüleri, protokol, mimari, fx3d, NVS anahtarları, geliştirici araçları, sorun giderme, sınırlamalar).
+
+---
+
+## 2026-10-06 — NAV ilk sayfa: canlı arka plan + kullanışlılık
+
+- **Canlı arka plan** (`ui/screen_nav_bg.c`, 440 px fx3d canvas, ~15 fps, yalnız rehberlik sayfasında): lacivert vinyet + sıcak turuncu-mor ufuk ışıltısı (tek sefer hesaplanan taban, karede memcpy), üstte dalgalı kuzey ışığı perdeleri (yeşil / camgöbeği / mor), altta perspektif yol: kenar çizgileri, telefon hızıyla akan orta şerit ve ızgara; dönüşe 400 m kala yol dönüş yönüne kıvrılır. Veri eskiyse sahne söner ve durur.
+- **Yaklaşma halkası**: kenarda 300° yay, manevraya yaklaştıkça dolar; >300 m camgöbeği, 100–300 m turuncu, <100 m yeşil.
+- **Cam bilgi hapları**: VARIŞ (yeşil) · KALAN (turuncu) · HIZ (camgöbeği); radar uyarısında hız limiti aşılırsa HIZ hapı kırmızı.
+- **Durum satırında saat** (rehberlikte) — `14:37 • Telefon bağlı`.
+- **Boşta ekranı** (telefon yok / rota yok / geçiş): büyük saat + "SALI • 6 EKİM", durum mesajı, telefondan anlık hız • bulunulan yol.
+- Gün/ay adları `clock_day_name` / `clock_month_name`'e taşındı (saat koruyucusuyla ortak).
+
+---
+
+## 2026-10-06 — Saat / takvim + 3D saat ekran koruyucusu
+
+**Saat senkronu:** telefon `hello` ve her `ping`de (2 sn) `ts` (UTC epoch) + `tz` (yerel ofset dk, yaz saati dahil) gönderir → `clock_set_from_phone` (`main/data/clock.c`); 2 sn'den küçük sapmada saate dokunulmaz. Saat dilimi NVS'de (`clock/tz`). PCF85063 RTC (0x51) açılışta yoklanır — **bu kartta yok** (log: `RTC absent`), yani güç kesilince saat telefon tekrar bağlanana kadar "SAAT AYARLANMADI". Android **AURA Köprü 0.8** (`dist/AURA-Bridge-0.8.apk`).
+
+**Ekran koruyucu (`ui/screen_clock.c`, üst katman):** fx3d holografik kadran — geriye yatık, yavaş salınan, derinliğe ayrılmış halkalar (dakika çentikleri arkada, saat turuncu yay, dakika camgöbeği yay, saniye kuyruklu yıldız önde → paralaks), kameraya akan yıldız alanı, 6 katman kabartma HH:MM, Türkçe gün/tarih. 440 px canvas, 20 fps; görünürken alttaki ekranlar güncellenmez.
+- Ayarlar → **Clock** karosu (alt orta; NVS `clock/saver`): açıkken 30 sn dokunulmazsa gelir.
+- **İki parmak (pinch)** ayar kapalıyken de açar. CST820 tek nokta raporlar → `lvgl_v8_port.cpp`: ham parmak sayısı (reg 0x02 ≥ 2) **veya** aynı basışta ters yönlü iki >80 px sıçrama.
+- Herhangi bir dokunuş kapatır, alttaki NAV/OBD ekranına geri döner (bırakış tıklamaya dönüşmez). NAV'da yeni uyarı (radar vb.) gelirse kendiliğinden kapanır.
+
+---
+
+## 2026-10-06 — Gyro düzeltmesi (QMI8658 sürücü kayıt haritası) + AURA markası
+
+**Belirti:** kalibre/sıfırla sonrası gyro ekranı sabit. Log: kalibrasyondan sonra sapma tam 0.0000.
+
+**Kök neden — `qmi8658.c` yanlış kayıtlara yazıyordu (datasheet ile karşılaştırıldı):** CTRL1'e ivme ayarı (aslında arayüz: `0x60` → big-endian açılıyordu, sürücü little-endian okuyordu), CTRL2'ye jiro ayarı (aslında ivme), CTRL3'e "enable" bitleri (aslında jiro), CTRL7=`0x01` (yalnız ivme — **jiroskop hiç açılmamış**), soft reset yanlış kayıtta. Düzeltildi: CTRL1=`0x40` (adres artırma, LE), CTRL2=±8g/250 Hz, CTRL3=±512 dps/250 Hz, CTRL5 LPF ~33 Hz (motor titreşimi), CTRL7=`0x03`, RESET(0x60)=`0xB0`; sıcaklık `T_H + T_L/256`. Log: `|a|=9.41 m/s²`, jiro `-0.05 rad/s` (gerçek sapma).
+
+**`imu_data.c` sağlamlaştırma:** hatalı veriyle yapılmış eski kayıt yok sayılır (yeni NVS anahtarı `imu/cfg2` + doğrulama); kalibrasyon 1 g görünmüyorsa reddedilir; bu sensör ~%4 düşük okuyor → kalibrasyonda ölçülen **1 g referansı** (`g_ref`); durma algısı büyüklükten değil **sabitlikten** (ivme + jiro titreşimi) — sapma bilinmeden de durma algılanır ve sapma öğrenilir; kalibre edilmemişken açılış duruşu 3 sn durunca süzülmüş ivmeyle "düz" alınır; SIFIRLA dururken süzülmüş ivmeyi kullanır. Log doğrulaması: dururken `pitch=-0.0 roll=0.2`, sapma kendiliğinden −0.036'ya yaklaşıyor.
+
+**Marka: AURA** (OBD + NAV + ileride sensörler için genel ad): açılış "AURA / AKILLI ARAÇ SİSTEMİ / OBD | NAV | SENSÖR", ana menü başlığı, BLE adı `AURA` (telefon UUID ile bulur, eşleşme bozulmaz), NAV mesajları; Android **AURA Köprü 0.7** (`dist/AURA-Bridge-0.7.apk`): uygulama adı, başlık, bildirim, imza "AURA · Erdem ERCİYAS", galeri klasörü Resimler/AURA.
+
+---
+
+## 2026-10-06 — Gyro ekranı: gerçek eğim ölçer + G-metre, kalibrasyon
+
+**Önceki durum:** ekran yalnız ham ivmeölçerden eğim hesaplıyordu (jiroskop kullanılmıyordu) → fren/gaz/virajda eğim kayıyordu; SIFIRLA açı çıkarmasıydı (eğik montajda yanlış); açılışta motor titreşimi altında 2 sn bloklayan jiroskop kalibrasyonu.
+
+- **`imu_data.c` (yeniden yazıldı):** montaj dönüşümü (yukarı yön + ileri yön → araç ekseni x ileri / y sol / z yukarı); yerçekimi yönü jiroskopla taşınır, ivmeölçer güvene göre düzeltir (|a|≈1 g ve düşük dönüş hızında; dururken hızlı); **OBD hızı varsa** viraj ivmesi (v·ω) ve boyuna ivme (dv/dt, ölü bant 0.5 m/s²) çıkarılır; araç dururken jiroskop sapması sürekli öğrenilir; **ileri yön sürüşten öğrenilir** (düz giderken ≥1.3 m/s² hızlanma/fren, toplam 4 sn). Açılışta bloklayan kalibrasyon kaldırıldı. Ayarlar NVS `imu/cfg`. Varsayılan: dikey montaj (sensör −X yukarı, +Z ileri — eski ekranın varsayımı).
+- **API:** `imu_calib_start` (3 sn hareketsiz örnekleme: sapma + yukarı yön, hareket varsa reddeder), `imu_level_zero`, `imu_reset_peaks`, `imu_calib_clear`; snapshot: pitch/roll, boyuna/yanal G, tepe değerler, durum bayrakları.
+- **`screen_gyro.c`:** merceğe dokun → **EĞİM / G-METRE**. G-metre: 0.5/1 g halkaları, hissedilen kuvvet topu + iz, yaylar ±1 g. Üstte **SIFIRLA** (şu an = düz + tepeler sıfır) ve **KALİBRE** (ilerleme halkalı panel: BAŞLAT / TAMAM / TEKRAR, KAPAT, SİL). Altta EĞİM + MAKS ve durum satırı (Kalibre edilmedi / Duruyor / Hız telafisi açık).
+- İşaret kontrolü (sentetik): burun yukarı 10° → +10, sağ aşağı 5° → +5, 0.5 g fren → −0.5. Build uyarısız, COM3'ten flash, açılış sonrası log temiz. Cihazda fiziksel eğimle doğrulanmadı.
+
+---
+
+## 2026-10-06 — Neon 3D açılış, ana menü ve geçişler (three.js esintili)
+
+- three.js (WebGL) ESP32'de çalışamaz → görsel dili kendi küçük yazılım 3D çizicimizle: **`ui/fx3d.c`** — RGB565 tuvale toplamalı Xiaolin Wu çizgileri (üst üste binen çizgiler parlar), neon hale, yumuşak noktalar, döndürme + perspektif, ikozahedron modeli.
+- **Açılış (`screen_splash.c`, ~4.7 sn, 30 fps):** warp yıldız akışı → ufka akan magenta perspektif ızgara + çizgili gün batımı → dönen parlayan tel kafes ikozahedron → amblem olarak yukarı süzülür, "OBD2 / DASHBOARD + NAV" harf aralığı daralarak belirir, profil + canlı durum, karartma. Tuval 460×460 PSRAM, açılış bitince serbest.
+- **Buzzer:** karttaki buzzer IO genişletici (EXIO8) üzerinden yalnız aç/kapa (aktif buzzer, perde yok) → başlıkla eşzamanlı ritmik "ta-ta-taaam" (LVGL görevinden, I2C dokunmatikle çakışmaz). Gerçek melodi için pasif buzzer + GPIO/LEDC gerekir.
+- **Ana menü:** arkada yavaş dönen sönük ikozahedron + yörünge noktaları (360×360 tuval, yalnız görünürken 15 fps), "OBD / NAV" başlığı, karolarda ışıltı halkası (seçili mod vurgu renginde).
+- **Geçişler:** görünüm değişiminde 260 ms koyudan açılan örtü (OBD ekranlarının içine dokunulmadı).
+- **NAV okları:** her okun arkasında kalın, %20 saydam aynı renkte neon hale.
+- Build uyarısız 0x1c3780 (%41 boş), COM4'ten flash. Cihazda görsel olarak doğrulanmadı.
+
+---
+
+## 2026-10-06 — Harita yakınlaştırma (+/−/TÜMÜ) ve kolay ana menü
+
+**Geri bildirim:** harita geldi ama çok uzaktan; zoom +/− olmalı; önce tüm rota sığsın, sonra yakınlaştırılabilsin; ESP'de ev simgesiyle geçiş zor.
+- **ESP harita sayfası:** "−" / "+" yuvarlak düğmeler (sol/sağ alt), "TÜMÜ" hapı. +/− anında LVGL önizlemesi (resim + rota çizgisi aynı oranla, `lv_img_set_zoom`), aynı anda telefondan o zoom'da net harita istenir (`{"t":"mapreq","mode":"follow","z":16}`); TÜMÜ → `mode:"fit"`. Gelen resim seçili zoom'da değilse (telefon yeniden başlamış) istek yinelenir.
+- **Telefon `MapFeeder` (0.6):** varsayılan **FIT** — sürüş kaydının tamamı + konum daireye sığar (pad 72, en fazla z17), rota büyüdükçe zoom azalır; **FOLLOW** — araca ortalı, seçili zoom, 110 px'te yenilenir. En sık 4 sn'de bir; ana ekranda mod gösterilir.
+- **Kolay menü:** NAV'da altta geniş "⌂ MENÜ" hapı + ekranın herhangi bir yerine **uzun basış** → ana menü (sayfa geçişi artık SHORT_CLICKED, uzun basıştan sonra sayfa değişmez). Sayfa noktaları sağ kenara dikey. OBD'de ev simgesi 20 px, camgöbeği, dokunma alanı ±30 px (satır taşmaya açık).
+- Build uyarısız, COM4'ten flash. APK `dist/OBD-Nav-Bridge-0.6.apk`.
+
+---
+
+## 2026-10-06 — Harita teşhisi + Android 0.5 profesyonel arayüz
+
+**Belirti:** Her şey çalışıyor, ESP harita sayfasında harita görünmüyor. ESP yalnız COM4'te (uygulama logu yok) → kesin neden görülemedi; olası nedenler kapatıldı:
+- **ESP:** MAP karakteristiği artık **onaylı write** da kabul ediyor; harita sonucu telefona `{"t":"mapack","id":n,"ok":…,"why":"gap|busy|size|decode"}` ile bildiriliyor (`nav_map_set_result_cb`). COM4'ten flash.
+- **Android:** harita parçaları **onaylı** yazılıyor (yanıtsız yazmada ESP tamponu taşınca tek parça kaybı resmi çöpe atıyordu). GPS yokken (kapalı alan) **ağ konumu** harita merkezi için kullanılıyor; rota kaydı/radar/ESP `loc` yalnız ≤50 m doğrulukta. İndirilen karo sayısı ve ESP onayı günlükte ("Harita #n ESP'de gösterime hazır" / "başarısız: …"); başarısızsa yeniden gönderilir.
+
+**Android 0.5 arayüz** (`dist/OBD-Nav-Bridge-0.5.apk`): ESP paletiyle koyu tema, logolu başlık, canlı ESP/navigasyon kartı, GPS/Radar/Harita/Sürüş kutuları, yalnız eksik ayar varken görünen kurulum kartı, işlemler, araçlar, açılır günlük; alt imza **"Geliştiren: Erdem ERCİYAS"**. Uyarlanabilir uygulama simgesi (halka içinde camgöbeği ok), bildirim simgesi, sürüş listesi/görüntü ekranları aynı tasarımda; sürüş görüntüsüne "OBD-Nav Köprü · Erdem ERCİYAS" imzası.
+
+---
+
+## 2026-10-06 — NAV v2: konum, rota kaydı, harita, radar/trafik uyarıları, sürüş geçmişi
+
+**ESP (derlendi + flash; PC BLE testi bekliyor — PC Bluetooth kapalıydı):**
+- Protokol: `loc` (lat/lon/spd/hdg), `alert` (k: cam/traffic/hazard/info/none, d, lim, txt), `map` başlığı (id, len, w, h, clat, clon, z). Yeni BLE karakteristiği **MAP `…0004`** (write-no-rsp): `[id][offset 3B LE][JPEG]`.
+- `nav_track.c`: sürüş kaydı PSRAM'de (16384 nokta, dolunca yarıya seyreltme, 8 m eşik, haversine mesafe), geçilen yollar (48). Yeni sürüş yalnızca açık sürüş yokken `start` ile (BLE kopup bağlanınca kayıt silinmez); `stop` kapatır, kayıt bir sonraki rotaya kadar durur.
+- `nav_map.c`: JPEG parçalarını birleştirir, ayrı görevde `esp_jpeg` (ROM tjpgd) ile 460×460 RGB565'e çözer, çift tampon (UI kullanırken üzerine yazılmaz). Yeni bağımlılık `espressif/esp_jpeg ^1.3.0`. ~1 MB PSRAM (ilk haritada ayrılır).
+- NAV ekranı: dokununca **Rehberlik → Harita → Rota özeti**, alt nokta göstergesi. Harita sayfası: OSM resmi + rota çizgisi (Web Mercator, resim yoksa rotayı sığdırır) + konum, üstte km/süre. Özet: mesafe, süre, ort. hız, son 6 yol. **Uyarı şeridi** (radar kırmızı, trafik sarı, tehlike turuncu; 8 sn).
+- Build uyarısız 0x1c0ab0 (%42 boş).
+
+**Android 0.4 (`dist/OBD-Nav-Bridge-0.4.apk`, derlendi, telefonda denenmedi):**
+- `TripService`: ön plan konum servisi (kalıcı bildirim), GPS 1 Hz → ESP `loc` (HIZ alanı da dolar), sürüş kaydı, radar, harita.
+- `Radar`: OSM `highway=speed_camera` (Overpass, ±0.3°, önbellek), gidiş yönünde 600 m içindeki kamera → `alert cam` (+ maxspeed), geçince `none`.
+- Bildirimlerden uyarı: radar/kamera, kaza/yol çalışması/dikkat, trafik/yoğun (TR/RU/EN); metin değişince gönderilir. **Waze** (`com.waze`) eklendi.
+- `MapFeeder`: zoom 15, 460×460 karanlık OSM (ters + 180° ton), JPEG q70; araç 110 px (~400 m) uzaklaşınca yenilenir. Mesajlar harita parçalarından önce gider; bağlantı önceliği HIGH.
+- `TripRecorder` + **Sürüş geçmişi**: `files/trips/*.json` (60 sn'de bir ve bitişte), liste + görüntü (1080×1640: harita, rota, başlangıç/bitiş/uyarı işaretleri, mesafe, süre, ort./maks hız, uyarı sayıları, geçilen yollar, OSM atfı) → galeriye kaydet (Resimler/OBD-Nav) / paylaş / sil.
+
+---
+
+## 2026-10-06 — Navigasyon modu, adım 4: Android köprü uygulaması (`android-bridge/`)
+
+- Kotlin, androidx'siz (yalnız framework), minSdk 26 / targetSdk 34. APK: `dist/OBD-Nav-Bridge-0.1.apk` (633 KB, debug anahtarıyla imzalı, `dist/` git dışı).
+- **`NavListenerService`** (NotificationListenerService): Yandex Navigator / Yandex Haritalar / Google Maps'in kalıcı (ongoing) rehberlik bildirimini okur → `start` + `upd`; bildirim kalkınca `stop`; 2 sn'de bir `ping` (ESP "Veri eski" demesin). BLE yeniden bağlanınca süren rotayı hemen gönderir.
+- **`NavParser`**: extras + RemoteViews şişirilip tüm TextView'lar (YaNaviPeb yaklaşımı); mesafe (m/km/м/км), ETA (HH:MM), manevra anahtar kelimeleri (TR/RU/EN), yol adı (Cd./Sk./Blv./улица…). Biçim belgelenmemiş → "Son navigasyon bildirimini kopyala" ile ham döküm alınıp kurallar ayarlanacak.
+- **`BleLink`**: servis UUID filtresiyle tarama, adres kaydı, `autoConnect` (ESP NAV'a geçince kendiliğinden bağlanır), MTU 247, notify, yazma kuyruğu (yanıtlı yazma, 8 mesaj sınırı), koparsa yeniden bağlanma.
+- **`MainActivity`**: kurulum adımları (bildirim erişimi, Bluetooth izni, ESP'yi bul), durum, demo rota, günlük.
+- Derleme ortamı: `C:\Users\erdem\.android-build` (Temurin JDK 17, Gradle 8.9, SDK platform 34 + build-tools 34). AGP 8.5.2, Kotlin 1.9.24. `gradle assembleRelease` uyarısız.
+- **Henüz telefonda denenmedi.**
+
+---
+
+## 2026-10-06 — Navigasyon modu, adım 2–3: protokol v1 (JSON) + BLE GATT sunucusu
+
+- **Yön:** NAV modunda ESP32 **peripheral**, telefon köprüsü **central** (telefon ESP'ye bağlanır). Reklam adı `OBD-Nav`.
+- **GATT:** servis `7c6a0001-2f4b-4b8e-9d3a-5e1f0c2a9b10`; RX `…0002` (write / write-no-rsp, telefon → ESP), TX `…0003` (notify, ESP → telefon). Her yazma tek mesaj.
+- **`nav_protocol.h`**: taşıma/kodlamadan bağımsız `nav_msg_t`; `nav_codec_t` arayüzü (bugün JSON, ileride ikili + CRC). `upd`'de yalnız gelen alanlar uygulanır (Yandex sokak adı vermezse ekrandaki korunur).
+- **`nav_codec_json.c`** (IDF `json`/cJSON): `hello`→`status`, `start`, `upd`, `stop`, `ping`→`pong`. Manevra kodları `S L R SL SR U RB A`; `eta` gece yarısından dakika. UTF-8 metinler karakter ortasından kesilmez.
+- **`nav_transport.h` / `nav_transport_ble.c`**: NimBLE'ı NAV'da kendisi açar/kapatır (OBD `ble_obd` o sırada kapalı). Kopunca yeniden reklam. IDF 5.3 `nimble_port_deinit` GATT tanımlarını sıfırlıyor → NAV↔OBD geçişlerinde temiz yeniden kayıt.
+- `CONFIG_NAV_MOCK` artık varsayılan **kapalı** (gerçek BLE). `sdkconfig.defaults`: peripheral/broadcaster rolleri açıkça yazıldı.
+- **Düzeltme:** IDF 5.3 NimBLE'da peripheral `BLE_GAP_EVENT_CONNECT.status` uzak özellik okumasının sonucu; Windows PC `26` (0x1A, Unsupported Remote Feature) dönünce bağlantı açıkken "başarısız" sanılıyor, `s_conn` atanmıyor, notify (status/pong) gitmiyordu. Artık `ble_gap_conn_find()` belirleyici.
+- Build uyarısız (0x1bc1e0, %42 boş), COM3'ten flash. **Test (PC `bleak`, `scripts/nav_bridge_sim.py`): hello→status OK, 21 upd (Türkçe/uzun yol adı, kısmi upd), bozuk mesaj reddi, ping→pong OK, 7 sn sessizlik, stop, kopup yeniden bağlanma OK** — iki oturum da geçti, cihaz logunda hata yok.
+- Not: Windows "Cihaz ekle" listesinde görünmemesi normal; eşleştirme gerekmez, uygulama doğrudan GATT ile bağlanır.
+
+---
+
+## 2026-10-06 — Navigasyon modu, adım 1: mod seçimi + NAV ekranı (mock veri)
+
+**Hedef:** Telefon navigasyonunu (Yandex/Google bildirimi → Android köprü → BLE) gösteren NAV modu. OBD ve NAV **birbirini dışlar**: NAV'dayken OBD radyosu (BLE/WiFi) tamamen kapalı; çıkınca normal OBD süreci baştan başlar.
+
+- **`app_mode.c`**: OBD/NAV modu, NVS'de (`app/mode`), açılışta son mod başlar. Geçiş tek görevde sırayla: OBD→NAV `obd_link_suspend()` → `nav_service_start()`; NAV→OBD `nav_service_stop()` → `obd_link_resume()`. Geçiş sürerken gelen istekler son hedefe birleşir.
+- **`obd_link.c`**: yalnız `suspend`/`resume` eklendi (seçili taşımayı durdurur / başlatır). `ble_obd`, `wifi_obd`, `elm327`, `obd_pids` **değişmedi** — bağlantı yokken zaten boşta bekleyip durumlarını sıfırlıyorlar.
+- **`main/nav/`**: `nav_state` (OBD'den bağımsız, mutex + rev sayacı), `nav_service` (şimdilik yalnız mock), `nav_mock` (Ankara rotası, 54 km/h, 1 sn). `CONFIG_NAV_MOCK` (varsayılan açık).
+- **UI**: açılış animasyonundan sonra son modun görünümü. `screen_home` (OBD / NAV yuvarlak karoları), `screen_nav` (lv_line ile çizilmiş büyük manevra oku, mesafe, manevra metni, yol, VARIŞ/KALAN/HIZ, bağlantı durumu, 5 sn'de "Veri eski"). Ana menüye dönüş: OBD'de nokta çubuğunun solundaki ev simgesi, NAV'da alttaki ev simgesi. Etiketler yalnız değişince yazılır.
+- Build uyarısız, imaj ~1.81 MB. COM3'ten flash, açılış OK (`app_mode: Boot mode: OBD`, WiFi taşıma aramada; çökme yok). CST816S I2C okuma hataları önceden de vardı (dokunulmadığında). Mod geçişleri cihazda elle test edilecek.
+
+---
+
 ## 2026-10-06 — WiFi: ESP güç kaybı sonrası adaptörde kalan ölü TCP oturumu
 
 **Belirti (fotoğraflı):** İlk bağlantı hızlı ve veri akıyor. Araç kapatılıp ESP sökülüp takılınca "Opening TCP..."ta kalıyor, ya da "Connected" olup veri gelmiyor / hemen kopuyor.

@@ -76,4 +76,25 @@ menu "OBD2 Dashboard Configurations"
             range 1 65535
             default 35000
     endmenu
+
+    menu "Navigation"
+        config NAV_MOCK
+            bool "Feed the NAV screen with a simulated route (no phone needed)"
+            default n
+    endmenu
+
+    menu "Developer"
+        config UI_SHOT_TOUR
+            bool "Screenshot tour: walk all screens and dump PNG-ready frames over USB"
+            default n
+            help
+                Build-only tool for the README screenshots (scripts/capture_screens.py).
+                Injects demo OBD data, drives the views and prints lv_snapshot frames
+                as base64 lines prefixed with SHOT:. Never enable in a normal build.
+
+        config UI_SHOT_EPOCH
+            int "Wall clock to set during the tour (UTC epoch, 0 = keep)"
+            depends on UI_SHOT_TOUR
+            default 0
+    endmenu
 endmenu

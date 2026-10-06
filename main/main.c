@@ -10,6 +10,8 @@
 #include "obd_dtc.h"
 #include "ui.h"
 #include "imu_data.h"
+#include "app_mode.h"
+#include "clock.h"
 
 static const char *TAG = "main";
 
@@ -22,7 +24,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "ESP32-S3 OBD2 Dashboard starting");
+    ESP_LOGI(TAG, "AURA (OBD2 + NAV) starting");
 
     vehicle_data_init();
     vehicle_profile_init();
@@ -32,11 +34,13 @@ void app_main(void)
         return;
     }
     bsp_buzzer_init();
+    clock_init();     /* I2C hattı (RTC) ekran kartıyla açılır */
 
     imu_init();
     imu_start();
 
     obd_dtc_init();   /* UI açılışta son DTC kaydını gösterir */
+    app_mode_init();  /* son mod (OBD / NAV); UI açılışta onu gösterir */
     ui_init();
     ui_start_update_timer();
 
@@ -46,7 +50,7 @@ void app_main(void)
 
     elm327_start();
     obd_pids_start();
-    obd_link_start();
+    app_mode_start(); /* NAV ise OBD radyosu hiç açılmaz */
 
     ESP_LOGI(TAG, "All layers ready");
 }

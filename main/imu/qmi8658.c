@@ -115,7 +115,7 @@ bool qmi8658_init(void)
     s_i2c_addr = found_addr;
 
     /* --- 3. Soft reset --------------------------------------------------- */
-    i2c_write_reg(QMI8658_REG_CTRL9, QMI8658_CTRL9_SOFT_RESET);
+    i2c_write_reg(QMI8658_REG_RESET, QMI8658_RESET_CMD);
     vTaskDelay(pdMS_TO_TICKS(30));
 
     /* --- 4. Read WHO_AM_I (informational only — we already have ACK) ---- */
@@ -126,32 +126,34 @@ bool qmi8658_init(void)
                  (who == QMI8658_WHO_AM_I_VAL) ? "(OK)" : "(unexpected)");
     }
 
-    /* --- 5. Configure accelerometer: ±8g, 250 Hz ------------------------- */
-    uint8_t ctrl1 = QMI8658_CTRL1_ODR_250HZ | QMI8658_CTRL1_FS_8G;
-    if (!i2c_write_reg(QMI8658_REG_CTRL1, ctrl1)) {
+    /* --- 5. Serial interface: burst reads auto-increment, little endian --- */
+    if (!i2c_write_reg(QMI8658_REG_CTRL1, QMI8658_CTRL1_ADDR_AI)) {
         ESP_LOGE(TAG, "Failed to write CTRL1");
+        return false;
+    }
+
+    /* --- 5b. Accelerometer: ±8g, 250 Hz (CTRL2) -------------------------- */
+    if (!i2c_write_reg(QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_8G | QMI8658_ODR_250HZ)) {
+        ESP_LOGE(TAG, "Failed to write CTRL2");
         return false;
     }
     s_accel_lsb_to_ms2 = (8.0f * 9.80665f) / 32768.0f;
 
-    /* --- 6. Configure gyroscope: ±512 dps, 250 Hz ------------------------ */
-    uint8_t ctrl2 = QMI8658_CTRL2_ODR_250HZ | QMI8658_CTRL2_FS_512DPS;
-    if (!i2c_write_reg(QMI8658_REG_CTRL2, ctrl2)) {
-        ESP_LOGE(TAG, "Failed to write CTRL2");
+    /* --- 6. Gyroscope: ±512 dps, 250 Hz (CTRL3) ------------------------- */
+    if (!i2c_write_reg(QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_ODR_250HZ)) {
+        ESP_LOGE(TAG, "Failed to write CTRL3");
         return false;
     }
     s_gyro_lsb_to_rad = (512.0f * (M_PI / 180.0f)) / 32768.0f;
 
-    /* --- 7. Enable both sensors (CTRL3) ---------------------------------- */
-    uint8_t ctrl3 = QMI8658_CTRL3_ACCEL_EN | QMI8658_CTRL3_GYRO_EN
-                  | QMI8658_CTRL3_GYRO_EXT_512;
-    if (!i2c_write_reg(QMI8658_REG_CTRL3, ctrl3)) {
-        ESP_LOGE(TAG, "Failed to write CTRL3");
+    /* --- 7. Low-pass filters (~33 Hz): engine vibration out ------------- */
+    if (!i2c_write_reg(QMI8658_REG_CTRL5, QMI8658_CTRL5_LPF_33HZ)) {
+        ESP_LOGE(TAG, "Failed to write CTRL5");
         return false;
     }
 
-    /* --- 8. Enable sensor block (CTRL7) ---------------------------------- */
-    if (!i2c_write_reg(QMI8658_REG_CTRL7, QMI8658_CTRL7_ENABLE)) {
+    /* --- 8. Enable accel + gyro (CTRL7) --------------------------------- */
+    if (!i2c_write_reg(QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_EN)) {
         ESP_LOGE(TAG, "Failed to write CTRL7");
         return false;
     }
@@ -165,7 +167,7 @@ bool qmi8658_init(void)
 
 void qmi8658_reset(void)
 {
-    i2c_write_reg(QMI8658_REG_CTRL9, QMI8658_CTRL9_SOFT_RESET);
+    i2c_write_reg(QMI8658_REG_RESET, QMI8658_RESET_CMD);
     vTaskDelay(pdMS_TO_TICKS(20));
 }
 
@@ -223,7 +225,7 @@ bool qmi8658_read_sensors(qmi8658_data_t *data)
         uint8_t temp_buf[2];
         if (i2c_read_regs(QMI8658_REG_TEMP_L, temp_buf, 2)) {
             int16_t raw_temp = (int16_t)(temp_buf[0] | (temp_buf[1] << 8));
-            data->temperature = (float)raw_temp / 256.0f + 23.0f;
+            data->temperature = (float)raw_temp / 256.0f;   /* T_H + T_L/256 °C */
         } else {
             data->temperature = 0.0f;
         }
